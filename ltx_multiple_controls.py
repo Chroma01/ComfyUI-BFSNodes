@@ -42,10 +42,16 @@ _LAYOUT_CHOICES = ["overlap", "st_drc", "strata"]
 _RESIZE_CHOICES = ["match_target", "match_target_letterbox", "native_resolution"]
 
 
-def _encode_ref(vae, latent, img, ref_resize_mode, crop_anchor, w_sf, h_sf):
+def _encode_ref(vae, latent, img, ref_resize_mode, crop_anchor, w_sf, h_sf, downscale_factor=1):
     """Resize (per ref_resize_mode/crop_anchor) + VAE-encode ONE reference IMAGE batch
     ([N,H,W,C], typically a whole video's frames). Mirrors LTXIdentityOverlapConditioning's
-    own _encode_one so behavior is byte-identical per slot."""
+    own _encode_one so behavior is byte-identical per slot.
+
+    downscale_factor>1: encode at target_size/downscale_factor instead of full target size
+    (mirrors the trainer's reference_downscale_factor -- fewer tokens/cheaper VRAM for a
+    condition that doesn't need full detail, e.g. guide/mask). Snapped to a multiple of
+    w_sf/h_sf (must stay divisible by the VAE's own spatial downscale, same constraint as
+    training's "must be divisible by 32" check)."""
     import comfy.utils
 
     if ref_resize_mode == "native_resolution":
@@ -55,6 +61,9 @@ def _encode_ref(vae, latent, img, ref_resize_mode, crop_anchor, w_sf, h_sf):
     else:
         _, _, _, lat_h, lat_w = latent["samples"].shape
         tgt_w, tgt_h = lat_w * w_sf, lat_h * h_sf
+    if downscale_factor != 1:
+        tgt_w = max(w_sf, round(tgt_w / downscale_factor / w_sf) * w_sf)
+        tgt_h = max(h_sf, round(tgt_h / downscale_factor / h_sf) * h_sf)
     _, src_h0, src_w0, _ = img.shape
     crop_box = (0, 0, src_w0, src_h0)
     if ref_resize_mode == "match_target_letterbox":
@@ -91,6 +100,11 @@ class LTXMultipleControls:
             "guide_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "guide_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "guide_ref_resize_mode": (_RESIZE_CHOICES, {"default": "match_target"}),
+            "guide_downscale_factor": ("INT", {"default": 1, "min": 1, "max": 8,
+                             "tooltip": "Encode at target_size/N instead of full res (cheaper VRAM). Must match "
+                                        "whatever the checkpoint was trained with -- 1 for the no-downscale "
+                                        "recipes, 2 for the earlier downscaled-guide recipes. Wrong value = "
+                                        "positions the model never learned, not just a quality hit."}),
 
             "mask_video": ("IMAGE", {"tooltip": "Per-frame replacement-region mask, same frame count/alignment "
                              "as guide_video -- scail2v2 expects a COLORED silhouette (see the Color Mask node), "
@@ -101,6 +115,8 @@ class LTXMultipleControls:
             "mask_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "mask_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "mask_ref_resize_mode": (_RESIZE_CHOICES, {"default": "match_target"}),
+            "mask_downscale_factor": ("INT", {"default": 1, "min": 1, "max": 8,
+                             "tooltip": "Same as guide_downscale_factor -- match the checkpoint's training recipe."}),
 
             "identity_image": ("IMAGE", {"tooltip": "Appearance reference (face/character), no positional "
                              "correspondence with the target needed. Leave unconnected to skip."}),
@@ -110,6 +126,8 @@ class LTXMultipleControls:
             "identity_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "identity_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "identity_ref_resize_mode": (_RESIZE_CHOICES, {"default": "native_resolution"}),
+            "identity_downscale_factor": ("INT", {"default": 1, "min": 1, "max": 8,
+                             "tooltip": "Same as guide_downscale_factor -- match the checkpoint's training recipe."}),
 
             "identity_mask_image": ("IMAGE", {"tooltip": "scail2-style color-pointer marker for the identity "
                              "slot (small flat color dot/blob, NOT a body silhouette -- a body-shaped mask here "
@@ -123,6 +141,9 @@ class LTXMultipleControls:
             "identity_mask_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "identity_mask_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "identity_mask_ref_resize_mode": (_RESIZE_CHOICES, {"default": "native_resolution"}),
+            "identity_mask_downscale_factor": ("INT", {"default": -1, "min": -1, "max": 8,
+                             "tooltip": "-1 = inherit identity_downscale_factor. Same meaning otherwise as "
+                                        "guide_downscale_factor -- match the checkpoint's training recipe."}),
 
             "crop_anchor": (["center", "top", "bottom", "left", "right"], {"default": "center",
                              "tooltip": "Shared by all slots using ref_resize_mode=match_target with a mismatched "
@@ -147,13 +168,14 @@ class LTXMultipleControls:
 
     def apply(self, model, positive, negative, vae, latent,
               guide_video=None, guide_source_id=0.0, guide_phase_scale=1.0,
-              guide_layout="overlap", guide_ref_resize_mode="match_target",
+              guide_layout="overlap", guide_ref_resize_mode="match_target", guide_downscale_factor=1,
               mask_video=None, mask_source_id=0.0, mask_phase_scale=1.0,
-              mask_layout="overlap", mask_ref_resize_mode="match_target",
+              mask_layout="overlap", mask_ref_resize_mode="match_target", mask_downscale_factor=1,
               identity_image=None, identity_source_id=2.0, identity_phase_scale=1.0,
-              identity_layout="overlap", identity_ref_resize_mode="native_resolution",
+              identity_layout="overlap", identity_ref_resize_mode="native_resolution", identity_downscale_factor=1,
               identity_mask_image=None, identity_mask_source_id=-1.0, identity_mask_phase_scale=1.0,
               identity_mask_layout="overlap", identity_mask_ref_resize_mode="native_resolution",
+              identity_mask_downscale_factor=-1,
               crop_anchor="center", reference_guidance_scale=1.0, debug_log=False):
         import comfy.samplers
 
@@ -167,25 +189,29 @@ class LTXMultipleControls:
         if identity_mask_source_id < 0:
             identity_mask_source_id = identity_source_id
             identity_mask_phase_scale = identity_phase_scale
+        if identity_mask_downscale_factor < 0:
+            identity_mask_downscale_factor = identity_downscale_factor
 
         slots = [
-            ("guide", guide_video, guide_source_id, guide_phase_scale, guide_layout, guide_ref_resize_mode),
-            ("mask", mask_video, mask_source_id, mask_phase_scale, mask_layout, mask_ref_resize_mode),
-            ("identity", identity_image, identity_source_id, identity_phase_scale, identity_layout, identity_ref_resize_mode),
+            ("guide", guide_video, guide_source_id, guide_phase_scale, guide_layout, guide_ref_resize_mode, guide_downscale_factor),
+            ("mask", mask_video, mask_source_id, mask_phase_scale, mask_layout, mask_ref_resize_mode, mask_downscale_factor),
+            ("identity", identity_image, identity_source_id, identity_phase_scale, identity_layout, identity_ref_resize_mode, identity_downscale_factor),
             ("identity_mask", identity_mask_image, identity_mask_source_id, identity_mask_phase_scale,
-             identity_mask_layout, identity_mask_ref_resize_mode),
+             identity_mask_layout, identity_mask_ref_resize_mode, identity_mask_downscale_factor),
         ]
 
         ref_specs = []
         summary = []
-        for name, img, source_id, phase_scale, layout, resize_mode in slots:
+        for name, img, source_id, phase_scale, layout, resize_mode, downscale_factor in slots:
             if img is None:
                 continue
             ref_lat, _px, _overlay, crop_box, src_w0, src_h0 = _encode_ref(
-                vae, latent, img, resize_mode, crop_anchor, w_sf, h_sf)
+                vae, latent, img, resize_mode, crop_anchor, w_sf, h_sf, downscale_factor=downscale_factor)
             seg_value = float(source_id) * float(phase_scale)
-            ref_specs.append({"latent": ref_lat, "seg_value": seg_value, "layout": layout, "strata_slot": len(ref_specs)})
-            summary.append(f"{name}: {img.shape[0]}f {src_w0}x{src_h0}px -> {layout}, seg={seg_value:g}, mode={resize_mode}")
+            ref_specs.append({"latent": ref_lat, "seg_value": seg_value, "layout": layout,
+                               "strata_slot": len(ref_specs), "downscale_factor": downscale_factor})
+            dsf_note = f", downscale={downscale_factor}x" if downscale_factor != 1 else ""
+            summary.append(f"{name}: {img.shape[0]}f {src_w0}x{src_h0}px -> {layout}, seg={seg_value:g}, mode={resize_mode}{dsf_note}")
 
         if not ref_specs:
             log.warning("LTXMultipleControls: no slots connected -- passing through unchanged.")

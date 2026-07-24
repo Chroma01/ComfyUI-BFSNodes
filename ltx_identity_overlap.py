@@ -352,6 +352,16 @@ def _install_patches(ltxv):
                 rt, rlc = self.patchifier.patchify(ref_lat.to(dtype=vx.dtype, device=vx.device))
                 rpc = latent_to_pixel_coords(latent_coords=rlc, scale_factors=self.vae_scale_factors,
                                              causal_fix=self.causal_temporal_positioning)
+                # downscale_factor: this ref was VAE-encoded at target_size/downscale_factor,
+                # so its raw pixel-coords only span that smaller extent. Multiply the H/W axes
+                # back up by downscale_factor to re-stretch them across the target's actual
+                # coordinate range (fewer tokens, same spatial span) -- mirrors ltx_core's
+                # VideoConditionByReferenceLatent.apply_to (positions[:,1:3,...] *= downscale_factor).
+                dsf = spec.get("downscale_factor", 1)
+                if dsf != 1:
+                    rpc = rpc.clone()
+                    rpc[:, 1, ...] *= dsf
+                    rpc[:, 2, ...] *= dsf
                 strata_start_raw = None
                 if spec["layout"] == "strata":
                     slot = int(spec["strata_slot"])
