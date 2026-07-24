@@ -9,11 +9,19 @@ Chaining N of those nodes therefore only keeps the LAST node's reference active 
 the earlier ones (e.g. the guide) silently have ZERO effect despite the graph looking correct.
 This node builds every slot's ref_specs in ONE apply() call so they all end up in the same list.
 
-Each slot (guide/mask/identity) is fully independent: its own source_id, phase_scale, layout,
-ref_resize_mode -- no slot is hardcoded to a fixed layout/phase, only given sane defaults that
-match the trained recipe (guide/mask: source_id=0 => no RoPE phase tag, same as source_phase=
-false at train time; identity: source_id=2 => tagged, same as source_phase=true). All three
-slots are optional -- leave any input unconnected to skip that slot entirely.
+Each slot (guide/mask/identity/identity_mask) is fully independent: its own source_id,
+phase_scale, layout, ref_resize_mode -- no slot is hardcoded to a fixed layout/phase, only
+given sane defaults that match the trained recipe (guide/mask: source_id=0 => no RoPE phase
+tag, same as source_phase=false at train time; identity: source_id=2 => tagged, same as
+source_phase=true). All four slots are optional -- leave any input unconnected to skip that
+slot entirely.
+
+identity_mask is the scail2v2-style color-pointer condition (a small flat color dot/blob, NOT
+a body silhouette -- see identity_mask_image's tooltip for why body-shaped masks re-introduce
+a competing pose signal). Defaults to inheriting identity's own source_id/phase_scale (they're
+trained as one group); override identity_mask_source_id to split them into separate groups if
+your checkpoint used a different grouping (e.g. scail2v2's 3-phase variant: guide=1, mask=2,
+identity+identity_mask=3, all source_phase as noted above).
 """
 import logging
 
@@ -75,28 +83,46 @@ class LTXMultipleControls:
         }, "optional": {
             "guide_video": ("IMAGE", {"tooltip": "Motion/structure driving video frames (IMAGE batch, e.g. from "
                              "GetVideoComponents). Leave unconnected to skip the guide slot."}),
-            "guide_source_id": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 8.0, "step": 1.0,
-                             "tooltip": "0 = no RoPE phase tag (matches source_phase=false at train time -- needed "
-                                        "for the guide's positions to line up with the target frame-by-frame)."}),
+            "guide_source_id": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "scail2v2 3-phase recipe default: 1. 0 = no RoPE phase tag at all "
+                                        "(older 2-group recipes); either way this must stay source_phase=false "
+                                        "(distinct id from identity) for the guide's positions to line up with "
+                                        "the target frame-by-frame."}),
             "guide_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "guide_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "guide_ref_resize_mode": (_RESIZE_CHOICES, {"default": "match_target"}),
 
-            "mask_video": ("IMAGE", {"tooltip": "Per-frame replacement-region mask (e.g. SAM2 silhouette), same "
-                             "frame count/alignment as guide_video. Leave unconnected to skip."}),
-            "mask_source_id": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 8.0, "step": 1.0,
-                             "tooltip": "0 = no RoPE phase tag (matches source_phase=false), same reasoning as guide."}),
+            "mask_video": ("IMAGE", {"tooltip": "Per-frame replacement-region mask, same frame count/alignment "
+                             "as guide_video -- scail2v2 expects a COLORED silhouette (see the Color Mask node), "
+                             "not plain white/binary. Leave unconnected to skip."}),
+            "mask_source_id": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "scail2v2 3-phase recipe default: 2 (own group, separate from guide's 1 "
+                                        "and identity's 3 -- older 2-group recipes shared this with guide at 0)."}),
             "mask_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "mask_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "mask_ref_resize_mode": (_RESIZE_CHOICES, {"default": "match_target"}),
 
             "identity_image": ("IMAGE", {"tooltip": "Appearance reference (face/character), no positional "
                              "correspondence with the target needed. Leave unconnected to skip."}),
-            "identity_source_id": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
-                             "tooltip": "Nonzero = tagged with its own RoPE phase (matches source_phase=true)."}),
+            "identity_source_id": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "scail2v2 3-phase recipe default: 3. Nonzero = tagged with its own RoPE "
+                                        "phase (matches source_phase=true)."}),
             "identity_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "identity_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "identity_ref_resize_mode": (_RESIZE_CHOICES, {"default": "native_resolution"}),
+
+            "identity_mask_image": ("IMAGE", {"tooltip": "scail2-style color-pointer marker for the identity "
+                             "slot (small flat color dot/blob, NOT a body silhouette -- a body-shaped mask here "
+                             "would re-inject a competing pose signal, exactly the bug the flat-marker design "
+                             "fixes on the training side). Same source_id/phase as identity_image by default "
+                             "(they're trained as one group) -- override identity_mask_source_id if your "
+                             "checkpoint used a different grouping. Leave unconnected to skip."}),
+            "identity_mask_source_id": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "-1 = inherit identity_source_id/identity_phase_scale (matches training, "
+                             "where ref+ref_mask share one group). Set >=0 to give it its own separate phase."}),
+            "identity_mask_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
+            "identity_mask_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
+            "identity_mask_ref_resize_mode": (_RESIZE_CHOICES, {"default": "native_resolution"}),
 
             "crop_anchor": (["center", "top", "bottom", "left", "right"], {"default": "center",
                              "tooltip": "Shared by all slots using ref_resize_mode=match_target with a mismatched "
@@ -111,11 +137,13 @@ class LTXMultipleControls:
     RETURN_NAMES = ("model", "positive", "negative", "latent", "debug")
     FUNCTION = "apply"
     CATEGORY = "LTX/identity"
-    DESCRIPTION = ("Guide + mask + identity reference conditioning in ONE node call, so all active slots' "
-                   "RoPE reference specs actually combine (chaining LTXIdentityOverlapConditioning nodes does "
-                   "NOT -- each call overwrites the previous one's specs). Every slot is optional and its "
-                   "own source_id/phase_scale/layout/ref_resize_mode -- nothing is hardcoded, only defaulted "
-                   "to match the trained recipe (guide/mask: source_id=0 i.e. no phase; identity: source_id=2).")
+    DESCRIPTION = ("Guide + mask + identity + identity_mask reference conditioning in ONE node call, so all "
+                   "active slots' RoPE reference specs actually combine (chaining LTXIdentityOverlapConditioning "
+                   "nodes does NOT -- each call overwrites the previous one's specs). Every slot is optional and "
+                   "its own source_id/phase_scale/layout/ref_resize_mode -- nothing is hardcoded, only defaulted "
+                   "to match the trained recipe (guide/mask: source_id=0 i.e. no phase; identity: source_id=2; "
+                   "identity_mask: inherits identity's grouping by default, or scail2v2's 3-phase recipe: "
+                   "guide=1, mask=2, identity+identity_mask=3).")
 
     def apply(self, model, positive, negative, vae, latent,
               guide_video=None, guide_source_id=0.0, guide_phase_scale=1.0,
@@ -124,6 +152,8 @@ class LTXMultipleControls:
               mask_layout="overlap", mask_ref_resize_mode="match_target",
               identity_image=None, identity_source_id=2.0, identity_phase_scale=1.0,
               identity_layout="overlap", identity_ref_resize_mode="native_resolution",
+              identity_mask_image=None, identity_mask_source_id=-1.0, identity_mask_phase_scale=1.0,
+              identity_mask_layout="overlap", identity_mask_ref_resize_mode="native_resolution",
               crop_anchor="center", reference_guidance_scale=1.0, debug_log=False):
         import comfy.samplers
 
@@ -132,10 +162,18 @@ class LTXMultipleControls:
         ltxv = _find_ltxv(m)
         _, w_sf, h_sf = vae.downscale_index_formula
 
+        # -1 = inherit the identity slot's own grouping (matches training: ref+ref_mask share
+        # one source_id/phase_scale by default).
+        if identity_mask_source_id < 0:
+            identity_mask_source_id = identity_source_id
+            identity_mask_phase_scale = identity_phase_scale
+
         slots = [
             ("guide", guide_video, guide_source_id, guide_phase_scale, guide_layout, guide_ref_resize_mode),
             ("mask", mask_video, mask_source_id, mask_phase_scale, mask_layout, mask_ref_resize_mode),
             ("identity", identity_image, identity_source_id, identity_phase_scale, identity_layout, identity_ref_resize_mode),
+            ("identity_mask", identity_mask_image, identity_mask_source_id, identity_mask_phase_scale,
+             identity_mask_layout, identity_mask_ref_resize_mode),
         ]
 
         ref_specs = []
