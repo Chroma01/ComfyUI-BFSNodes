@@ -11,17 +11,23 @@ This node builds every slot's ref_specs in ONE apply() call so they all end up i
 
 Each slot (guide/mask/identity/identity_mask) is fully independent: its own source_id,
 phase_scale, layout, ref_resize_mode -- no slot is hardcoded to a fixed layout/phase, only
-given sane defaults that match the trained recipe (guide/mask: source_id=0 => no RoPE phase
-tag, same as source_phase=false at train time; identity: source_id=2 => tagged, same as
-source_phase=true). All four slots are optional -- leave any input unconnected to skip that
-slot entirely.
+given sane defaults that match the CURRENT trained recipe (scail2v2_r128_v13): guide=0 and
+mask=0 (both => no RoPE phase tag, same as source_phase=false at train time -- they must stay
+positionally overlapped with the target frame-by-frame); identity=2 (=> tagged, same as
+source_phase=true, since it has no positional correspondence with the target). identity_mask
+is unused by v13 (ref_mask was dropped from the recipe entirely) -- leave it unconnected.
 
-identity_mask is the scail2v2-style color-pointer condition (a small flat color dot/blob, NOT
-a body silhouette -- see identity_mask_image's tooltip for why body-shaped masks re-introduce
-a competing pose signal). Defaults to inheriting identity's own source_id/phase_scale (they're
-trained as one group); override identity_mask_source_id to split them into separate groups if
-your checkpoint used a different grouping (e.g. scail2v2's 3-phase variant: guide=1, mask=2,
-identity+identity_mask=3, all source_phase as noted above).
+v13's key fix vs earlier recipes: `guide_video` must have the replacement region painted BLACK
+(an inpainting hole) before the model sees it, otherwise it just copies guide's own person into
+the masked region and never uses `identity_image` at all -- confirmed as the root cause of a
+long stretch of "identity ignored" results earlier in training. This node does that
+automatically (`auto_mask_guide`, on by default) using `mask_video`'s white region -- do NOT
+also pre-mask guide upstream or the hole will double-apply harmlessly but wastefully.
+
+mask_video is now a plain WHITE-silhouette-on-black binary mask (NOT colored) -- an earlier
+per-identity color-coded mask design caused the model to leak the mask's own hue into the
+generated clothing (confirmed via direct pixel inspection during training); white/black avoids
+that since it carries no color information for the VAE to latch onto.
 """
 import logging
 
@@ -91,12 +97,12 @@ class LTXMultipleControls:
             "latent": ("LATENT",),
         }, "optional": {
             "guide_video": ("IMAGE", {"tooltip": "Motion/structure driving video frames (IMAGE batch, e.g. from "
-                             "GetVideoComponents). Leave unconnected to skip the guide slot."}),
-            "guide_source_id": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 1.0,
-                             "tooltip": "scail2v2 3-phase recipe default: 1. 0 = no RoPE phase tag at all "
-                                        "(older 2-group recipes); either way this must stay source_phase=false "
-                                        "(distinct id from identity) for the guide's positions to line up with "
-                                        "the target frame-by-frame."}),
+                             "GetVideoComponents). Leave unconnected to skip the guide slot. Gets auto-masked "
+                             "black in the replacement region (see auto_mask_guide) unless disabled."}),
+            "guide_source_id": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "v13 recipe default: 0 (no RoPE phase tag at all -- must stay "
+                                        "source_phase=false so the guide's positions line up with the target "
+                                        "frame-by-frame). Non-zero only for older/experimental checkpoints."}),
             "guide_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "guide_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "guide_ref_resize_mode": (_RESIZE_CHOICES, {"default": "match_target"}),
@@ -107,22 +113,36 @@ class LTXMultipleControls:
                                         "positions the model never learned, not just a quality hit."}),
 
             "mask_video": ("IMAGE", {"tooltip": "Per-frame replacement-region mask, same frame count/alignment "
-                             "as guide_video -- scail2v2 expects a COLORED silhouette (see the Color Mask node), "
-                             "not plain white/binary. Leave unconnected to skip."}),
-            "mask_source_id": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
-                             "tooltip": "scail2v2 3-phase recipe default: 2 (own group, separate from guide's 1 "
-                                        "and identity's 3 -- older 2-group recipes shared this with guide at 0)."}),
+                             "as guide_video -- v13 expects a plain WHITE-on-black binary silhouette (person "
+                             "white, background black). Do NOT use a colored mask (see Color Mask node) -- "
+                             "confirmed to leak hue into the generated clothing during training. Also drives "
+                             "auto_mask_guide's black-out of guide_video. Leave unconnected to skip."}),
+            "mask_source_id": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "v13 recipe default: 0 (same non-tagged group as guide -- both need exact "
+                                        "positional correspondence with the target). Non-zero only for older/"
+                                        "experimental checkpoints."}),
             "mask_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "mask_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "mask_ref_resize_mode": (_RESIZE_CHOICES, {"default": "match_target"}),
             "mask_downscale_factor": ("INT", {"default": 1, "min": 1, "max": 8,
                              "tooltip": "Same as guide_downscale_factor -- match the checkpoint's training recipe."}),
+            "auto_mask_guide": ("BOOLEAN", {"default": True,
+                             "tooltip": "v13 requirement: paints guide_video BLACK wherever mask_video is white, "
+                                        "before encoding -- an inpainting hole, so the model can't just copy "
+                                        "guide's own person into the replacement region and must pull identity "
+                                        "from identity_image instead (matches how the training data was built). "
+                                        "Turn off only if guide_video is already pre-masked upstream."}),
+            "mask_white_thresh": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
+                             "tooltip": "auto_mask_guide only -- mask_video pixels with mean brightness >= this "
+                                        "(0-1 scale) count as foreground (person) and get blacked out in guide."}),
 
             "identity_image": ("IMAGE", {"tooltip": "Appearance reference (face/character), no positional "
-                             "correspondence with the target needed. Leave unconnected to skip."}),
-            "identity_source_id": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 8.0, "step": 1.0,
-                             "tooltip": "scail2v2 3-phase recipe default: 3. Nonzero = tagged with its own RoPE "
-                                        "phase (matches source_phase=true)."}),
+                             "correspondence with the target needed -- this is what fills auto_mask_guide's hole. "
+                             "Leave unconnected to skip."}),
+            "identity_source_id": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                             "tooltip": "v13 recipe default: 2. Nonzero = tagged with its own RoPE phase (matches "
+                                        "source_phase=true, since identity has no positional correspondence with "
+                                        "the target)."}),
             "identity_phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
             "identity_layout": (_LAYOUT_CHOICES, {"default": "overlap"}),
             "identity_ref_resize_mode": (_RESIZE_CHOICES, {"default": "native_resolution"}),
@@ -162,15 +182,17 @@ class LTXMultipleControls:
                    "active slots' RoPE reference specs actually combine (chaining LTXIdentityOverlapConditioning "
                    "nodes does NOT -- each call overwrites the previous one's specs). Every slot is optional and "
                    "its own source_id/phase_scale/layout/ref_resize_mode -- nothing is hardcoded, only defaulted "
-                   "to match the trained recipe (guide/mask: source_id=0 i.e. no phase; identity: source_id=2; "
-                   "identity_mask: inherits identity's grouping by default, or scail2v2's 3-phase recipe: "
-                   "guide=1, mask=2, identity+identity_mask=3).")
+                   "to match scail2v2_r128_v13 (guide=0, mask=0, both no-phase; identity=2, phased). guide_video "
+                   "is auto-masked black in the replacement region (auto_mask_guide) to match how v13 was "
+                   "trained -- this is the fix that made identity transfer actually work. identity_mask is "
+                   "unused by v13 (leave unconnected); kept for older checkpoints.")
 
     def apply(self, model, positive, negative, vae, latent,
               guide_video=None, guide_source_id=0.0, guide_phase_scale=1.0,
               guide_layout="overlap", guide_ref_resize_mode="match_target", guide_downscale_factor=1,
               mask_video=None, mask_source_id=0.0, mask_phase_scale=1.0,
               mask_layout="overlap", mask_ref_resize_mode="match_target", mask_downscale_factor=1,
+              auto_mask_guide=True, mask_white_thresh=0.5,
               identity_image=None, identity_source_id=2.0, identity_phase_scale=1.0,
               identity_layout="overlap", identity_ref_resize_mode="native_resolution", identity_downscale_factor=1,
               identity_mask_image=None, identity_mask_source_id=-1.0, identity_mask_phase_scale=1.0,
@@ -178,11 +200,24 @@ class LTXMultipleControls:
               identity_mask_downscale_factor=-1,
               crop_anchor="center", reference_guidance_scale=1.0, debug_log=False):
         import comfy.samplers
+        import comfy.utils
 
         _ido._DEBUG_ENABLED = bool(debug_log)
         m = model.clone()
         ltxv = _find_ltxv(m)
         _, w_sf, h_sf = vae.downscale_index_formula
+
+        if guide_video is not None and mask_video is not None and auto_mask_guide:
+            mg = mask_video
+            if mg.shape[1:3] != guide_video.shape[1:3]:
+                mg = comfy.utils.common_upscale(
+                    mg.movedim(-1, 1), guide_video.shape[2], guide_video.shape[1], "nearest-exact", "center",
+                ).movedim(1, -1)
+            if mg.shape[0] != guide_video.shape[0]:
+                idx = torch.linspace(0, mg.shape[0] - 1, guide_video.shape[0]).round().long().clamp(max=mg.shape[0] - 1)
+                mg = mg[idx]
+            fg = mg.mean(dim=-1, keepdim=True) >= mask_white_thresh
+            guide_video = torch.where(fg, torch.zeros_like(guide_video), guide_video)
 
         # -1 = inherit the identity slot's own grouping (matches training: ref+ref_mask share
         # one source_id/phase_scale by default).
@@ -245,9 +280,11 @@ class LTXMultipleControls:
 
             m.set_model_sampler_cfg_function(_ref_cfg_function, disable_cfg1_optimization=True)
 
+        guide_masked = guide_video is not None and mask_video is not None and auto_mask_guide
         dbg = (
             "=== LTX Multiple Controls ===\n"
             f"{len(ref_specs)} active slot(s):\n  " + "\n  ".join(summary) + "\n"
+            f"auto_mask_guide: {'applied' if guide_masked else 'off/skipped'}\n"
             f"reference-CFG: {'off' if reference_guidance_scale == 1.0 else f'ON, scale={reference_guidance_scale}'}\n"
             "Set LTX_IDOVERLAP_DEBUG=1 for per-step shape logs. Connect negative + CFG 3-5, no LightX2V."
         )
