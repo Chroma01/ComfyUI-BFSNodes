@@ -543,6 +543,14 @@ class LTXIdentityOverlapConditioning:
             "negative": ("CONDITIONING",),
             "vae": ("VAE",),
             "latent": ("LATENT",),
+            "reference_image": ("IMAGE", {
+                             "tooltip": "Reference to copy into the generation -- any subject (object, animal, "
+                                        "character, person...), not just a face. Accepts a BATCH of N images (use "
+                                        "an Image Batch node to combine several) for checkpoints trained on "
+                                        "multiple STACKED references (layout='strata') -- each image in the batch "
+                                        "becomes its own reference block with source_id = source_id + its index "
+                                        "(0-based: 1st image keeps 'source_id' as-is, 2nd gets source_id+1, ...). "
+                                        "A single image (the default/old behavior) works exactly as before."}),
             "source_id": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
                                     "tooltip": "source_phase segment id (training used 2). 0 = no phase."}),
             "phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
@@ -565,15 +573,6 @@ class LTXIdentityOverlapConditioning:
             "debug_log": ("BOOLEAN", {"default": False,
                           "tooltip": "Print per-step [LTXIdOverlap] shape logs to the console (for debugging)."}),
         }, "optional": {
-            "reference_image": ("IMAGE", {
-                             "tooltip": "Reference to copy into the generation -- any subject (object, animal, "
-                                        "character, person...), not just a face. Accepts a BATCH of N images (use "
-                                        "an Image Batch node to combine several) for checkpoints trained on "
-                                        "multiple STACKED references (layout='strata') -- each image in the batch "
-                                        "becomes its own reference block with source_id = source_id + its index "
-                                        "(0-based: 1st image keeps 'source_id' as-is, 2nd gets source_id+1, ...). "
-                                        "A single image (the default/old behavior) works exactly as before. "
-                                        "Required unless the deprecated reference_face is connected instead."}),
             "crop_anchor": (["center", "top", "bottom", "left", "right"], {"default": "center",
                              "tooltip": "New in v1.10.13, optional -- old workflows without this input keep the "
                                         "previous always-center-crop behavior. Only used by match_target (the "
@@ -602,10 +601,6 @@ class LTXIdentityOverlapConditioning:
                                         "way CFG amplifies the text prompt's. Costs one extra (cheaper, "
                                         "ref-token-free) forward pass per step when enabled. Start around 2-4; "
                                         "same units/convention as CFG scale on the sampler."}),
-            "reference_face": ("IMAGE", {"tooltip": "DEPRECATED alias for reference_image, kept only so workflows "
-                             "saved before the v1.14.0 rename (reference_face -> reference_image) don't crash with "
-                             "\"unexpected keyword argument 'reference_face'\" on load -- reconnect to "
-                             "reference_image when convenient. Ignored if reference_image is also connected."}),
         }}
 
     RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "STRING", "IMAGE", "IMAGE")
@@ -618,22 +613,10 @@ class LTXIdentityOverlapConditioning:
                    "Load LoRA on MODEL first. ref_preview/crop_overlay outputs show exactly what gets encoded "
                    "and, for match_target, what part of the reference survives the crop (green box) vs gets discarded.")
 
-    def apply(self, model, positive, negative, vae, latent, reference_image=None,
+    def apply(self, model, positive, negative, vae, latent, reference_image,
               source_id=2.0, phase_scale=1.0,
               ref_resize_mode="match_target", debug_log=False,
-              crop_anchor="center", layout="overlap", reference_guidance_scale=1.0,
-              reference_face=None, **_legacy_kwargs):
-        # reference_face: pre-v1.14.0 name for reference_image (see INPUT_TYPES tooltip).
-        # **_legacy_kwargs absorbs identity_projector/id_strength/arcface_mode from workflows
-        # saved before the same rename dropped the ArcFace-projector path entirely -- without
-        # this, ComfyUI passes whatever the saved prompt's "inputs" dict has as literal kwargs,
-        # and any of those names crashes with "unexpected keyword argument" instead of the old
-        # node just running without that (already-removed) feature.
-        if reference_image is None:
-            reference_image = reference_face
-        if reference_image is None:
-            raise ValueError("LTXIdentityOverlapConditioning: connect reference_image (reference_face is a "
-                              "deprecated alias for the same input).")
+              crop_anchor="center", layout="overlap", reference_guidance_scale=1.0):
         import comfy.samplers
         import comfy.utils
 
