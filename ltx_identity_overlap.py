@@ -147,13 +147,41 @@ def _append_ctx_tokens(conditioning, tokens):
 # ---------------- source_phase RoPE (port of ltx_core rope.apply_segment_phase) ----------------
 def _rotate_ref_block(pe, start, length, seg_value, theta=10000.0):
     """Rotate RoPE freqs of tokens [start:start+length] by phase = seg_value * theta^(-d/L).
-    pe = (cos, sin, [split_flag]). cos/sin shape [..., T, L] or [B,H,T,L]. Returns new pe tuple.
     One reference block's own token range gets its own seg_value (source_id*phase_scale) --
     callers loop this once per stacked reference so each keeps its own RoPE phase tag. With a
     single reference (the common case), this is exactly the old "last ref_len tokens" rotation.
+
+    Two upstream pe formats, detected at runtime (ComfyUI changed this in 2026-07):
+    - fused matrix (current): pe = (rotation_matrix, split_mode_bool); rotation_matrix shape
+      [B, T, num_heads, L, 2, 2], one true 2x2 rotation matrix per (batch, token, head, freq).
+      We compose an additional phase rotation via matmul -- 2D rotation matrices commute, so
+      left/right composition order doesn't matter: R(seg*rate) @ R(existing) == R(existing+seg*rate).
+    - separate cos/sin (pre-2026-07 ComfyUI): pe = (cos, sin, [split_flag]), each [..., T, L].
     """
     if length <= 0 or seg_value == 0.0:
         return pe
+    first = pe[0]
+    if torch.is_tensor(first) and first.dim() >= 3 and first.shape[-2:] == (2, 2):
+        # fused rotation-matrix format: pe = (matrix[B,T,H,L,2,2], split_mode)
+        matrix = first
+        rest = tuple(pe[1:])
+        L = matrix.shape[-3]
+        d = torch.arange(L, device=matrix.device, dtype=torch.float32)
+        rate = theta ** (-d / float(L))
+        phase = seg_value * rate                          # [L]
+        cp = phase.cos().to(matrix.dtype)
+        sp = phase.sin().to(matrix.dtype)
+        r_phase = torch.stack(
+            (torch.stack((cp, -sp), dim=-1), torch.stack((sp, cp), dim=-1)), dim=-2
+        )                                                   # [L, 2, 2]
+        sub = matrix[:, start:start + length]                # [B, length, H, L, 2, 2]
+        rotated = torch.matmul(r_phase, sub)
+        matrix = matrix.clone()
+        matrix[:, start:start + length] = rotated
+        _dbg("rotate ref block (matrix): L", L, "start", start, "length", length, "seg", seg_value)
+        return (matrix, *rest)
+
+    # legacy separate cos/sin format
     cos, sin = pe[0], pe[1]
     rest = tuple(pe[2:])
     L = cos.shape[-1]
