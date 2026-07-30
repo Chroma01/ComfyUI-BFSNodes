@@ -16,9 +16,11 @@ Plus the ArcFace IdentityProjector tokens on the text context (as trained).
 Load the matching LoRA on MODEL first. Requires insightface + buffalo_l (ArcFace, CPU).
 Set LTX_IDOVERLAP_DEBUG=1 to log shapes at each patch point for iteration.
 """
+import functools
 import logging
 import os
 import types
+import weakref
 
 import numpy as np
 import torch
@@ -323,14 +325,52 @@ def _apply_tass_layout(reference_positions, target_positions, layout: str, strat
     raise ValueError(f"Unsupported TASS layout {layout!r}")
 
 
+def _unbound(obj, name):
+    """The plain function behind `obj.name`, so closures never pin the instance.
+
+    A bound method carries a strong reference to its instance; captured inside the patch closures
+    below it would keep the model alive through its own __dict__ (see _bind_weak).
+    """
+    function = getattr(type(obj), name, None)
+    if function is not None:
+        return function
+    attribute = getattr(obj, name, None)
+    if attribute is None:
+        return None
+    # Dynamically assigned (already patched by another node): fall back to its underlying
+    # function when there is one, otherwise wrap the bound callable and accept the reference.
+    return getattr(attribute, "__func__", None) or (lambda _self, *a, **k: attribute(*a, **k))
+
+
+def _bind_weak(function, instance):
+    """Install-ready callable with a method's signature but no reference cycle.
+
+    `instance._x = types.MethodType(fn, instance)` makes instance -> __dict__ -> method ->
+    instance, a cycle only a full collection can break. ComfyUI holds a weakref to the model and,
+    finding it alive after a run, logs "memory leak with model LTXAV" and forces a full gc every
+    execution -- which is what makes repeated runs progressively slower (issue #9). Resolving the
+    instance from a weakref at call time keeps the patch working with none of that.
+    """
+    reference = weakref.ref(instance)
+
+    @functools.wraps(function)
+    def patched(*args, **kwargs):
+        target = reference()
+        if target is None:
+            raise RuntimeError("LTXIdentityOverlap: the patched model no longer exists")
+        return function(target, *args, **kwargs)
+
+    return patched
+
+
 def _install_patches(ltxv):
     if getattr(ltxv, "_id_overlap_patched", False):
         return
-    orig_process_input = ltxv._process_input
-    orig_prepare_ts = ltxv._prepare_timestep
-    orig_prepare_pe = ltxv._prepare_positional_embeddings
-    orig_process_output = ltxv._process_output
-    orig_forward_internal = getattr(ltxv, "_forward", None)
+    orig_process_input = _unbound(ltxv, "_process_input")
+    orig_prepare_ts = _unbound(ltxv, "_prepare_timestep")
+    orig_prepare_pe = _unbound(ltxv, "_prepare_positional_embeddings")
+    orig_process_output = _unbound(ltxv, "_process_output")
+    orig_forward_internal = _unbound(ltxv, "_forward")
 
     if orig_forward_internal is not None:
         def _forward_capture_fps(self, x, timestep, context, attention_mask, frame_rate=25,
@@ -341,18 +381,18 @@ def _install_patches(ltxv):
             # units. Stash here so it's always current, never a step behind.
             self._id_frame_rate = float(frame_rate)
             return orig_forward_internal(
-                x, timestep, context, attention_mask, frame_rate=frame_rate,
+                self, x, timestep, context, attention_mask, frame_rate=frame_rate,
                 transformer_options=transformer_options, keyframe_idxs=keyframe_idxs,
                 denoise_mask=denoise_mask, **kwargs,
             )
-        ltxv._forward = types.MethodType(_forward_capture_fps, ltxv)
+        ltxv._forward = _bind_weak(_forward_capture_fps, ltxv)
 
     def process_input(self, x, keyframe_idxs, denoise_mask, **kw):
         # Reset per-forward state first so a stale value from a previous run can never leak
         # into this forward (e.g. if ref specs stop arriving after a Comfy update).
         self._id_ref_len = 0
         self._id_blocks = []
-        out = orig_process_input(x, keyframe_idxs, denoise_mask, **kw)
+        out = orig_process_input(self, x, keyframe_idxs, denoise_mask, **kw)
         ref_specs = kw.get("_id_ref_specs")
         if ref_specs is None:
             ref_specs = (kw.get("transformer_options") or {}).get("_id_ref_specs")
@@ -465,10 +505,10 @@ def _install_patches(ltxv):
                         pad = torch.ones(*gm.shape[:-1], gap, dtype=gm.dtype, device=gm.device)
                         kw = dict(kw); kw["grid_mask"] = torch.cat([gm, pad], dim=-1)
                         _dbg("prepare_timestep: grid_mask extended by", gap)
-        return orig_prepare_ts(timestep, batch_size, hidden_dtype, **kw)
+        return orig_prepare_ts(self, timestep, batch_size, hidden_dtype, **kw)
 
     def prepare_pe(self, pixel_coords, frame_rate, x_dtype):
-        pe = orig_prepare_pe(pixel_coords, frame_rate, x_dtype)
+        pe = orig_prepare_pe(self, pixel_coords, frame_rate, x_dtype)
         blocks = getattr(self, "_id_blocks", [])
         theta = getattr(self, "_id_rope_theta", 10000.0)
         if not blocks:
@@ -524,12 +564,12 @@ def _install_patches(ltxv):
             except Exception as e:
                 _dbg("ERROR process_output:", repr(e), "| x", _shape(x), "| et", _shape(embedded_timestep))
                 raise
-        return orig_process_output(x, embedded_timestep, keyframe_idxs, **kw)
+        return orig_process_output(self, x, embedded_timestep, keyframe_idxs, **kw)
 
-    ltxv._process_input = types.MethodType(process_input, ltxv)
-    ltxv._prepare_timestep = types.MethodType(prepare_timestep, ltxv)
-    ltxv._prepare_positional_embeddings = types.MethodType(prepare_pe, ltxv)
-    ltxv._process_output = types.MethodType(process_output, ltxv)
+    ltxv._process_input = _bind_weak(process_input, ltxv)
+    ltxv._prepare_timestep = _bind_weak(prepare_timestep, ltxv)
+    ltxv._prepare_positional_embeddings = _bind_weak(prepare_pe, ltxv)
+    ltxv._process_output = _bind_weak(process_output, ltxv)
     ltxv._id_overlap_patched = True
     log.info("LTXIdentityOverlap patches installed on %s", type(ltxv).__name__)
 
