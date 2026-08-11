@@ -1,4 +1,4 @@
-"""LTX-2.3 Identity OVERLAP — 100%-exact replica of ltx-trainer's overlap+source_phase reference.
+"""LTX-2.3/2.5 Identity OVERLAP — replica of ltx-trainer's overlap+source_phase reference.
 
 Unlike the append_keyframe path (which makes the ref an I2V first-frame), this injects the
 reference latent as SEPARATE tokens that share the target's frame-0 RoPE grid (overlap) and
@@ -208,6 +208,21 @@ def _find_ltxv(model):
     m = getattr(model, "model", model)
     m = getattr(m, "diffusion_model", m)
     return m
+
+
+def _detect_ltx_version(ltxv):
+    """Detect the LTX generation from a model-native checkpoint parameter.
+
+    LTX-2.5 introduces ``keyframes_abs_pos_embedding``. ComfyUI detects the same
+    state-dict key when constructing the model and exposes both the feature flag
+    and the parameter on LTXBaseModel. Avoid filename-based detection because a
+    user can rename or quantize a checkpoint without changing its architecture.
+    """
+    if bool(getattr(ltxv, "use_keyframes_abs_pos_embedding", False)):
+        return "2.5"
+    if getattr(ltxv, "keyframes_abs_pos_embedding", None) is not None:
+        return "2.5"
+    return "2.3/legacy"
 
 
 def _letterbox_resize(ref_img, tgt_w, tgt_h, pad_value=1.0):
@@ -664,6 +679,7 @@ class LTXIdentityOverlapConditioning:
         _DEBUG_ENABLED = bool(debug_log)
         m = model.clone()
         ltxv = _find_ltxv(m)
+        detected_ltx_version = _detect_ltx_version(ltxv)
 
         _, w_sf, h_sf = vae.downscale_index_formula
         n_refs = reference_image.shape[0]
@@ -754,6 +770,8 @@ class LTXIdentityOverlapConditioning:
         seg_list = ", ".join(f"#{i}={s['seg_value']:g}" for i, s in enumerate(ref_specs))
         dbg = (
             "=== LTX Identity OVERLAP (exact) ===\n"
+            f"detected model: LTX-{detected_ltx_version} "
+            f"(architecture detection via keyframes_abs_pos_embedding)\n"
             f"references: {n_refs} (encoded at {ref_preview.shape[2]}x{ref_preview.shape[1]}px each, "
             f"mode={ref_resize_mode}{f', crop_anchor={crop_anchor}' if ref_resize_mode == 'match_target' else ''}) "
             f"-> {layout} tokens, source_phase seg per ref: {seg_list}\n"
