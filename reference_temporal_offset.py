@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import torch
 
-DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS = -1
+DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS = 0
 
 
 def reference_temporal_offset_input():
@@ -24,8 +24,9 @@ def reference_temporal_offset_input():
             "step": 1,
             "tooltip": (
                 "Temporal RoPE offset for appearance/reference tokens only, in VAE latent-time steps. "
+                "0 keeps the standard frame-0 placement used by existing LoRAs. "
                 "-1 places the reference one latent step before frame 0 (normally -8 pixel frames), "
-                "which can reduce overlap frame-0 reference leakage. 0 restores exact frame-0 overlap. "
+                "which can be tested to reduce overlap frame-0 reference leakage. "
                 "Guide, mask, and target positions are never changed."
             ),
         },

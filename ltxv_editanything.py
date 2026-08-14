@@ -635,8 +635,8 @@ class LTXVEditAnythingApply:
             ref_px = canvas[:, :, :, :3]
         ref_lat = vae.encode(ref_px)   # [1, 128, 1, lat_h, lat_w]
 
-        # Reference-only temporal placement. Default -1 preserves this node's trained layout:
-        # [ref @ t=-8 | guide @ t=0..T | noisy_target @ t=0..T]. Guide remains at frame 0.
+        # Reference-only temporal placement. Default 0 matches the standard reference position;
+        # negative values can test [ref before t=0 | guide/target @ t=0..T]. Guide remains at frame 0.
         ref_pixel_pos = reference_temporal_pixel_offset(ref_temporal_offset_latents, time_sf)
 
         # Append ref first (entry[0] = appearance)

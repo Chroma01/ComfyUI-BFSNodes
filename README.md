@@ -110,13 +110,14 @@ A plain LoRA loader alone is not enough for Edit Anything LoRAs that include rol
 ## Reference temporal offset
 
 Nodes that inject clean appearance references expose a reference-only temporal offset in VAE
-latent steps. The default is `-1`, which places the reference one latent step before target frame
-zero (`-8` pixel frames with the standard LTX VAE). This can reduce the overlap frame-0 artifact
-where the reference composition briefly appears at the start of the generated video.
+latent steps. The default is `0`, matching the standard frame-zero placement used by existing
+LoRAs and preserving their expected behavior. Negative values are an experimental way to reduce
+the overlap frame-0 artifact where the reference composition briefly appears at the start of the
+generated video.
 
-- `-1`: one latent step before frame zero (recommended starting point)
+- `0`: standard frame-zero placement (default)
+- `-1`: one latent step before frame zero (`-8` pixel frames with the standard LTX VAE)
 - `-2`: two latent steps before frame zero (stronger separation, possibly weaker identity)
-- `0`: exact legacy frame-zero overlap
 
 The offset is applied only to appearance/reference inputs. Guide videos, masks, identity masks,
 and target video positions remain unchanged. In **LTX Multiple Controls**, the field is named

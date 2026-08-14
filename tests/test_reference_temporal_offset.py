@@ -17,10 +17,11 @@ SPEC.loader.exec_module(OFFSET)
 
 
 class ReferenceTemporalOffsetTest(unittest.TestCase):
-    def test_default_is_one_latent_step_before_frame_zero(self):
+    def test_default_matches_standard_frame_zero_placement(self):
         kind, options = OFFSET.reference_temporal_offset_input()
         self.assertEqual(kind, "INT")
-        self.assertEqual(options["default"], -1)
+        self.assertEqual(options["default"], 0)
+        self.assertEqual(OFFSET.reference_temporal_pixel_offset(0, 8), 0)
         self.assertEqual(OFFSET.reference_temporal_pixel_offset(-1, 8), -8)
 
     def test_shift_changes_only_temporal_axis_without_mutating_input(self):
