@@ -33,6 +33,7 @@ import logging
 
 import torch
 
+from . import ltx_identity_overlap as _ido
 from .ltx_identity_overlap import (
     _anchored_crop_resize,
     _draw_crop_overlay,
@@ -40,7 +41,10 @@ from .ltx_identity_overlap import (
     _install_patches,
     _letterbox_resize,
 )
-from . import ltx_identity_overlap as _ido
+from .reference_temporal_offset import (
+    DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
+    reference_temporal_offset_input,
+)
 
 log = logging.getLogger("LTXMultipleControls")
 
@@ -148,7 +152,6 @@ class LTXMultipleControls:
             "identity_ref_resize_mode": (_RESIZE_CHOICES, {"default": "native_resolution"}),
             "identity_downscale_factor": ("INT", {"default": 1, "min": 1, "max": 8,
                              "tooltip": "Same as guide_downscale_factor -- match the checkpoint's training recipe."}),
-
             "identity_mask_image": ("IMAGE", {"tooltip": "scail2-style color-pointer marker for the identity "
                              "slot (small flat color dot/blob, NOT a body silhouette -- a body-shaped mask here "
                              "would re-inject a competing pose signal, exactly the bug the flat-marker design "
@@ -172,6 +175,8 @@ class LTXMultipleControls:
                              "tooltip": "ST-DRC-style reference-CFG applied to the WHOLE combined reference set "
                                         "(all active slots together). 1.0 = off."}),
             "debug_log": ("BOOLEAN", {"default": False}),
+            # Reference-only despite being appended here for saved-workflow widget stability.
+            "identity_temporal_offset_latents": reference_temporal_offset_input(),
         }}
 
     RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "STRING")
@@ -195,6 +200,7 @@ class LTXMultipleControls:
               auto_mask_guide=True, mask_white_thresh=0.5,
               identity_image=None, identity_source_id=2.0, identity_phase_scale=1.0,
               identity_layout="overlap", identity_ref_resize_mode="native_resolution", identity_downscale_factor=1,
+              identity_temporal_offset_latents=DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
               identity_mask_image=None, identity_mask_source_id=-1.0, identity_mask_phase_scale=1.0,
               identity_mask_layout="overlap", identity_mask_ref_resize_mode="native_resolution",
               identity_mask_downscale_factor=-1,
@@ -228,25 +234,31 @@ class LTXMultipleControls:
             identity_mask_downscale_factor = identity_downscale_factor
 
         slots = [
-            ("guide", guide_video, guide_source_id, guide_phase_scale, guide_layout, guide_ref_resize_mode, guide_downscale_factor),
-            ("mask", mask_video, mask_source_id, mask_phase_scale, mask_layout, mask_ref_resize_mode, mask_downscale_factor),
-            ("identity", identity_image, identity_source_id, identity_phase_scale, identity_layout, identity_ref_resize_mode, identity_downscale_factor),
+            ("guide", guide_video, guide_source_id, guide_phase_scale, guide_layout, guide_ref_resize_mode, guide_downscale_factor, 0),
+            ("mask", mask_video, mask_source_id, mask_phase_scale, mask_layout, mask_ref_resize_mode, mask_downscale_factor, 0),
+            ("identity", identity_image, identity_source_id, identity_phase_scale, identity_layout,
+             identity_ref_resize_mode, identity_downscale_factor, identity_temporal_offset_latents),
             ("identity_mask", identity_mask_image, identity_mask_source_id, identity_mask_phase_scale,
-             identity_mask_layout, identity_mask_ref_resize_mode, identity_mask_downscale_factor),
+             identity_mask_layout, identity_mask_ref_resize_mode, identity_mask_downscale_factor, 0),
         ]
 
         ref_specs = []
         summary = []
-        for name, img, source_id, phase_scale, layout, resize_mode, downscale_factor in slots:
+        for name, img, source_id, phase_scale, layout, resize_mode, downscale_factor, temporal_offset in slots:
             if img is None:
                 continue
             ref_lat, _px, _overlay, crop_box, src_w0, src_h0 = _encode_ref(
                 vae, latent, img, resize_mode, crop_anchor, w_sf, h_sf, downscale_factor=downscale_factor)
             seg_value = float(source_id) * float(phase_scale)
             ref_specs.append({"latent": ref_lat, "seg_value": seg_value, "layout": layout,
-                               "strata_slot": len(ref_specs), "downscale_factor": downscale_factor})
+                               "strata_slot": len(ref_specs), "downscale_factor": downscale_factor,
+                               "temporal_offset_latents": int(temporal_offset)})
             dsf_note = f", downscale={downscale_factor}x" if downscale_factor != 1 else ""
-            summary.append(f"{name}: {img.shape[0]}f {src_w0}x{src_h0}px -> {layout}, seg={seg_value:g}, mode={resize_mode}{dsf_note}")
+            offset_note = f", ref_t_offset={int(temporal_offset)} latent" if name == "identity" else ""
+            summary.append(
+                f"{name}: {img.shape[0]}f {src_w0}x{src_h0}px -> {layout}, seg={seg_value:g}, "
+                f"mode={resize_mode}{dsf_note}{offset_note}"
+            )
 
         if not ref_specs:
             log.warning("LTXMultipleControls: no slots connected -- passing through unchanged.")

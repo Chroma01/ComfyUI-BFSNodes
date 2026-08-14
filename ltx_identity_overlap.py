@@ -1,10 +1,11 @@
 """LTX-2.3/2.5 Identity OVERLAP — replica of ltx-trainer's overlap+source_phase reference.
 
 Unlike the append_keyframe path (which makes the ref an I2V first-frame), this injects the
-reference latent as SEPARATE tokens that share the target's frame-0 RoPE grid (overlap) and
-are tagged with a per-source RoPE phase (source_phase), exactly as the ltx-trainer flexible
-strategy did at train/validation time. The ref tokens are clean (timestep 0), attend to the
-target in self-attention, and are sliced off the output (never rendered).
+reference latent as SEPARATE tokens using the trainer's overlap/source-phase contract. The
+reference-only temporal offset can move those positions before frame zero to reduce learned
+frame-0 composition leakage; set it to 0 for the exact trainer overlap grid. The ref tokens
+remain clean (timestep 0), attend to the target in self-attention, and are sliced off the
+output (never rendered).
 
 Model patch (installed idempotently on the LTX av_model), matching LTXBaseModel._forward:
   1) _process_input  : append ref video tokens (patchified ref latent) with overlap positions;
@@ -27,6 +28,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file
+
+from .reference_temporal_offset import (
+    DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
+    reference_temporal_offset_input,
+    reference_temporal_pixel_offset,
+    shift_reference_temporal_positions,
+)
 
 log = logging.getLogger("LTXIdentityOverlap")
 _USE_GPU = os.environ.get("LTX_IDPROJ_ARCFACE_GPU", "0") == "1"
@@ -451,6 +459,15 @@ def _install_patches(ltxv):
                     strata_start_sec = target_max_t_raw / frame_rate + (slot + 1) * STRATA_SLOT_WIDTH
                     strata_start_raw = strata_start_sec * frame_rate
                 rpc = _apply_tass_layout(rpc, vco, spec["layout"], strata_start=strata_start_raw)
+                # Appearance references may be placed before frame zero to reduce the learned
+                # overlap frame-0 copy/leak. Old/external specs without this key retain offset 0.
+                # The shift is applied AFTER layout placement so it remains explicit for every
+                # supported layout; guide/mask specs opt into 0 in LTX Multiple Controls.
+                rpc = shift_reference_temporal_positions(
+                    rpc,
+                    spec.get("temporal_offset_latents", 0),
+                    self.vae_scale_factors[0],
+                )
                 rt = self.patchify_proj(rt)
                 if rt.shape[0] != vx.shape[0]:
                     rt = rt.expand(vx.shape[0], -1, -1)
@@ -605,7 +622,8 @@ class LTXIdentityOverlapConditioning:
                                         "multiple STACKED references (layout='strata') -- each image in the batch "
                                         "becomes its own reference block with source_id = source_id + its index "
                                         "(0-based: 1st image keeps 'source_id' as-is, 2nd gets source_id+1, ...). "
-                                        "A single image (the default/old behavior) works exactly as before."}),
+                                        "For the exact historical frame-0 placement, set the reference temporal "
+                                        "offset to 0."}),
             "source_id": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
                                     "tooltip": "source_phase segment id (training used 2). 0 = no phase."}),
             "phase_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1}),
@@ -637,9 +655,9 @@ class LTXIdentityOverlapConditioning:
                                         "cut off. No effect on match_target_letterbox or native_resolution (neither "
                                         "ever crops)."}),
             "layout": (["overlap", "st_drc", "strata"], {"default": "overlap",
-                       "tooltip": "New, optional -- old workflows without this input keep the default 'overlap' "
-                                  "behavior (reference shares the target's own RoPE coordinate range, distinguished "
-                                  "only by source_phase -- what every checkpoint so far was trained with). 'st_drc' "
+                       "tooltip": "The base positional layout used by the checkpoint. 'overlap' starts from the "
+                                  "target's own RoPE coordinate range and then applies the independent reference "
+                                  "temporal offset; use offset 0 for the exact historical overlap grid. 'st_drc' "
                                   "shifts the WHOLE reference block past the target's coordinate extent on every "
                                   "axis (non-overlapping region). 'strata' shifts ONLY the temporal axis to a slot "
                                   "past the target's own length -- one slot per image in the reference_image batch "
@@ -656,19 +674,23 @@ class LTXIdentityOverlapConditioning:
                                         "way CFG amplifies the text prompt's. Costs one extra (cheaper, "
                                         "ref-token-free) forward pass per step when enabled. Start around 2-4; "
                                         "same units/convention as CFG scale on the sampler."}),
+            # Appended last so saved workflows keep every historical widget index stable.
+            "reference_temporal_offset_latents": reference_temporal_offset_input(),
         }}
 
     RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "STRING", "IMAGE", "IMAGE")
     RETURN_NAMES = ("model", "positive", "negative", "latent", "debug", "ref_preview", "crop_overlay")
     FUNCTION = "apply"
     CATEGORY = "LTX/identity"
-    DESCRIPTION = ("100%-exact overlap/st_drc/strata + source_phase reference (as trained) via a model patch. "
+    DESCRIPTION = ("Overlap/st_drc/strata + source_phase reference conditioning via a model patch, with an "
+                   "experimental reference-only temporal offset to reduce frame-0 composition leakage. "
                    "Reference is separate tokens (NOT I2V), any subject -- not just a face. Accepts a BATCH of "
                    "images for checkpoints trained on stacked references (layout='strata'). "
                    "Load LoRA on MODEL first. ref_preview/crop_overlay outputs show exactly what gets encoded "
                    "and, for match_target, what part of the reference survives the crop (green box) vs gets discarded.")
 
     def apply(self, model, positive, negative, vae, latent, reference_image,
+              reference_temporal_offset_latents=DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
               source_id=2.0, phase_scale=1.0,
               ref_resize_mode="match_target", debug_log=False,
               crop_anchor="center", layout="overlap", reference_guidance_scale=1.0):
@@ -721,7 +743,8 @@ class LTXIdentityOverlapConditioning:
         for i in range(n_refs):
             ref_lat_i, ref_px_i, overlay_i, crop_box, src_w0, src_h0 = _encode_one(reference_image[i:i + 1])
             ref_specs.append({"latent": ref_lat_i, "seg_value": (float(source_id) + i) * float(phase_scale),
-                              "layout": layout, "strata_slot": i})
+                              "layout": layout, "strata_slot": i,
+                              "temporal_offset_latents": int(reference_temporal_offset_latents)})
             ref_previews.append(ref_px_i)
             crop_overlays.append(overlay_i)
         ref_lat = ref_specs[0]["latent"]  # for the debug string below (1st ref's shape)
@@ -768,6 +791,10 @@ class LTXIdentityOverlapConditioning:
             m.set_model_sampler_cfg_function(_ref_cfg_function, disable_cfg1_optimization=True)
 
         seg_list = ", ".join(f"#{i}={s['seg_value']:g}" for i, s in enumerate(ref_specs))
+        temporal_pixel_offset = reference_temporal_pixel_offset(
+            reference_temporal_offset_latents,
+            vae.downscale_index_formula[0],
+        )
         dbg = (
             "=== LTX Identity OVERLAP (exact) ===\n"
             f"detected model: LTX-{detected_ltx_version} "
@@ -775,6 +802,8 @@ class LTXIdentityOverlapConditioning:
             f"references: {n_refs} (encoded at {ref_preview.shape[2]}x{ref_preview.shape[1]}px each, "
             f"mode={ref_resize_mode}{f', crop_anchor={crop_anchor}' if ref_resize_mode == 'match_target' else ''}) "
             f"-> {layout} tokens, source_phase seg per ref: {seg_list}\n"
+            f"reference temporal offset: {int(reference_temporal_offset_latents)} latent step(s) "
+            f"= {temporal_pixel_offset} pixel frame(s) (reference only)\n"
             f"patches on {type(ltxv).__name__}: process_input/prepare_timestep/prepare_pe/process_output\n"
             f"crop preview: kept region {crop_box[2]}x{crop_box[3]}px of the {src_w0}x{src_h0}px reference "
             "-- see the ref_preview/crop_overlay IMAGE outputs to inspect what gets kept vs discarded.\n"

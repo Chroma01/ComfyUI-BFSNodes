@@ -11,14 +11,20 @@ Usage in ComfyUI:
   Load LoRA (standard) → LTXV Edit Anything Apply → KSampler
 """
 
-import types
 import logging
 import os
+import types
 
+import folder_paths
 import torch
 import torch.nn.functional as F
-import folder_paths
 from safetensors.torch import load_file, save_file
+
+from .reference_temporal_offset import (
+    DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
+    reference_temporal_offset_input,
+    reference_temporal_pixel_offset,
+)
 
 logger = logging.getLogger("ltxv.editanything")
 
@@ -533,6 +539,8 @@ class LTXVEditAnythingApply:
                     "default": False,
                     "tooltip": "Print latent shapes and token counts to console.",
                 }),
+                # Reference-only; appended last to preserve saved-workflow widget indices.
+                "ref_temporal_offset_latents": reference_temporal_offset_input(),
             },
         }
 
@@ -544,6 +552,7 @@ class LTXVEditAnythingApply:
     def apply(
         self, model, positive, negative, vae, latent, ref_image, lora_name, resize_mode="pad_to_fit",
         guide_frames=None, guide_strength=1.0, ref_strength=1.0,
+        ref_temporal_offset_latents=DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
         role_strength=1.0, adaln_scale=1.0, enable_adaln=True, enable_role_embedding=True, debug=False,
     ):
         import comfy.utils
@@ -626,9 +635,9 @@ class LTXVEditAnythingApply:
             ref_px = canvas[:, :, :, :3]
         ref_lat = vae.encode(ref_px)   # [1, 128, 1, lat_h, lat_w]
 
-        # Temporal position for ref: t=-1 slot → -time_sf pixel frames (BEFORE frame 0)
-        # Training layout: [ref @ t=-8 | guide @ t=0..T | noisy_target @ t=0..T]
-        ref_pixel_pos = -time_sf   # = -8 for LTX VAE (one latent frame before frame 0)
+        # Reference-only temporal placement. Default -1 preserves this node's trained layout:
+        # [ref @ t=-8 | guide @ t=0..T | noisy_target @ t=0..T]. Guide remains at frame 0.
+        ref_pixel_pos = reference_temporal_pixel_offset(ref_temporal_offset_latents, time_sf)
 
         # Append ref first (entry[0] = appearance)
         # causal_fix=True matches training validation_sampler.py:418 (get_pixel_coords causal_fix=True)
@@ -1157,8 +1166,8 @@ def _ea_install_ref_attn_modules(ltxv, context_dim, init_seed, init_from="attn2"
       "attn1" — copy attn1 weights
       "none"  — random seeded init + zero out to_out (training only for "none" runs)
     """
-    from comfy.ldm.lightricks.model import CrossAttention
     import comfy.ops
+    from comfy.ldm.lightricks.model import CrossAttention
 
     if init_seed is not None and init_seed >= 0:
         cpu_state = torch.random.get_rng_state()
@@ -1476,6 +1485,8 @@ class LTXVEditAnythingLoopingSampler:
                     "tooltip": "Strength multiplier for the ref_attn LoRA deltas.",
                 }),
                 "debug_ea": ("BOOLEAN", {"default": False}),
+                # Reference-only; appended last to preserve saved-workflow widget indices.
+                "ref_temporal_offset_latents": reference_temporal_offset_input(),
             },
         }
 
@@ -1520,7 +1531,7 @@ class LTXVEditAnythingLoopingSampler:
     def _build_chunk_conds(
         positive, negative, chunk_latent, chunk_mask,
         ref_lat, guide_chunk_lat, scale_factors,
-        ref_strength, guide_strength, enable_ic_lora,
+        ref_strength, guide_strength, ref_temporal_offset_latents, enable_ic_lora,
     ):
         """Append ref + guide_chunk to chunk's positive/negative; return updated tuple."""
         import comfy_extras.nodes_lt as nodes_lt
@@ -1530,10 +1541,11 @@ class LTXVEditAnythingLoopingSampler:
         time_sf = scale_factors[0]
         appended_latent_frames = 0
 
-        # entry[0] = ref @ t=-time_sf (appearance), training layout
+        # entry[0] = appearance reference at its own temporal offset. Guide remains at t=0.
         if ref_lat is not None:
+            ref_pixel_pos = reference_temporal_pixel_offset(ref_temporal_offset_latents, time_sf)
             positive, negative, chunk_latent, chunk_mask = nodes_lt.LTXVAddGuide.append_keyframe(
-                positive, negative, -time_sf, chunk_latent, chunk_mask,
+                positive, negative, ref_pixel_pos, chunk_latent, chunk_mask,
                 ref_lat, ref_strength, scale_factors, causal_fix=True,
             )
             positive, negative = nodes_lt._append_guide_attention_entry(
@@ -1593,8 +1605,8 @@ class LTXVEditAnythingLoopingSampler:
 
     @staticmethod
     def _sample_chunk(model, noise, sampler, sigmas, guider, latent, seed_offset=0):
-        import comfy.sample
         import comfy.model_management
+        import comfy.sample
         import comfy.utils
         import latent_preview
 
@@ -1685,6 +1697,7 @@ class LTXVEditAnythingLoopingSampler:
         ref_image=None, guide_frames=None,
         ref_resize_mode="pad_to_fit",
         ref_strength=1.0, guide_strength=1.0,
+        ref_temporal_offset_latents=DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
         role_strength=1.0, adaln_scale=1.0,
         enable_ic_lora=True, enable_role_embedding=True, enable_adaln=True,
         reapply_per_chunk=True,
@@ -1884,6 +1897,11 @@ class LTXVEditAnythingLoopingSampler:
             print(f"  total latent frames : {total_frames}")
             print(f"  tile/overlap (lat)  : {tile}/{overlap}  step={step}")
             print(f"  ref_lat   : {None if ref_lat is None else list(ref_lat.shape)}")
+            print(
+                "  ref t offset: "
+                f"{int(ref_temporal_offset_latents)} latent = "
+                f"{reference_temporal_pixel_offset(ref_temporal_offset_latents, time_sf)} pixel frame(s)"
+            )
             print(f"  guide_lat : {None if guide_lat is None else list(guide_lat.shape)}")
             print(f"  role_weight present : {role_weight is not None}")
             print(f"  adaln_cond present  : {adaln_cond is not None}")
@@ -1913,7 +1931,7 @@ class LTXVEditAnythingLoopingSampler:
                     chunk_pos, chunk_neg, chunk_latent, chunk_mask,
                     ref_lat if do_append else None,
                     guide_chunk_lat if do_append else None,
-                    scale_factors, ref_strength, guide_strength,
+                    scale_factors, ref_strength, guide_strength, ref_temporal_offset_latents,
                     enable_ic_lora=do_append,
                 )
 
@@ -1980,6 +1998,7 @@ class LTXVEditAnythingLoopingSampler:
             "enable_visual_crossattn": bool(enable_visual_crossattn),
             "reapply_per_chunk": bool(reapply_per_chunk),
             "ref_strength": float(ref_strength),
+            "ref_temporal_offset_latents": int(ref_temporal_offset_latents),
             "guide_strength": float(guide_strength),
             "role_strength": float(role_strength),
             "adaln_scale": float(adaln_scale),

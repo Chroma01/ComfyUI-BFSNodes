@@ -23,10 +23,16 @@ import types
 import torch
 
 from .ltx_identity_overlap import (
-    _arcface_embed,
     _append_ctx_tokens,
+    _arcface_embed,
     _find_ltxv,
     _load_projector,
+)
+from .reference_temporal_offset import (
+    DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
+    reference_temporal_offset_input,
+    reference_temporal_pixel_offset,
+    shift_reference_temporal_positions,
 )
 
 log = logging.getLogger("LTXIdentityMultiAngle")
@@ -102,12 +108,22 @@ def _install_multi_patches(ltxv):
         target_len = vx.shape[1]
         self._idma_target_len = target_len
         segs = getattr(self, "_idma_segs", [2.0] * len(ref_lats))
+        temporal_offset_latents = getattr(
+            self,
+            "_idma_temporal_offset_latents",
+            0,
+        )
         blocks = []
         offset = target_len
         for ref_lat, seg in zip(ref_lats, segs):
             rt, rlc = self.patchifier.patchify(ref_lat.to(dtype=vx.dtype, device=vx.device))
             rpc = latent_to_pixel_coords(latent_coords=rlc, scale_factors=self.vae_scale_factors,
                                          causal_fix=self.causal_temporal_positioning)
+            rpc = shift_reference_temporal_positions(
+                rpc,
+                temporal_offset_latents,
+                self.vae_scale_factors[0],
+            )
             rt = self.patchify_proj(rt)
             if rt.shape[0] != vx.shape[0]:
                 rt = rt.expand(vx.shape[0], -1, -1)
@@ -205,8 +221,9 @@ def _install_multi_patches(ltxv):
         if ref_len:
             _dbg("process_output: trimming", ref_len, "ref tokens")
         if ref_len:
-            from comfy.ldm.lightricks.av_model import CompressedTimestep
             import copy
+
+            from comfy.ldm.lightricks.av_model import CompressedTimestep
             if isinstance(x, (list, tuple)):
                 x = [x[0][:, :x[0].shape[1] - ref_len], *x[1:]]
                 et_list = list(embedded_timestep) if isinstance(embedded_timestep, (list, tuple)) else [embedded_timestep]
@@ -268,6 +285,8 @@ class LTXIdentityMultiAngle:
                     "tooltip": "OPTIONAL — full-body front, build/proportions (source_id 4). Leave empty to skip."}),
                 "reference_side_profile": ("IMAGE", {
                     "tooltip": "OPTIONAL — side / profile of the face (source_id 5). Leave empty to skip."}),
+                # Appended last so saved workflows keep every historical widget index stable.
+                "reference_temporal_offset_latents": reference_temporal_offset_input(),
             },
         }
 
@@ -280,6 +299,7 @@ class LTXIdentityMultiAngle:
                    "2/3/4/5), matching the multi-view training. Load the multi-view LoRA on MODEL first.")
 
     def apply(self, model, positive, negative, vae, latent, reference_face_front,
+              reference_temporal_offset_latents=DEFAULT_REFERENCE_TEMPORAL_OFFSET_LATENTS,
               identity_projector="None", phase_scale=1.0, id_strength=1.0,
               arcface_mode="auto_adjust", debug_log=False,
               reference_back_head=None, reference_body_front=None, reference_side_profile=None):
@@ -316,6 +336,7 @@ class LTXIdentityMultiAngle:
 
         _install_multi_patches(ltxv)
         ltxv._idma_segs = segs
+        ltxv._idma_temporal_offset_latents = int(reference_temporal_offset_latents)
         ltxv._id_rope_theta = 10000.0
         m.model_options = dict(m.model_options)
         to = dict(m.model_options.get("transformer_options", {}))
@@ -357,6 +378,9 @@ class LTXIdentityMultiAngle:
             "=== LTX Identity Transfer — MULTIPLE ANGLES ===\n"
             f"reference views ({len(ref_lats)}): {', '.join(used)}\n"
             f"ref latents: {[list(r.shape) for r in ref_lats]} | phase_scale={phase_scale}\n"
+            f"reference temporal offset: {int(reference_temporal_offset_latents)} latent step(s) "
+            f"= {reference_temporal_pixel_offset(reference_temporal_offset_latents, vae.downscale_index_formula[0])} "
+            "pixel frame(s) (all reference views only)\n"
             f"arcface (frontal): {arc_status} (mode={arcface_mode}) | id_strength={id_strength}\n"
             f"patches on {type(ltxv).__name__}: process_input/prepare_timestep/prepare_pe/process_output (multi-block)\n"
             "Empty optional inputs are omitted (matches training view-dropout). Connect negative + CFG 3-5, no LightX2V."

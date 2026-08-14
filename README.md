@@ -107,6 +107,21 @@ These nodes target ComfyUI's LTXV/LTX-Video model implementation. The main apply
 
 A plain LoRA loader alone is not enough for Edit Anything LoRAs that include role embedding and/or AdaLN reference conditioning. Use the standard LoRA loader first, then pass the result through **LTXV Edit Anything (Apply)**.
 
+## Reference temporal offset
+
+Nodes that inject clean appearance references expose a reference-only temporal offset in VAE
+latent steps. The default is `-1`, which places the reference one latent step before target frame
+zero (`-8` pixel frames with the standard LTX VAE). This can reduce the overlap frame-0 artifact
+where the reference composition briefly appears at the start of the generated video.
+
+- `-1`: one latent step before frame zero (recommended starting point)
+- `-2`: two latent steps before frame zero (stronger separation, possibly weaker identity)
+- `0`: exact legacy frame-zero overlap
+
+The offset is applied only to appearance/reference inputs. Guide videos, masks, identity masks,
+and target video positions remain unchanged. In **LTX Multiple Controls**, the field is named
+`identity_temporal_offset_latents` and affects only `identity_image`.
+
 ## Requirements
 
 - ComfyUI
