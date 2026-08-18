@@ -203,6 +203,16 @@ class LTXMultiReferenceSlots:
                         "is always 0. Start at 1 unless the checkpoint was trained otherwise."},
         )
         optional["phase_scale"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1})
+        optional["slot_strength"] = (
+            "FLOAT",
+            {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05,
+             "tooltip": "Scales the learned slot tag. The tag and the adapter were trained "
+                        "together at strength 1.0, so raising the LoRA on the loader without "
+                        "raising this leaves them out of proportion — the adapter shouts while "
+                        "the tag that tells the references apart stays quiet. Match this to the "
+                        "LoRA strength you set on the loader (an undertrained LoRA often wants "
+                        "1.2-1.5, and the tag wants the same)."},
+        )
         optional["layout"] = (
             ["overlap", "st_drc", "strata"],
             {"default": "overlap",
@@ -238,7 +248,7 @@ class LTXMultiReferenceSlots:
     )
 
     def apply(self, model, positive, negative, vae, latent, references=None,
-              slot_embedding_lora="none", start_source_id=1, phase_scale=1.0,
+              slot_embedding_lora="none", start_source_id=1, phase_scale=1.0, slot_strength=1.0,
               layout="overlap", ref_resize_mode="match_target_letterbox",
               reference_temporal_offset_latents=0, **slots):
         from .ltx_identity_overlap import _find_ltxv, _install_patches
@@ -282,7 +292,7 @@ class LTXMultiReferenceSlots:
             }
             if slot_module is not None:
                 with torch.no_grad():
-                    spec["slot_vector"] = slot_module(source_id).detach()
+                    spec["slot_vector"] = slot_module(source_id).detach() * float(slot_strength)
             ref_specs.append(spec)
             lines.append(f"<Image {index + 1}> -> source_id {source_id}")
 
@@ -293,7 +303,8 @@ class LTXMultiReferenceSlots:
         transformer_options["_id_ref_specs"] = ref_specs
         m.model_options["transformer_options"] = transformer_options
 
-        tag = "trained slot embedding" if slot_module is not None else "phase only (no slot embedding)"
+        tag = (f"trained slot embedding x{slot_strength:g}" if slot_module is not None
+               else "phase only (no slot embedding)")
         info = f"{len(images)} references, {layout}, {tag}\n" + "\n".join(lines)
         return (m, positive, negative, latent, info)
 
