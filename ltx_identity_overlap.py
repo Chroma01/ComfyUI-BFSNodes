@@ -468,6 +468,12 @@ def _install_patches(ltxv):
                     spec.get("temporal_offset_latents", 0),
                     self.vae_scale_factors[0],
                 )
+                # Learned per-slot tag, added in FEATURE space on the raw patchified tokens --
+                # i.e. before patchify_proj, exactly where the trainer adds it (the model's
+                # input projection is applied after). Specs without the key are unaffected.
+                slot_vector = spec.get("slot_vector")
+                if slot_vector is not None:
+                    rt = rt + slot_vector.to(device=rt.device, dtype=rt.dtype)
                 rt = self.patchify_proj(rt)
                 if rt.shape[0] != vx.shape[0]:
                     rt = rt.expand(vx.shape[0], -1, -1)
