@@ -17,6 +17,12 @@ from .ltx_multiple_controls import NODE_DISPLAY_NAME_MAPPINGS as MC_NODE_DISPLAY
 from .color_mask_node import NODE_CLASS_MAPPINGS as CM_NODE_CLASS_MAPPINGS
 from .color_mask_node import NODE_DISPLAY_NAME_MAPPINGS as CM_NODE_DISPLAY_NAME_MAPPINGS
 try:
+    from .minimax_h3_singleframe_vae import NODE_CLASS_MAPPINGS as MMVAE_NODE_CLASS_MAPPINGS
+    from .minimax_h3_singleframe_vae import NODE_DISPLAY_NAME_MAPPINGS as MMVAE_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] MiniMax-H3 VAE loaders not loaded: {_e!r}")
+    MMVAE_NODE_CLASS_MAPPINGS, MMVAE_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
     from .ltx_identity_multiangle import NODE_CLASS_MAPPINGS as MA_NODE_CLASS_MAPPINGS
     from .ltx_identity_multiangle import NODE_DISPLAY_NAME_MAPPINGS as MA_NODE_DISPLAY_NAME_MAPPINGS
 except Exception as _e:  # noqa
@@ -59,6 +65,7 @@ NODE_CLASS_MAPPINGS = {
     **MRS_NODE_CLASS_MAPPINGS,
     **CM_NODE_CLASS_MAPPINGS,
     **MSP_NODE_CLASS_MAPPINGS,
+    **MMVAE_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -76,4 +83,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **MRS_NODE_DISPLAY_NAME_MAPPINGS,
     **CM_NODE_DISPLAY_NAME_MAPPINGS,
     **MSP_NODE_DISPLAY_NAME_MAPPINGS,
+    **MMVAE_NODE_DISPLAY_NAME_MAPPINGS,
 }
