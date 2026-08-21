@@ -35,6 +35,12 @@ except Exception as _e:  # noqa
     print(f"[BFSNodes] MiniMax-H3 direct decode node not loaded: {_e!r}")
     MMDD_NODE_CLASS_MAPPINGS, MMDD_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 try:
+    from .save_h3_latent import NODE_CLASS_MAPPINGS as SVH3_NODE_CLASS_MAPPINGS
+    from .save_h3_latent import NODE_DISPLAY_NAME_MAPPINGS as SVH3_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] Save H3 Latent node not loaded: {_e!r}")
+    SVH3_NODE_CLASS_MAPPINGS, SVH3_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
     from .ltx_identity_multiangle import NODE_CLASS_MAPPINGS as MA_NODE_CLASS_MAPPINGS
     from .ltx_identity_multiangle import NODE_DISPLAY_NAME_MAPPINGS as MA_NODE_DISPLAY_NAME_MAPPINGS
 except Exception as _e:  # noqa
@@ -80,6 +86,7 @@ NODE_CLASS_MAPPINGS = {
     **MMVAE_NODE_CLASS_MAPPINGS,
     **SHARP_NODE_CLASS_MAPPINGS,
     **MMDD_NODE_CLASS_MAPPINGS,
+    **SVH3_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -100,4 +107,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **MMVAE_NODE_DISPLAY_NAME_MAPPINGS,
     **SHARP_NODE_DISPLAY_NAME_MAPPINGS,
     **MMDD_NODE_DISPLAY_NAME_MAPPINGS,
+    **SVH3_NODE_DISPLAY_NAME_MAPPINGS,
 }
