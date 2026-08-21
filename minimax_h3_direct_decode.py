@@ -13,6 +13,7 @@ detalhes que corrompem a saida em silencio se mudarem, todos preservados aqui:
      a imagem sai escura e com contraste estourado, parecendo erro de tone mapping.
 """
 
+import comfy.model_management
 import torch
 
 PIXEL_MEAN = (0.485, 0.456, 0.406)
@@ -54,8 +55,12 @@ class MiniMaxH3DirectDecode:
         if z.dim() != 5:
             raise ValueError(f"latente esperado [B, C, T, H, W]; veio {tuple(z.shape)}")
 
-        device = next(model.decoder.parameters()).device
-        dtype = next(model.decoder.parameters()).dtype
+        # Sem isto o decode roda onde os pesos estiverem -- e com o gerenciamento de memoria do
+        # ComfyUI o VAE fica na CPU ate ser usado, o que torna o decode lentissimo. O vae.decode()
+        # nativo chama load_models_gpu antes de rodar; aqui e o mesmo passo.
+        comfy.model_management.load_models_gpu([vae.patcher])
+        device = vae.device
+        dtype = vae.vae_dtype
         i = latent_index if latent_index >= 0 else z.shape[2] + latent_index
         i = max(0, min(i, z.shape[2] - 1))
         z = z[:, :, i : i + 1].to(device=device, dtype=torch.float32)
@@ -73,8 +78,9 @@ class MiniMaxH3DirectDecode:
         pm = torch.tensor(PIXEL_MEAN, device=decoded.device).view(1, 3, 1, 1)
         ps = torch.tensor(PIXEL_STD, device=decoded.device).view(1, 3, 1, 1)
         frame = (decoded[:, :, -1].float() * ps + pm).clamp(0, 1)
-        print(f"[BFSNodes] H3 direct decode: latente {tuple(z.shape)} -> {tuple(frame.shape)} (fatia {i})")
-        return (frame.permute(0, 2, 3, 1).cpu(),)
+        print(f"[BFSNodes] H3 direct decode: latente {tuple(z.shape)} -> {tuple(frame.shape)} (fatia {i}, {device})")
+        saida = frame.permute(0, 2, 3, 1).to(comfy.model_management.intermediate_device())
+        return (saida,)
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3DirectDecode": MiniMaxH3DirectDecode}
