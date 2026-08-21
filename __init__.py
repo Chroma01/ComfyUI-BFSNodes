@@ -29,6 +29,12 @@ except Exception as _e:  # noqa
     print(f"[BFSNodes] Sharpest Frame node not loaded: {_e!r}")
     SHARP_NODE_CLASS_MAPPINGS, SHARP_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 try:
+    from .minimax_h3_direct_decode import NODE_CLASS_MAPPINGS as MMDD_NODE_CLASS_MAPPINGS
+    from .minimax_h3_direct_decode import NODE_DISPLAY_NAME_MAPPINGS as MMDD_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] MiniMax-H3 direct decode node not loaded: {_e!r}")
+    MMDD_NODE_CLASS_MAPPINGS, MMDD_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
     from .ltx_identity_multiangle import NODE_CLASS_MAPPINGS as MA_NODE_CLASS_MAPPINGS
     from .ltx_identity_multiangle import NODE_DISPLAY_NAME_MAPPINGS as MA_NODE_DISPLAY_NAME_MAPPINGS
 except Exception as _e:  # noqa
@@ -73,6 +79,7 @@ NODE_CLASS_MAPPINGS = {
     **MSP_NODE_CLASS_MAPPINGS,
     **MMVAE_NODE_CLASS_MAPPINGS,
     **SHARP_NODE_CLASS_MAPPINGS,
+    **MMDD_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -92,4 +99,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **MSP_NODE_DISPLAY_NAME_MAPPINGS,
     **MMVAE_NODE_DISPLAY_NAME_MAPPINGS,
     **SHARP_NODE_DISPLAY_NAME_MAPPINGS,
+    **MMDD_NODE_DISPLAY_NAME_MAPPINGS,
 }
