@@ -48,7 +48,7 @@ from .reference_temporal_offset import (
 
 log = logging.getLogger("LTXMultipleControls")
 
-_LAYOUT_CHOICES = ["overlap", "st_drc", "strata"]
+_LAYOUT_CHOICES = ["overlap", "st_drc", "strata", "sidecar"]
 _RESIZE_CHOICES = ["match_target", "match_target_letterbox", "native_resolution"]
 
 

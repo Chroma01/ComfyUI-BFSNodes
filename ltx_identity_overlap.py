@@ -320,7 +320,8 @@ def _draw_crop_overlay(ref_img, box):
 STRATA_SLOT_WIDTH = 1.5
 
 
-def _apply_tass_layout(reference_positions, target_positions, layout: str, strata_start: float | None = None):
+def _apply_tass_layout(reference_positions, target_positions, layout: str, strata_start: float | None = None,
+                       sidecar_margin_pixels: float = 0.0):
     """Place reference pixel-coords in a non-overlapping TASS region -- mirrors
     ltx_trainer.training_strategies.tass.apply_tass_layout (kept in sync manually since this
     node can't import the trainer package), adapted to ComfyUI's own coordinate tensor shape
@@ -331,6 +332,10 @@ def _apply_tass_layout(reference_positions, target_positions, layout: str, strat
     layout='strata' shifts ONLY the T axis to an absolute band start (`strata_start`, in the
     same raw pixel/frame units as `reference_positions` -- caller converts from seconds using
     the model's frame_rate), leaving H/W overlapping the target -- see STRATA_SLOT_WIDTH.
+    layout='sidecar' places the reference BESIDE the target on the W axis, vertically centred on
+    it, and stretches its T span to cover the target's whole clip -- so the reference is present
+    for every frame instead of sitting at one instant. This is the layout the replace_refedit
+    recipe validated for an object reference.
     """
     if layout == "overlap":
         return reference_positions
@@ -344,6 +349,23 @@ def _apply_tass_layout(reference_positions, target_positions, layout: str, strat
         shifted = reference_positions.clone()
         ref_origin_t = shifted[:, 0:1, :].amin(dim=2, keepdim=True)
         shifted[:, 0:1, :] = shifted[:, 0:1, :] + (strata_start - ref_origin_t)
+        return shifted
+    if layout == "sidecar":
+        shifted = reference_positions.clone()
+        target_min = target_positions.amin(dim=2, keepdim=True)
+        target_extent = target_positions.amax(dim=2, keepdim=True)
+        ref_origin = shifted.amin(dim=2, keepdim=True)
+        ref_extent = shifted.amax(dim=2, keepdim=True)
+        # H: centraliza a referencia na altura do alvo
+        target_center_h = (target_min[:, 1:2, :] + target_extent[:, 1:2, :]) * 0.5
+        ref_center_h = (ref_origin[:, 1:2, :] + ref_extent[:, 1:2, :]) * 0.5
+        shifted[:, 1:2, :] = shifted[:, 1:2, :] + (target_center_h - ref_center_h)
+        # W: desloca para a direita do alvo, mais a margem
+        shifted[:, 2:3, :] = shifted[:, 2:3, :] + (
+            target_extent[:, 2:3, :] + float(sidecar_margin_pixels) - ref_origin[:, 2:3, :]
+        )
+        # T: a referencia cobre todo o intervalo do alvo
+        shifted[:, 0, :] = target_min[:, 0, 0].unsqueeze(-1)
         return shifted
     raise ValueError(f"Unsupported TASS layout {layout!r}")
 
@@ -660,7 +682,7 @@ class LTXIdentityOverlapConditioning:
                                         "in the top row, set 'top' instead of the default center crop so it doesn't get "
                                         "cut off. No effect on match_target_letterbox or native_resolution (neither "
                                         "ever crops)."}),
-            "layout": (["overlap", "st_drc", "strata"], {"default": "overlap",
+            "layout": (["overlap", "st_drc", "strata", "sidecar"], {"default": "overlap",
                        "tooltip": "The base positional layout used by the checkpoint. 'overlap' starts from the "
                                   "target's own RoPE coordinate range and then applies the independent reference "
                                   "temporal offset; use offset 0 for the exact historical overlap grid. 'st_drc' "
