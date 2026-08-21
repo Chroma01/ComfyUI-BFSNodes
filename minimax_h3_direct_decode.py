@@ -43,6 +43,14 @@ class MiniMaxH3DirectDecode:
             )
 
         z = samples["samples"]
+        # O latente do H3 chega aninhado (video + audio). Os nodes nativos desempacotam e ficam
+        # com o primeiro componente, que e o video -- ver VAEDecode em nodes.py:335.
+        if getattr(z, "is_nested", False):
+            z = z.unbind()[0]
+            if z.dim() == 4:  # unbind entrega o item sem a dimensao de batch
+                z = z.unsqueeze(0)
+        if z.dim() == 4:
+            z = z.unsqueeze(0)
         if z.dim() != 5:
             raise ValueError(f"latente esperado [B, C, T, H, W]; veio {tuple(z.shape)}")
 
