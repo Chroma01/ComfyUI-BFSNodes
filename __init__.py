@@ -41,6 +41,12 @@ except Exception as _e:  # noqa
     print(f"[BFSNodes] Save H3 Latent node not loaded: {_e!r}")
     SVH3_NODE_CLASS_MAPPINGS, SVH3_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 try:
+    from .edit_prompt_fixer import NODE_CLASS_MAPPINGS as EPF_NODE_CLASS_MAPPINGS
+    from .edit_prompt_fixer import NODE_DISPLAY_NAME_MAPPINGS as EPF_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] Edit Anything Prompt Fixer not loaded: {_e!r}")
+    EPF_NODE_CLASS_MAPPINGS, EPF_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
     from .ltx_identity_multiangle import NODE_CLASS_MAPPINGS as MA_NODE_CLASS_MAPPINGS
     from .ltx_identity_multiangle import NODE_DISPLAY_NAME_MAPPINGS as MA_NODE_DISPLAY_NAME_MAPPINGS
 except Exception as _e:  # noqa
@@ -87,6 +93,7 @@ NODE_CLASS_MAPPINGS = {
     **SHARP_NODE_CLASS_MAPPINGS,
     **MMDD_NODE_CLASS_MAPPINGS,
     **SVH3_NODE_CLASS_MAPPINGS,
+    **EPF_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -108,4 +115,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **SHARP_NODE_DISPLAY_NAME_MAPPINGS,
     **MMDD_NODE_DISPLAY_NAME_MAPPINGS,
     **SVH3_NODE_DISPLAY_NAME_MAPPINGS,
+    **EPF_NODE_DISPLAY_NAME_MAPPINGS,
 }
