@@ -1,5 +1,5 @@
 /**
- * BFS LoRA Surgery — a panel for reading a LoRA's layers and blocks and editing them live.
+ * BFS LoRA Surgery: a panel for reading a LoRA's layers and blocks and editing them live.
  *
  * The node keeps its state in a hidden `rules` STRING widget (a JSON list), so a workflow
  * saves and reloads exactly what you set up. Everything visual lives in a Vue app mounted
@@ -142,7 +142,7 @@ function Panel(props) {
 
   return () => h("div", { class: "bfsls" }, [
     h("div", { class: "row", style: "justify-content:space-between;margin-bottom:6px" }, [
-      h("h4", {}, struct.value ? `${struct.value.file} — ${struct.value.total_modules} modules`
+      h("h4", {}, struct.value ? `${struct.value.file}, ${struct.value.total_modules} modules`
                                : (loading.value ? "reading…" : "no LoRA loaded")),
       h("button", { onClick: load }, "reload"),
     ]),
@@ -190,7 +190,7 @@ function Panel(props) {
     h("div", { class: "row", style: "margin-bottom:6px" }, PRESETS.map(p =>
       h("button", { onClick: () => { rules.value = JSON.parse(JSON.stringify(p.rules)); writeRules(); } }, p.label))),
 
-    h("h4", {}, `Rules (${rules.value.length}) — later rules override earlier ones`),
+    h("h4", {}, `Rules (${rules.value.length}), later rules override earlier ones`),
     rules.value.length > 1
       ? h("div", { class: "muted", style: "margin-bottom:4px" },
           "Order matters: put boosts first and drops last, or a boost will undo a drop.")
@@ -203,16 +203,16 @@ function Panel(props) {
         : h("div", { class: "name" }, `${r.match.type || "*"} @ ${r.match.blocks || "all"}`),
       h("input", { type: "number", step: 0.05, value: r.scale,
                    onChange: e => { r.scale = Number(e.target.value); writeRules(); } }),
-      h("button", { title: "move up — later rules win", disabled: i === 0,
+      h("button", { title: "move up, later rules win", disabled: i === 0,
                     onClick: () => { const a = rules.value; [a[i - 1], a[i]] = [a[i], a[i - 1]]; writeRules(); } }, "↑"),
-      h("button", { title: "move down — later rules win", disabled: i === rules.value.length - 1,
+      h("button", { title: "move down, later rules win", disabled: i === rules.value.length - 1,
                     onClick: () => { const a = rules.value; [a[i + 1], a[i]] = [a[i], a[i + 1]]; writeRules(); } }, "↓"),
       h("button", { onClick: () => { rules.value.splice(i, 1); writeRules(); } }, "×"),
     ])),
     rules.value.length
       ? h("div", { class: "row", style: "margin-top:4px" },
           [h("button", { onClick: () => { rules.value = []; writeRules(); } }, "clear all")])
-      : h("div", { class: "muted" }, "No rules — the LoRA is applied unchanged."),
+      : h("div", { class: "muted" }, "No rules, the LoRA is applied unchanged."),
   ]);
 }
 

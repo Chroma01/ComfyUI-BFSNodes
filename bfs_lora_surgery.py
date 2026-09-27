@@ -1,11 +1,11 @@
-"""BFS LoRA Surgery — read any LoRA's layers and blocks, then scale or drop them.
+"""BFS LoRA Surgery: read any LoRA's layers and blocks, then scale or drop them.
 
 Model-agnostic: the structure is discovered from the key names, not hardcoded. Works with
 the diffusers style (``lora_A``/``lora_B``), the kohya style (``lora_down``/``lora_up`` plus
 ``alpha``) and anything that follows either convention.
 
-Why this exists: a defect a LoRA learned — smoothed skin, identity drifting at distance, a
-pose it refuses to copy — usually lives in a specific module family and a specific range of
+Why this exists: a defect a LoRA learned (smoothed skin, identity drifting at distance, a
+pose it refuses to copy) usually lives in a specific module family and a specific range of
 blocks. Scaling or dropping that group and regenerating tells you where it lives, in minutes,
 without retraining. See the node's tooltip for the workflow.
 
@@ -136,7 +136,7 @@ def _module_norms(lora_path: str, modules: dict[str, dict[str, Any]]) -> dict[st
     """Exact ||ΔW||_F per module.
 
     ΔW = B·A has rank <= r, so QR both factors and take the singular values of the small
-    r x r product — no need to materialize the full d x d matrix.
+    r x r product. No need to materialize the full d x d matrix.
     """
     try:
         sd = comfy.utils.load_torch_file(lora_path, safe_load=True)
@@ -192,7 +192,7 @@ def _match_blocks(spec: str | None, block: int) -> bool:
 
 
 def build_regex(family: str | None, mtype: str | None, blocks: str | None) -> str:
-    r"""Build the regex a selection stands for — this is what the UI's "to regex" button calls.
+    r"""Build the regex a selection stands for. This is what the UI's "to regex" button calls.
 
     Selecting family ``transformer_blocks``, type ``img_mlp.gate_up`` and blocks ``8-15``
     gives ``^.*transformer_blocks\.(8|9|10|11|12|13|14|15)\.img_mlp\.gate_up$``.
@@ -253,7 +253,7 @@ def _compiled(pattern: str):
 
 def resolve_scale(rules: list[dict[str, Any]], family: str, block: int | None, mtype: str,
                   full_path: str | None = None) -> float:
-    """Last matching rule wins — that is what makes the UI predictable.
+    """Last matching rule wins, which is what makes the UI predictable.
 
     A rule matches either structurally (family / type / blocks) or by ``regex`` against the
     module's full path. A rule carrying a regex ignores the structural fields.
@@ -371,7 +371,7 @@ class BFSLoraSurgery:
         kept = stats["kept"] if stats["kept"] is not None else total
         report = (f"{lora_name}: {kept}/{total} modules kept, {stats['dropped']} dropped, "
                   f"{stats['scaled']} scaled, {len(parsed)} rule(s), strength {strength_model}")
-        print(f"[BFSNodes] LoRA surgery — {report}")
+        print(f"[BFSNodes] LoRA surgery, {report}")
 
         new_model, new_clip = comfy.sd.load_lora_for_models(
             model, clip, edited, strength_model, strength_model if clip is not None else 0.0)

@@ -1,12 +1,12 @@
 # BFS LoRA Surgery
 
-Read any LoRA's layers and blocks, then scale or drop them and apply the result live —
-no retraining, no files written.
+Read any LoRA's layers and blocks, then scale or drop them and apply the result live.
+No retraining, no files written.
 
 ## Why
 
-When a LoRA learns a defect — smoothed skin, identity drifting when the subject is far from
-the camera, a pose it refuses to copy — that defect usually lives in one module family and a
+When a LoRA learns a defect (smoothed skin, identity drifting when the subject is far from
+the camera, a pose it refuses to copy) that defect usually lives in one module family and a
 range of blocks, not in the whole adapter. Scaling or dropping that group and regenerating
 under a fixed seed tells you where it lives, in minutes.
 
@@ -23,7 +23,7 @@ or `txtfusion` are detected automatically, along with the block indices and modu
 each.
 
 The panel lists every family with its module types, sorted by how large the update is
-(`‖ΔW‖`) — that bar is a quick read on where training actually invested.
+(`‖ΔW‖`), and that bar is a quick read on where training actually invested.
 
 Scaling multiplies only the up/B factor, since `(sB)A = s(BA)`. Exact, and negative scales
 work.
@@ -56,10 +56,10 @@ module's full path. `type` accepts a trailing `*`. `blocks` accepts `8-15`, `0,4
 ## A warning
 
 A variant can win every metric you are looking at and still have destroyed what you trained.
-Removing the MLP path entirely gave the sharpest skin in one of the cases here — and made the
+Removing the MLP path entirely gave the sharpest skin in one of the cases here, and made the
 LoRA stop copying expression from the source image. Always check a deliberately hard case
 (a strong expression, an unusual angle) with your eyes, not only the numbers.
 
 Pruning after training is also not the same as training with those layers excluded. Excluding
 them during training may simply fail to converge, because the layer is where the defect lodges,
-not where it comes from — that is usually the dataset.
+not where it comes from. That is usually the dataset.
