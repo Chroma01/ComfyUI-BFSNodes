@@ -47,7 +47,7 @@ function styles() {
   padding:4px 6px;border:1px solid #33333c;border-radius:5px;margin-bottom:4px;background:#1f1f25}
 .bfsls .rx{font-family:ui-monospace,monospace;font-size:10px;color:#9fd3a0;word-break:break-all}
 .bfsls .blocks{display:flex;flex-wrap:wrap;gap:2px;margin:4px 0}
-.bfsls .blk{width:19px;height:19px;border-radius:3px;background:#2a2a32;border:1px solid #3a3a45;
+.bfsls .blk{width:19px;height:19px;user-select:none;touch-action:none;border-radius:3px;background:#2a2a32;border:1px solid #3a3a45;
   font-size:9px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#a8a8b2}
 .bfsls .blk.sel{background:#2b5fd9;border-color:#4a7ef0;color:#fff}
 .bfsls .err{color:#ff8a8a}
@@ -73,6 +73,8 @@ function Panel(props) {
   const selType = ref("*");
   const selBlocks = ref(new Set());
   const scale = ref(0);
+  const dragging = ref(false);
+  let dragAdds = true;
 
   function readRules() {
     try {
@@ -110,14 +112,47 @@ function Panel(props) {
     }
     return out.join(",");
   }
-  function toggleBlock(i, ev) {
-    if (ev.shiftKey && selBlocks.value.size) {
-      const arr = [...selBlocks.value]; const last = arr[arr.length - 1];
-      const [lo, hi] = last < i ? [last, i] : [i, last];
-      for (let k = lo; k <= hi; k++) selBlocks.value.add(k);
-    } else if (selBlocks.value.has(i)) selBlocks.value.delete(i);
-    else selBlocks.value.add(i);
+  // Drag across the ruler to pick a range. Click-to-toggle still works, since a click is
+  // just a drag of one cell. Shift is deliberately not used: on the ComfyUI canvas it starts
+  // a text selection instead.
+  function paint(i) {
+    if (dragAdds) selBlocks.value.add(i); else selBlocks.value.delete(i);
     selBlocks.value = new Set(selBlocks.value);
+  }
+  function dragStart(i, ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    dragging.value = true;
+    dragAdds = !selBlocks.value.has(i);
+    paint(i);
+    const stop = () => { dragging.value = false; window.removeEventListener("pointerup", stop); };
+    window.addEventListener("pointerup", stop);
+  }
+  function dragOver(i, ev) {
+    if (!dragging.value) return;
+    ev.preventDefault();
+    paint(i);
+  }
+  function setBlocksFromText(text) {
+    const next = new Set();
+    for (const part of String(text).split(",")) {
+      const t = part.trim();
+      if (!t) continue;
+      if (t.includes("-")) {
+        const [a, b] = t.split("-").map(Number);
+        if (Number.isFinite(a) && Number.isFinite(b)) for (let k = Math.min(a, b); k <= Math.max(a, b); k++) next.add(k);
+      } else if (Number.isFinite(Number(t))) next.add(Number(t));
+    }
+    selBlocks.value = next;
+  }
+  function selectAll() { selBlocks.value = new Set(family.value?.blocks || []); }
+  function selectHalf(second) {
+    const b = family.value?.blocks || [];
+    const mid = Math.floor(b.length / 2);
+    selBlocks.value = new Set(second ? b.slice(mid) : b.slice(0, mid));
+  }
+  function invert() {
+    const all = family.value?.blocks || [];
+    selBlocks.value = new Set(all.filter(i => !selBlocks.value.has(i)));
   }
 
   function addRule(asRegex) {
@@ -164,7 +199,7 @@ function Panel(props) {
         h("li", {}, "Pick a LoRA. The Layers list below shows every family, its block count and its module types."),
         h("li", {}, ["The bar next to each type is ", h("code", {}, "||dW||"),
                      ", how large that group's update is. Big bars are where training invested."]),
-        h("li", {}, ["Click ", h("code", {}, "->"), " on a type to select it, then click blocks (shift-click for a range)."]),
+        h("li", {}, ["Click ", h("code", {}, "->"), " on a type to select it, then drag across the block ruler to pick a range."]),
         h("li", {}, ["Set a scale and press ", h("code", {}, "add rule"), ". Scale 0 drops the group; 1 leaves it as trained."]),
         h("li", {}, "Queue the prompt and compare against the unmodified LoRA at the same seed."),
       ]),
@@ -201,10 +236,25 @@ function Panel(props) {
       h("input", { type: "text", value: selType.value, style: "flex:1",
                    onInput: e => { selType.value = e.target.value; } }),
     ]),
-    h("div", { class: "blocks" }, (family.value?.blocks || []).map(i =>
-      h("div", { class: "blk" + (selBlocks.value.has(i) ? " sel" : ""),
-                 title: "click to toggle, shift+click for a range",
-                 onClick: e => toggleBlock(i, e) }, String(i)))),
+    h("div", { class: "blocks", onPointerleave: () => { dragging.value = false; } },
+      (family.value?.blocks || []).map(i =>
+        h("div", { class: "blk" + (selBlocks.value.has(i) ? " sel" : ""),
+                   title: "click, or drag across to select a range",
+                   onPointerdown: e => dragStart(i, e),
+                   onPointerenter: e => dragOver(i, e) }, String(i)))),
+    h("div", { class: "row", style: "margin-bottom:4px" }, [
+      h("span", { class: "muted" }, "blocks"),
+      h("input", { type: "text", value: blocksSpec(), placeholder: "all blocks", style: "flex:1",
+                   title: "type a selection, e.g. 8-15 or 0,4,7 or 8-15,24-31",
+                   onChange: e => setBlocksFromText(e.target.value) }),
+    ]),
+    h("div", { class: "row", style: "margin-bottom:4px" }, [
+      h("button", { onClick: selectAll }, "all"),
+      h("button", { onClick: () => selectHalf(false) }, "first half"),
+      h("button", { onClick: () => selectHalf(true) }, "last half"),
+      h("button", { onClick: invert }, "invert"),
+      h("button", { onClick: () => { selBlocks.value = new Set(); } }, "none"),
+    ]),
     h("div", { class: "row" }, [
       h("span", { class: "muted" }, "scale"),
       h("input", { type: "range", min: 0, max: 2, step: 0.05, value: scale.value, style: "flex:1",
@@ -214,8 +264,7 @@ function Panel(props) {
     h("div", { class: "row", style: "margin:6px 0" }, [
       h("button", { class: "pri", onClick: () => addRule(false) }, "add rule"),
       h("button", { onClick: () => addRule(true), title: "same selection, written as a regex" }, "add as regex"),
-      h("button", { onClick: () => { selBlocks.value = new Set(); } }, "clear blocks"),
-      h("span", { class: "muted" }, blocksSpec() || "all blocks"),
+      h("span", { class: "muted" }, blocksSpec() ? `blocks ${blocksSpec()}` : "all blocks"),
     ]),
     h("div", { class: "row", style: "margin-bottom:6px" }, PRESETS.map(p =>
       h("button", { onClick: () => { rules.value = JSON.parse(JSON.stringify(p.rules)); writeRules(); } }, p.label))),
