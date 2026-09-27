@@ -15,6 +15,7 @@ negative values usable and is exact regardless of the alpha convention.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -378,8 +379,121 @@ class BFSLoraSurgery:
         return (new_model, new_clip if clip is not None else clip, report)
 
 
-NODE_CLASS_MAPPINGS = {"BFSLoraSurgery": BFSLoraSurgery}
-NODE_DISPLAY_NAME_MAPPINGS = {"BFSLoraSurgery": "BFS LoRA Surgery"}
+def describe_rules(rules: list[dict[str, Any]]) -> str:
+    """Short, readable slug for a rule list, used when no filename is given.
+
+    ``gate_up-b8_15-off__all-b16_23-off__attn-x1.15``. A file named after what was done to it
+    beats one named v2_final_real.
+    """
+    parts: list[str] = []
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        m = rule.get("match", {})
+        try:
+            scale = float(rule.get("scale", 1.0))
+        except (TypeError, ValueError):
+            scale = 1.0
+        if m.get("regex"):
+            what = "re" + hashlib.sha1(m["regex"].encode()).hexdigest()[:6]
+        else:
+            core = (m.get("type") or "").replace("*", "").strip(".")
+            what = re.sub(r"[^A-Za-z0-9_-]", "", core.split(".")[-1]) or "all"
+        blocks = re.sub(r"[^0-9,_-]", "", (m.get("blocks") or "")).replace(",", "_").replace("-", "_")
+        tag = what if not blocks else f"{what}-b{blocks}"
+        parts.append(f"{tag}-{'off' if scale == 0 else f'x{scale:g}'}")
+    slug = "__".join(parts) if parts else "unchanged"
+    return re.sub(r"[^A-Za-z0-9._-]", "", slug)[:110]
+
+
+class BFSLoraSurgerySave:
+    """Write the edited LoRA to models/loras as a real file.
+
+    Same rules as BFS LoRA Surgery. Leave ``filename`` empty and the name is built from the
+    rules themselves, so the file says what was done to it. The recipe is also stored in the
+    safetensors metadata under ``bfs_surgery``, which survives being shared.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_name": (folder_paths.get_filename_list("loras"),),
+                "rules": ("STRING", {"default": "[]", "multiline": True,
+                                     "tooltip": "Same JSON the surgery panel writes."}),
+                "filename": ("STRING", {"default": "", "multiline": False,
+                                        "tooltip": "Leave empty to name it after the rules."}),
+                "subfolder": ("STRING", {"default": "surgery", "multiline": False}),
+                "save_dtype": (["keep", "float16", "bfloat16", "float32"],),
+                "overwrite": ("BOOLEAN", {"default": False}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("path",)
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+    CATEGORY = "BFS/lora"
+    DESCRIPTION = "Apply the same surgery rules and write the result to models/loras."
+
+    def save(self, lora_name, rules, filename, subfolder, save_dtype, overwrite):
+        src = folder_paths.get_full_path("loras", lora_name)
+        if src is None:
+            raise ValueError(f"LoRA not found: {lora_name}")
+        parsed: list[dict[str, Any]] = []
+        if rules and rules.strip():
+            loaded = json.loads(rules)
+            if isinstance(loaded, dict):
+                loaded = loaded.get("rules", [])
+            if isinstance(loaded, list):
+                parsed = loaded
+
+        sd = comfy.utils.load_torch_file(src, safe_load=True)
+        edited, stats = apply_rules(sd, parsed)
+
+        if save_dtype != "keep":
+            want = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[save_dtype]
+            edited = {k: (v.to(want) if v.is_floating_point() else v) for k, v in edited.items()}
+
+        stem = os.path.splitext(os.path.basename(src))[0]
+        typed = re.sub(r"[^A-Za-z0-9._ -]", "", filename).strip()
+        name = typed or f"{stem}__{describe_rules(parsed)}"
+        if not name.endswith(".safetensors"):
+            name += ".safetensors"
+        root = folder_paths.get_folder_paths("loras")[0]
+        out_dir = os.path.join(root, subfolder.strip()) if subfolder.strip() else root
+        os.makedirs(out_dir, exist_ok=True)
+        dest = os.path.join(out_dir, name)
+        if os.path.exists(dest) and not overwrite:
+            base, ext = os.path.splitext(dest)
+            n = 1
+            while os.path.exists(f"{base}_{n}{ext}"):
+                n += 1
+            dest = f"{base}_{n}{ext}"
+
+        meta = {}
+        try:
+            with open(src, "rb") as fh:
+                hn = struct.unpack("<Q", fh.read(8))[0]
+                meta = json.loads(fh.read(hn)).get("__metadata__", {}) or {}
+        except Exception:  # noqa: BLE001 - metadata is a nicety, not a requirement
+            meta = {}
+        meta = {str(k): str(v) for k, v in meta.items()}
+        meta["bfs_surgery"] = json.dumps({"source": os.path.basename(src), "rules": parsed,
+                                          "modules_kept": stats["kept"], "modules_dropped": stats["dropped"]})
+
+        from safetensors.torch import save_file
+        save_file({k: v.contiguous() for k, v in edited.items()}, dest, metadata=meta)
+        total = sum(1 for k in sd if k.endswith(_UP_SUFFIXES))
+        kept = stats["kept"] if stats["kept"] is not None else total
+        msg = f"saved {dest} ({kept}/{total} modules, {stats['dropped']} dropped)"
+        print(f"[BFSNodes] LoRA surgery save: {msg}")
+        return {"ui": {"text": [msg]}, "result": (dest,)}
+
+
+NODE_CLASS_MAPPINGS = {"BFSLoraSurgery": BFSLoraSurgery, "BFSLoraSurgerySave": BFSLoraSurgerySave}
+NODE_DISPLAY_NAME_MAPPINGS = {"BFSLoraSurgery": "BFS LoRA Surgery",
+                              "BFSLoraSurgerySave": "BFS LoRA Surgery (save)"}
 
 # ---------------------------------------------------------------------------- http api
 

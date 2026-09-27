@@ -53,6 +53,26 @@ A match is either structural (`family`, `type`, `blocks`) or a `regex` tested ag
 module's full path. `type` accepts a trailing `*`. `blocks` accepts `8-15`, `0,4,7` or
 `8-15,24-31`.
 
+## Saving the result
+
+**BFS LoRA Surgery (save)** applies the same rules and writes a real `.safetensors` into
+`models/loras`, for when a recipe is settled and you want it usable anywhere.
+
+Leave `filename` empty and the name is built from the rules, so the file says what was done
+to it:
+
+```
+mylora__attn-x1.15__gate_up-b8_15-off__all-b16_23-off.safetensors
+```
+
+The recipe also goes into the safetensors metadata under `bfs_surgery` (source file, the
+rule list, modules kept and dropped), alongside the original metadata. That survives being
+shared, so months later the file can still explain itself.
+
+`subfolder` defaults to `surgery` to keep these out of your main list, `save_dtype` can
+downcast, and `overwrite` is off by default, so a repeat run gets `_1`, `_2` rather than
+destroying the previous one.
+
 ## A warning
 
 A variant can win every metric you are looking at and still have destroyed what you trained.
