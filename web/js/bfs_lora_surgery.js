@@ -51,6 +51,15 @@ function styles() {
   font-size:9px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#a8a8b2}
 .bfsls .blk.sel{background:#2b5fd9;border-color:#4a7ef0;color:#fff}
 .bfsls .err{color:#ff8a8a}
+.bfsls .sec{border-top:1px solid #2c2c34;margin-top:8px;padding-top:6px}
+.bfsls details.help{border:1px solid #33333c;border-radius:6px;background:#1c1c22;margin-bottom:8px}
+.bfsls details.help>summary{cursor:pointer;padding:5px 8px;color:#9fb8ff;list-style:none;user-select:none}
+.bfsls details.help>summary::-webkit-details-marker{display:none}
+.bfsls .helpbody{padding:2px 10px 8px;color:#b4b4bd;font-size:11px;line-height:1.55}
+.bfsls .helpbody code{background:#262630;padding:1px 4px;border-radius:3px;font-size:10px}
+.bfsls .helpbody b{color:#dcdce2}
+.bfsls .helpbody ol{margin:4px 0 6px 16px;padding:0}
+.bfsls .helpbody li{margin:2px 0}
 `;
   document.head.appendChild(el);
 }
@@ -140,32 +149,53 @@ function Panel(props) {
   load();
   watch(() => props.getLora(), load);
 
+
+  const help = () => h("details", { class: "help" }, [
+    h("summary", {}, "What is this? (read once)"),
+    h("div", { class: "helpbody" }, [
+      h("p", {}, [
+        "A defect a LoRA learned (soft skin, identity drifting when the subject is far away, ",
+        "a pose it will not copy) usually lives in ", h("b", {}, "one module family and a range of blocks"),
+        ", not in the whole adapter. This node lets you scale or drop that group and generate again, ",
+        "so you can find where it lives without retraining. Nothing is written to disk.",
+      ]),
+      h("p", {}, [h("b", {}, "How to use it")]),
+      h("ol", {}, [
+        h("li", {}, "Pick a LoRA. The Layers list below shows every family, its block count and its module types."),
+        h("li", {}, ["The bar next to each type is ", h("code", {}, "||dW||"),
+                     ", how large that group's update is. Big bars are where training invested."]),
+        h("li", {}, ["Click ", h("code", {}, "->"), " on a type to select it, then click blocks (shift-click for a range)."]),
+        h("li", {}, ["Set a scale and press ", h("code", {}, "add rule"), ". Scale 0 drops the group; 1 leaves it as trained."]),
+        h("li", {}, "Queue the prompt and compare against the unmodified LoRA at the same seed."),
+      ]),
+      h("p", {}, [h("b", {}, "Where to look first. "),
+        "The MLP input projection (", h("code", {}, "gate_up"), ", ", h("code", {}, "w1"), "/", h("code", {}, "w3"),
+        ", ", h("code", {}, "mlp.gate"), "/", h("code", {}, "mlp.up"),
+        ") is the usual culprit for blur and lost detail. The MLP output projection rarely matters, ",
+        "and attention is usually innocent. Which block range is the right one differs per LoRA, so test."]),
+      h("p", {}, [h("b", {}, "Order matters. "),
+        "Later rules override earlier ones where they overlap, so put boosts first and drops last, ",
+        "or a boost will undo a drop. Use the arrows to reorder."]),
+      h("p", {}, [h("b", {}, "One warning. "),
+        "A variant can win every metric and still have destroyed what you trained. Dropping the whole MLP ",
+        "path gave the sharpest skin in one real case and made the LoRA stop copying expression from the ",
+        "source image. Always check a hard case (a strong expression, an unusual angle) with your eyes."]),
+      h("p", {}, [h("b", {}, "Pruning is not the same as training without those layers. "),
+        "Excluding them during training may simply fail to converge: the layer is where the defect lodges, ",
+        "not where it comes from, which is usually the dataset."]),
+    ]),
+  ]);
+
   return () => h("div", { class: "bfsls" }, [
     h("div", { class: "row", style: "justify-content:space-between;margin-bottom:6px" }, [
       h("h4", {}, struct.value ? `${struct.value.file}, ${struct.value.total_modules} modules`
-                               : (loading.value ? "reading…" : "no LoRA loaded")),
+                               : (loading.value ? "reading..." : "no LoRA loaded")),
       h("button", { onClick: load }, "reload"),
     ]),
     error.value ? h("div", { class: "err" }, error.value) : null,
+    help(),
 
-    ...(struct.value?.families || []).map(fam =>
-      h("details", { class: "fam", open: fam.name === selFamily.value }, [
-        h("summary", { onClick: () => { selFamily.value = fam.name; } }, [
-          h("span", { class: "name" }, fam.name || "(root)"),
-          h("span", { class: "muted" }, `${fam.blocks.length} blocks · ${fam.types.length} types`),
-        ]),
-        ...fam.types.map(t => h("div", { class: "type" }, [
-          h("div", {}, [
-            h("div", { class: "name", title: t.name }, t.name || "(none)"),
-            h("div", { class: "bar", style: `width:${Math.round(100 * (t.norm || 0) / maxNorm.value)}%` }),
-          ]),
-          h("span", { class: "muted" }, t.norm != null ? `‖ΔW‖ ${t.norm.toFixed(2)}` : ""),
-          h("span", { class: "muted" }, `r${t.rank ?? "?"}`),
-          h("button", { title: "select this type", onClick: () => { selFamily.value = fam.name; selType.value = t.name; } }, "→"),
-        ])),
-      ])),
-
-    h("h4", { style: "margin-top:8px" }, "Selection"),
+    h("div", { class: "sec" }, [h("h4", {}, "Selection")]),
     h("div", { class: "row" }, [
       h("span", { class: "muted" }, "type"),
       h("input", { type: "text", value: selType.value, style: "flex:1",
@@ -190,7 +220,7 @@ function Panel(props) {
     h("div", { class: "row", style: "margin-bottom:6px" }, PRESETS.map(p =>
       h("button", { onClick: () => { rules.value = JSON.parse(JSON.stringify(p.rules)); writeRules(); } }, p.label))),
 
-    h("h4", {}, `Rules (${rules.value.length}), later rules override earlier ones`),
+    h("div", { class: "sec" }, [h("h4", {}, `Rules (${rules.value.length}), later rules override earlier ones`)]),
     rules.value.length > 1
       ? h("div", { class: "muted", style: "margin-bottom:4px" },
           "Order matters: put boosts first and drops last, or a boost will undo a drop.")
@@ -213,6 +243,24 @@ function Panel(props) {
       ? h("div", { class: "row", style: "margin-top:4px" },
           [h("button", { onClick: () => { rules.value = []; writeRules(); } }, "clear all")])
       : h("div", { class: "muted" }, "No rules, the LoRA is applied unchanged."),
+
+    h("div", { class: "sec" }, [h("h4", {}, "Layers")]),
+    ...(struct.value?.families || []).map(fam =>
+      h("details", { class: "fam", open: fam.name === selFamily.value }, [
+        h("summary", { onClick: () => { selFamily.value = fam.name; } }, [
+          h("span", { class: "name" }, fam.name || "(root)"),
+          h("span", { class: "muted" }, `${fam.blocks.length} blocks · ${fam.types.length} types`),
+        ]),
+        ...fam.types.map(t => h("div", { class: "type" }, [
+          h("div", {}, [
+            h("div", { class: "name", title: t.name }, t.name || "(none)"),
+            h("div", { class: "bar", style: `width:${Math.round(100 * (t.norm || 0) / maxNorm.value)}%` }),
+          ]),
+          h("span", { class: "muted" }, t.norm != null ? `||dW|| ${t.norm.toFixed(2)}` : ""),
+          h("span", { class: "muted" }, `r${t.rank ?? "?"}`),
+          h("button", { title: "select this type", onClick: () => { selFamily.value = fam.name; selType.value = t.name; } }, "->"),
+        ])),
+      ])),
   ]);
 }
 
