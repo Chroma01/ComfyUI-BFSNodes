@@ -397,8 +397,8 @@ class BFSLoraSurgery:
             "optional": {"clip": ("CLIP",)},
         }
 
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING")
-    RETURN_NAMES = ("model", "clip", "report")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "STRING")
+    RETURN_NAMES = ("model", "clip", "report", "rules")
     FUNCTION = "apply"
     CATEGORY = "BFS/lora"
     DESCRIPTION = ("Scale or drop a LoRA's module groups (attention, MLP, per block range) and "
@@ -430,7 +430,8 @@ class BFSLoraSurgery:
 
         new_model, new_clip = comfy.sd.load_lora_for_models(
             model, clip, edited, strength_model, strength_model if clip is not None else 0.0)
-        return (new_model, new_clip if clip is not None else clip, report)
+        # `rules` comes back out so it can feed BFS LoRA Surgery (save) without copying JSON
+        return (new_model, new_clip if clip is not None else clip, report, rules)
 
 
 def describe_rules(rules: list[dict[str, Any]]) -> str:
@@ -555,82 +556,89 @@ class BFSLoraSurgerySave:
     DESCRIPTION = "Apply the same surgery rules and write the result to models/loras."
 
     def save(self, lora_name, rules, filename, subfolder, save_dtype, overwrite):
-        src = folder_paths.get_full_path("loras", lora_name)
-        if src is None:
-            raise ValueError(f"LoRA not found: {lora_name}")
-        parsed: list[dict[str, Any]] = []
-        if rules and rules.strip():
-            loaded = json.loads(rules)
-            if isinstance(loaded, dict):
-                loaded = loaded.get("rules", [])
-            if isinstance(loaded, list):
-                parsed = loaded
-
-        sd = comfy.utils.load_torch_file(src, safe_load=True)
-        edited, stats = apply_rules(sd, parsed)
-
-        if save_dtype != "keep":
-            want = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[save_dtype]
-            edited = {k: (v.to(want) if v.is_floating_point() else v) for k, v in edited.items()}
-
-        stem = os.path.splitext(os.path.basename(src))[0]
-        typed = re.sub(r"[^A-Za-z0-9._ -]", "", filename).strip()
-        if typed:
-            if typed.endswith(".safetensors"):
-                typed = typed[: -len(".safetensors")]
-            name = fit_filename(typed, "", "").rstrip("_") + ".safetensors"
-        else:
-            name = fit_filename(stem, describe_rules(parsed))
-        root = folder_paths.get_folder_paths("loras")[0]
-        out_dir = os.path.join(root, subfolder.strip()) if subfolder.strip() else root
-        os.makedirs(out_dir, exist_ok=True)
-        dest = os.path.join(out_dir, name)
-        if len(dest) > 240:
-            print(f"[BFSNodes] warning: the path is {len(dest)} characters, which some systems reject")
-        if os.path.exists(dest) and not overwrite:
-            base, ext = os.path.splitext(dest)
-            n = 1
-            while os.path.exists(f"{base}_{n}{ext}"):
-                n += 1
-            dest = f"{base}_{n}{ext}"
-
-        meta = {}
-        try:
-            with open(src, "rb") as fh:
-                hn = struct.unpack("<Q", fh.read(8))[0]
-                meta = json.loads(fh.read(hn)).get("__metadata__", {}) or {}
-        except Exception:  # noqa: BLE001 - metadata is a nicety, not a requirement
-            meta = {}
-        meta = {str(k): str(v) for k, v in meta.items()}
-        total_modules = sum(1 for k in sd if k.endswith(_UP_SUFFIXES))
-        kept_modules = stats["kept"] if stats["kept"] is not None else total_modules
-        summary = summarize_rules(parsed)
-        meta["bfs_surgery"] = json.dumps({
-            "tool": "ComfyUI-BFSNodes / BFS LoRA Surgery",
-            "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "source_file": os.path.basename(src),
-            "source_sha256": _file_digest(src),
-            "recipe": describe_rules(parsed),
-            "summary": summary,
-            "rules": parsed,
-            "modules_total": total_modules,
-            "modules_kept": kept_modules,
-            "modules_dropped": stats["dropped"],
-            "modules_scaled": stats["scaled"],
-            "save_dtype": save_dtype,
-        }, ensure_ascii=False)
-        # a line any viewer shows without knowing about this tool
-        meta["bfs_surgery_summary"] = (f"{kept_modules}/{total_modules} modules kept: {summary} "
-                                       f"(from {os.path.basename(src)})")
-        meta["ss_output_name"] = os.path.splitext(name)[0]
-
-        from safetensors.torch import save_file
-        save_file({k: v.contiguous() for k, v in edited.items()}, dest, metadata=meta)
-        total = sum(1 for k in sd if k.endswith(_UP_SUFFIXES))
-        kept = stats["kept"] if stats["kept"] is not None else total
-        msg = f"saved {dest} ({kept}/{total} modules, {stats['dropped']} dropped)"
+        dest, msg = write_surgery(lora_name, rules, filename, subfolder, save_dtype, overwrite)
         print(f"[BFSNodes] LoRA surgery save: {msg}")
         return {"ui": {"text": [msg]}, "result": (dest,)}
+
+
+def write_surgery(lora_name, rules, filename="", subfolder="surgery", save_dtype="keep",
+                  overwrite=False) -> tuple[str, str]:
+    """Apply the rules and write the file. Shared by the save node and the panel's button."""
+    src = folder_paths.get_full_path("loras", lora_name)
+    if src is None:
+        raise ValueError(f"LoRA not found: {lora_name}")
+    parsed: list[dict[str, Any]] = []
+    if rules and rules.strip():
+        loaded = json.loads(rules)
+        if isinstance(loaded, dict):
+            loaded = loaded.get("rules", [])
+        if isinstance(loaded, list):
+            parsed = loaded
+
+    sd = comfy.utils.load_torch_file(src, safe_load=True)
+    edited, stats = apply_rules(sd, parsed)
+
+    if save_dtype != "keep":
+        want = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[save_dtype]
+        edited = {k: (v.to(want) if v.is_floating_point() else v) for k, v in edited.items()}
+
+    stem = os.path.splitext(os.path.basename(src))[0]
+    typed = re.sub(r"[^A-Za-z0-9._ -]", "", filename).strip()
+    if typed:
+        if typed.endswith(".safetensors"):
+            typed = typed[: -len(".safetensors")]
+        name = fit_filename(typed, "", "").rstrip("_") + ".safetensors"
+    else:
+        name = fit_filename(stem, describe_rules(parsed))
+    root = folder_paths.get_folder_paths("loras")[0]
+    out_dir = os.path.join(root, subfolder.strip()) if subfolder.strip() else root
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, name)
+    if len(dest) > 240:
+        print(f"[BFSNodes] warning: the path is {len(dest)} characters, which some systems reject")
+    if os.path.exists(dest) and not overwrite:
+        base, ext = os.path.splitext(dest)
+        n = 1
+        while os.path.exists(f"{base}_{n}{ext}"):
+            n += 1
+        dest = f"{base}_{n}{ext}"
+
+    meta = {}
+    try:
+        with open(src, "rb") as fh:
+            hn = struct.unpack("<Q", fh.read(8))[0]
+            meta = json.loads(fh.read(hn)).get("__metadata__", {}) or {}
+    except Exception:  # noqa: BLE001 - metadata is a nicety, not a requirement
+        meta = {}
+    meta = {str(k): str(v) for k, v in meta.items()}
+    total_modules = sum(1 for k in sd if k.endswith(_UP_SUFFIXES))
+    kept_modules = stats["kept"] if stats["kept"] is not None else total_modules
+    summary = summarize_rules(parsed)
+    meta["bfs_surgery"] = json.dumps({
+        "tool": "ComfyUI-BFSNodes / BFS LoRA Surgery",
+        "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_file": os.path.basename(src),
+        "source_sha256": _file_digest(src),
+        "recipe": describe_rules(parsed),
+        "summary": summary,
+        "rules": parsed,
+        "modules_total": total_modules,
+        "modules_kept": kept_modules,
+        "modules_dropped": stats["dropped"],
+        "modules_scaled": stats["scaled"],
+        "save_dtype": save_dtype,
+    }, ensure_ascii=False)
+    # a line any viewer shows without knowing about this tool
+    meta["bfs_surgery_summary"] = (f"{kept_modules}/{total_modules} modules kept: {summary} "
+                                   f"(from {os.path.basename(src)})")
+    meta["ss_output_name"] = os.path.splitext(name)[0]
+
+    from safetensors.torch import save_file
+    save_file({k: v.contiguous() for k, v in edited.items()}, dest, metadata=meta)
+    total = total_modules
+    kept = kept_modules
+    msg = f"saved {os.path.basename(dest)} ({kept}/{total} modules, {stats['dropped']} dropped)"
+    return dest, msg
 
 
 NODE_CLASS_MAPPINGS = {"BFSLoraSurgery": BFSLoraSurgery, "BFSLoraSurgerySave": BFSLoraSurgerySave}
@@ -661,6 +669,18 @@ try:
                 return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
             _STRUCT_CACHE[key] = cached
         return web.json_response(cached)
+
+    @PromptServer.instance.routes.post("/bfs/lora/save")
+    async def _bfs_lora_save(request):
+        body = await request.json()
+        try:
+            dest, msg = write_surgery(
+                body.get("name", ""), json.dumps(body.get("rules", [])),
+                body.get("filename", ""), body.get("subfolder", "surgery"),
+                body.get("save_dtype", "keep"), bool(body.get("overwrite", False)))
+        except Exception as exc:  # noqa: BLE001 - the panel shows the reason
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response({"path": dest, "message": msg})
 
     @PromptServer.instance.routes.post("/bfs/lora/regex")
     async def _bfs_lora_regex(request):

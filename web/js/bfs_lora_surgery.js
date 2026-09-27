@@ -83,6 +83,9 @@ function Panel(props, expose) {
   const dragging = ref(false);
   const view = ref("grouped");      // "grouped" | "all"
   const filter = ref("");
+  const saveName = ref("");
+  const saving = ref(false);
+  const saved = ref("");
   let dragAdds = true;
 
   // Stored shape is {rules, ui}. A bare array is still accepted, both because older
@@ -255,6 +258,12 @@ function Panel(props, expose) {
         h("code", {}, "fc2"),
         ") rarely matters, and attention is usually innocent. That is a starting point, not a rule: ",
         "which group and which block range are right differs per LoRA, so ablate and measure."]),
+      h("p", {}, [h("b", {}, "Keeping the result. "),
+        "Once a recipe is settled, press ", h("code", {}, "save as file"),
+        " to write it into ", h("code", {}, "models/loras/surgery"),
+        " with the recipe in its name and metadata. In a workflow you can instead wire this node's ",
+        h("code", {}, "rules"), " output into ", h("code", {}, "BFS LoRA Surgery (save)"),
+        ", so the file is produced as part of the run."]),
       h("p", {}, [h("b", {}, "Order matters. "),
         "Later rules override earlier ones where they overlap, so put boosts first and drops last, ",
         "or a boost will undo a drop. Use the arrows to reorder."]),
@@ -317,6 +326,28 @@ function Panel(props, expose) {
       h("button", { onClick: () => { rules.value = JSON.parse(JSON.stringify(p.rules)); writeRules(); } }, p.label))),
 
     h("div", { class: "sec" }, [h("h4", {}, `Rules (${rules.value.length}), later rules override earlier ones`)]),
+    rules.value.length
+      ? h("div", { class: "row", style: "margin-bottom:5px" }, [
+          h("input", { type: "text", value: saveName.value, placeholder: "file name (blank = from the rules)",
+                       style: "flex:1", onInput: e => { saveName.value = e.target.value; } }),
+          h("button", { disabled: saving.value, title: "write this as a .safetensors in models/loras/surgery",
+                        onClick: async () => {
+                          saving.value = true; saved.value = "";
+                          try {
+                            const r = await api.fetchApi("/bfs/lora/save", {
+                              method: "POST", headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ name: props.getLora(), rules: rules.value,
+                                                     filename: saveName.value }),
+                            });
+                            const d = await r.json();
+                            saved.value = d.error ? `error: ${d.error}` : d.message;
+                          } catch (e) { saved.value = String(e); }
+                          saving.value = false;
+                        } }, saving.value ? "saving..." : "save as file"),
+        ])
+      : null,
+    saved.value ? h("div", { class: saved.value.startsWith("error") ? "err" : "muted",
+                             style: "margin-bottom:5px" }, saved.value) : null,
     rules.value.length > 1
       ? h("div", { class: "muted", style: "margin-bottom:4px" },
           "Order matters: put boosts first and drops last, or a boost will undo a drop.")

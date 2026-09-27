@@ -68,8 +68,17 @@ module's full path. `type` accepts a trailing `*`. `blocks` accepts `8-15`, `0,4
 
 ## Saving the result
 
-**BFS LoRA Surgery (save)** applies the same rules and writes a real `.safetensors` into
-`models/loras`, for when a recipe is settled and you want it usable anywhere.
+Two ways, depending on whether you are exploring or building a pipeline.
+
+**From the panel.** Once the rules look right, type a name (or leave it blank) and press
+`save as file`. It writes straight into `models/loras/surgery` and reports the result inline.
+Nothing else to wire.
+
+**From the graph.** `BFS LoRA Surgery` has a `rules` output. Connect it to the `rules` input
+of **BFS LoRA Surgery (save)** and the file is produced as part of the run, with no JSON
+copied by hand. Both nodes read the same `lora_name`, so point them at the same file.
+
+Either way the rules are applied identically, since both call the same code.
 
 Leave `filename` empty and the name is built from the rules, so the file says what was done
 to it:
