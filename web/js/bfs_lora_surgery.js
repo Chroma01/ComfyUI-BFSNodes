@@ -51,6 +51,13 @@ function styles() {
   font-size:9px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#a8a8b2}
 .bfsls .blk.sel{background:#2b5fd9;border-color:#4a7ef0;color:#fff}
 .bfsls .err{color:#ff8a8a}
+.bfsls .mod{display:grid;grid-template-columns:1fr 62px 34px 26px;gap:6px;align-items:center;
+  padding:3px 6px;border-bottom:1px solid #26262c;font-size:11px}
+.bfsls .mod:hover{background:#26262c}
+.bfsls .modlist{max-height:260px;overflow:auto;border:1px solid #33333c;border-radius:6px}
+.bfsls .tab{padding:3px 10px;border-radius:5px 5px 0 0;border:1px solid #33333c;border-bottom:none;
+  background:#1f1f25;cursor:pointer;font-size:11px}
+.bfsls .tab.on{background:#2b2b33;color:#fff}
 .bfsls .sec{border-top:1px solid #2c2c34;margin-top:8px;padding-top:6px}
 .bfsls details.help{border:1px solid #33333c;border-radius:6px;background:#1c1c22;margin-bottom:8px}
 .bfsls details.help>summary{cursor:pointer;padding:5px 8px;color:#9fb8ff;list-style:none;user-select:none}
@@ -74,6 +81,8 @@ function Panel(props, expose) {
   const selBlocks = ref(new Set());
   const scale = ref(0);
   const dragging = ref(false);
+  const view = ref("grouped");      // "grouped" | "all"
+  const filter = ref("");
   let dragAdds = true;
 
   // Stored shape is {rules, ui}. A bare array is still accepted, both because older
@@ -220,7 +229,7 @@ function Panel(props, expose) {
       ]),
       h("p", {}, [h("b", {}, "How to use it")]),
       h("ol", {}, [
-        h("li", {}, "Pick a LoRA. The Layers list below shows the families, block counts and module types found in that specific file."),
+        h("li", {}, ["Pick a LoRA. Layers below shows what that file contains, grouped by type, or switch to ", h("code", {}, "every layer"), " to see and filter each module individually."]),
         h("li", {}, ["The bar next to each type is ", h("code", {}, "||dW||"),
                      ", how large that group's update is. Big bars are where training invested."]),
         h("li", {}, ["Click ", h("code", {}, "->"), " on a type to select it, then drag across the block ruler to pick a range."]),
@@ -331,8 +340,45 @@ function Panel(props, expose) {
           [h("button", { onClick: () => { rules.value = []; writeRules(); } }, "clear all")])
       : h("div", { class: "muted" }, "No rules, the LoRA is applied unchanged."),
 
-    h("div", { class: "sec" }, [h("h4", {}, "Layers")]),
-    ...(struct.value?.families || []).map(fam =>
+    h("div", { class: "sec" }, [
+      h("div", { class: "row", style: "justify-content:space-between" }, [
+        h("h4", {}, `Layers (${struct.value?.total_modules ?? 0} modules)`),
+        h("div", { class: "row", style: "gap:2px" }, [
+          h("span", { class: "tab" + (view.value === "grouped" ? " on" : ""),
+                      onClick: () => { view.value = "grouped"; } }, "grouped"),
+          h("span", { class: "tab" + (view.value === "all" ? " on" : ""),
+                      onClick: () => { view.value = "all"; } }, "every layer"),
+        ]),
+      ]),
+    ]),
+    view.value === "all"
+      ? h("div", {}, [
+          h("input", { type: "text", placeholder: "filter, e.g. gate_up or blocks.1 or attn",
+                       value: filter.value, style: "margin-bottom:4px",
+                       onInput: e => { filter.value = e.target.value; } }),
+          (() => {
+            const all = struct.value?.modules || [];
+            const q = filter.value.trim().toLowerCase();
+            const hits = q ? all.filter(m => m.path.toLowerCase().includes(q)) : all;
+            const shown = hits.slice(0, 400);
+            return h("div", {}, [
+              h("div", { class: "muted", style: "margin-bottom:3px" },
+                `${hits.length} of ${all.length} modules${hits.length > shown.length ? `, showing first ${shown.length}` : ""}`),
+              h("div", { class: "modlist" }, shown.map(m => h("div", { class: "mod" }, [
+                h("div", { class: "name", title: m.path }, m.path),
+                h("span", { class: "muted" }, m.norm != null ? m.norm.toFixed(3) : ""),
+                h("span", { class: "muted" }, `r${m.rank ?? "?"}`),
+                h("button", { title: "add a rule for exactly this module",
+                              onClick: () => {
+                                const esc = m.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                                rules.value.push({ enabled: true, match: { regex: `^${esc}$` }, scale: Number(scale.value) });
+                                writeRules();
+                              } }, "+"),
+              ]))),
+            ]);
+          })(),
+        ])
+      : h("div", {}, (struct.value?.families || []).map(fam =>
       h("details", { class: "fam", open: fam.name === selFamily.value }, [
         h("summary", { onClick: () => { selFamily.value = fam.name; } }, [
           h("span", { class: "name" }, fam.name || "(root)"),
@@ -347,7 +393,7 @@ function Panel(props, expose) {
           h("span", { class: "muted" }, `r${t.rank ?? "?"}`),
           h("button", { title: "select this type", onClick: () => { selFamily.value = fam.name; selType.value = t.name; } }, "->"),
         ])),
-      ])),
+      ]))),
   ]);
 }
 

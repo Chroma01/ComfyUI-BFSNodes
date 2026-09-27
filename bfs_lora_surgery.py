@@ -50,19 +50,64 @@ def _strip_suffix(key: str) -> str | None:
     return None
 
 
-def _split_block(path: str) -> tuple[str, int | None, str]:
-    """Return (family, block_index, module_type) using the LAST numeric path component.
+_NUM_RE = re.compile(r"\d+")
 
-    ``transformer_blocks.12.attn.to_q`` -> ("transformer_blocks", 12, "attn.to_q")
-    Keys with no numeric component come back with block ``None``.
+
+def _template(path: str) -> tuple[str, list[int], list[tuple[int, int]]]:
+    """``a.12.attn1.q`` -> ("a.{}.attn{}.q", [12, 1], spans)."""
+    nums, spans, out, last = [], [], [], 0
+    for m in _NUM_RE.finditer(path):
+        out.append(path[last:m.start()])
+        out.append("{}")
+        nums.append(int(m.group()))
+        spans.append((m.start(), m.end()))
+        last = m.end()
+    out.append(path[last:])
+    return "".join(out), nums, spans
+
+
+def choose_block_axis(paths: list[str]) -> dict[str, int]:
+    """For each path template, decide which numeric slot is the block index.
+
+    Picking the last number breaks on names like ``transformer_blocks.12.attn1.to_q``, where
+    the last one is the ``1`` of ``attn1``, and on nested layouts such as
+    ``down_blocks.0.attentions.1.transformer_blocks.0.ff.net.0.proj``. The block axis is the
+    slot that varies most across the whole LoRA, so decide it from the file, not from one key.
     """
-    matches = list(_BLOCK_RE.finditer(path))
-    if not matches:
+    seen: dict[str, list[set]] = {}
+    for path in paths:
+        tpl, nums, _ = _template(path)
+        slots = seen.setdefault(tpl, [set() for _ in nums])
+        for i, v in enumerate(nums):
+            if i < len(slots):
+                slots[i].add(v)
+    axis: dict[str, int] = {}
+    for tpl, slots in seen.items():
+        if not slots:
+            continue
+        counts = [len(x) for x in slots]
+        best = max(range(len(counts)), key=lambda i: (counts[i], -i))
+        axis[tpl] = best if counts[best] > 1 else -1
+    return axis
+
+
+def _split_block(path: str, axis: dict[str, int] | None = None) -> tuple[str, int | None, str]:
+    """Return (family, block_index, module_type).
+
+    ``transformer_blocks.12.attn.to_q`` -> ("transformer_blocks", 12, "attn.to_q").
+    Numbers that are not the block axis stay in the name, so ``attn1`` and ``attn2`` remain
+    distinct module types instead of being folded together.
+    """
+    tpl, nums, spans = _template(path)
+    if not nums:
         return path, None, ""
-    m = matches[-1]
-    family = path[: m.start()].rstrip("._")
-    module = path[m.end():].lstrip("._")
-    return family, int(m.group(1)), module
+    idx = axis.get(tpl, -1) if axis is not None else (len(nums) - 1)
+    if idx < 0 or idx >= len(nums):
+        return path.rstrip("._"), None, ""
+    start, end = spans[idx]
+    family = path[:start].rstrip("._")
+    module = path[end:].lstrip("._")
+    return family, nums[idx], module
 
 
 def read_structure(lora_path: str, with_norms: bool = True) -> dict[str, Any]:
@@ -90,11 +135,15 @@ def read_structure(lora_path: str, with_norms: bool = True) -> dict[str, Any]:
     norms: dict[str, float] = {}
     if with_norms and modules:
         norms = _module_norms(lora_path, modules)
+    axis = choose_block_axis(list(modules))
 
     families: dict[str, dict[str, Any]] = {}
     loose: list[dict[str, Any]] = []
+    all_modules: list[dict[str, Any]] = []
     for base, entry in modules.items():
-        family, block, mtype = _split_block(base)
+        family, block, mtype = _split_block(base, axis)
+        all_modules.append({"path": base, "family": family, "block": block, "type": mtype,
+                            "rank": entry["rank"], "norm": norms.get(base)})
         if block is None:
             loose.append({"path": base, "rank": entry["rank"], "norm": norms.get(base)})
             continue
@@ -125,11 +174,13 @@ def read_structure(lora_path: str, with_norms: bool = True) -> dict[str, Any]:
         })
     out_families.sort(key=lambda f: -sum(t["count"] for t in f["types"]))
 
+    all_modules.sort(key=lambda m: (m["family"], m["block"] if m["block"] is not None else -1, m["type"]))
     return {
         "file": os.path.basename(lora_path),
         "total_modules": len(modules),
         "families": out_families,
         "loose": sorted(loose, key=lambda x: x["path"])[:64],
+        "modules": all_modules,
         "per_module_norms": norms,
     }
 
@@ -294,6 +345,8 @@ def apply_rules(sd: dict[str, torch.Tensor], rules: list[dict[str, Any]]) -> tup
     """Return (new state dict, stats). Scale 0 drops the module entirely."""
     if not rules:
         return sd, {"kept": None, "dropped": 0, "scaled": 0}
+    bases = {b for b in (_strip_suffix(k) for k in sd) if b}
+    axis = choose_block_axis(sorted(bases))
     out: dict[str, torch.Tensor] = {}
     dropped = scaled = kept = 0
     seen: dict[str, float] = {}
@@ -303,7 +356,7 @@ def apply_rules(sd: dict[str, torch.Tensor], rules: list[dict[str, Any]]) -> tup
             out[key] = tensor
             continue
         if base not in seen:
-            family, block, mtype = _split_block(base)
+            family, block, mtype = _split_block(base, axis)
             seen[base] = resolve_scale(rules, family, block, mtype, full_path=base)
         s = seen[base]
         if s == 0.0:
