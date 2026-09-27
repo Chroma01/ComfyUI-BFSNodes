@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 import re
 import struct
 from typing import Any
@@ -403,7 +404,71 @@ def describe_rules(rules: list[dict[str, Any]]) -> str:
         tag = what if not blocks else f"{what}-b{blocks}"
         parts.append(f"{tag}-{'off' if scale == 0 else f'x{scale:g}'}")
     slug = "__".join(parts) if parts else "unchanged"
-    return re.sub(r"[^A-Za-z0-9._-]", "", slug)[:110]
+    return re.sub(r"[^A-Za-z0-9._-]", "", slug)
+
+
+# Linux caps a single filename at 255 bytes (NAME_MAX); Windows caps the whole path near 260
+# unless long paths are enabled. Stay well under both, since the folder above us is not ours.
+MAX_FILENAME = 160
+
+
+def fit_filename(stem: str, slug: str, ext: str = ".safetensors", limit: int = MAX_FILENAME) -> str:
+    """Build ``stem__slug.ext`` and shrink it to ``limit`` bytes without losing uniqueness.
+
+    When it does not fit, both halves are trimmed and a short hash of the full slug is
+    appended, so two different recipes never collapse onto the same name.
+    """
+    name = f"{stem}__{slug}{ext}"
+    if len(name.encode("utf-8")) <= limit:
+        return name
+    digest = hashlib.sha1(f"{stem}__{slug}".encode()).hexdigest()[:8]
+    room = limit - len(ext) - len(digest) - 3          # "__" between halves, "-" before hash
+    keep_stem = min(len(stem), max(16, room // 2))
+    keep_slug = max(8, room - keep_stem)
+    return f"{stem[:keep_stem]}__{slug[:keep_slug]}-{digest}{ext}"
+
+
+def summarize_rules(rules: list[dict[str, Any]]) -> str:
+    """One sentence a human can read months later, without parsing JSON."""
+    drops, scales = [], []
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        m = rule.get("match", {})
+        try:
+            scale = float(rule.get("scale", 1.0))
+        except (TypeError, ValueError):
+            continue
+        if m.get("regex"):
+            what = f"modules matching /{m['regex']}/"
+        else:
+            t = m.get("type") or "*"
+            what = "all modules" if t in ("*", "") else t
+            blocks = m.get("blocks")
+            if blocks and blocks.strip().lower() not in ("all", "*"):
+                what += f" in blocks {blocks}"
+        if scale == 0.0:
+            drops.append(what)
+        elif scale != 1.0:
+            scales.append(f"{what} x{scale:g}")
+    bits = []
+    if drops:
+        bits.append("dropped " + "; ".join(drops))
+    if scales:
+        bits.append("scaled " + "; ".join(scales))
+    return ", ".join(bits) if bits else "no changes"
+
+
+def _file_digest(path: str) -> str:
+    """sha256 of the source, so provenance survives a rename."""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(4 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 class BFSLoraSurgerySave:
@@ -457,13 +522,18 @@ class BFSLoraSurgerySave:
 
         stem = os.path.splitext(os.path.basename(src))[0]
         typed = re.sub(r"[^A-Za-z0-9._ -]", "", filename).strip()
-        name = typed or f"{stem}__{describe_rules(parsed)}"
-        if not name.endswith(".safetensors"):
-            name += ".safetensors"
+        if typed:
+            if typed.endswith(".safetensors"):
+                typed = typed[: -len(".safetensors")]
+            name = fit_filename(typed, "", "").rstrip("_") + ".safetensors"
+        else:
+            name = fit_filename(stem, describe_rules(parsed))
         root = folder_paths.get_folder_paths("loras")[0]
         out_dir = os.path.join(root, subfolder.strip()) if subfolder.strip() else root
         os.makedirs(out_dir, exist_ok=True)
         dest = os.path.join(out_dir, name)
+        if len(dest) > 240:
+            print(f"[BFSNodes] warning: the path is {len(dest)} characters, which some systems reject")
         if os.path.exists(dest) and not overwrite:
             base, ext = os.path.splitext(dest)
             n = 1
@@ -479,8 +549,27 @@ class BFSLoraSurgerySave:
         except Exception:  # noqa: BLE001 - metadata is a nicety, not a requirement
             meta = {}
         meta = {str(k): str(v) for k, v in meta.items()}
-        meta["bfs_surgery"] = json.dumps({"source": os.path.basename(src), "rules": parsed,
-                                          "modules_kept": stats["kept"], "modules_dropped": stats["dropped"]})
+        total_modules = sum(1 for k in sd if k.endswith(_UP_SUFFIXES))
+        kept_modules = stats["kept"] if stats["kept"] is not None else total_modules
+        summary = summarize_rules(parsed)
+        meta["bfs_surgery"] = json.dumps({
+            "tool": "ComfyUI-BFSNodes / BFS LoRA Surgery",
+            "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source_file": os.path.basename(src),
+            "source_sha256": _file_digest(src),
+            "recipe": describe_rules(parsed),
+            "summary": summary,
+            "rules": parsed,
+            "modules_total": total_modules,
+            "modules_kept": kept_modules,
+            "modules_dropped": stats["dropped"],
+            "modules_scaled": stats["scaled"],
+            "save_dtype": save_dtype,
+        }, ensure_ascii=False)
+        # a line any viewer shows without knowing about this tool
+        meta["bfs_surgery_summary"] = (f"{kept_modules}/{total_modules} modules kept: {summary} "
+                                       f"(from {os.path.basename(src)})")
+        meta["ss_output_name"] = os.path.splitext(name)[0]
 
         from safetensors.torch import save_file
         save_file({k: v.contiguous() for k, v in edited.items()}, dest, metadata=meta)

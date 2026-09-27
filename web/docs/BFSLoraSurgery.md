@@ -65,9 +65,23 @@ to it:
 mylora__attn-x1.15__gate_up-b8_15-off__all-b16_23-off.safetensors
 ```
 
-The recipe also goes into the safetensors metadata under `bfs_surgery` (source file, the
-rule list, modules kept and dropped), alongside the original metadata. That survives being
-shared, so months later the file can still explain itself.
+Names are capped and sanitized, so a long source name or a 30-rule recipe still produces a
+valid filename: when it would exceed the limit, both halves are trimmed and a short hash of
+the full recipe is appended, so two different recipes never collapse onto the same name.
+
+The file also carries its own history. Alongside the original metadata (which is preserved
+untouched), it writes:
+
+* `bfs_surgery_summary`, one line any metadata viewer will show:
+  `136/192 modules kept: dropped img_mlp.gate_up in blocks 8-15; all modules in blocks 16-23,
+  scaled attn.* x1.15 (from mylora.safetensors)`
+* `bfs_surgery`, the full record as JSON: tool and timestamp, source filename **and its
+  sha256** so provenance survives a rename, the readable recipe, the exact rule list, and the
+  module counts (total, kept, dropped, scaled)
+* `ss_output_name` updated to the new name
+
+That means a file you share months from now can still explain what was done to it, and can be
+traced back to the checkpoint it came from even if someone renamed either one.
 
 `subfolder` defaults to `surgery` to keep these out of your main list, `save_dtype` can
 downcast, and `overwrite` is off by default, so a repeat run gets `_1`, `_2` rather than
