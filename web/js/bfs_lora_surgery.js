@@ -7,7 +7,7 @@
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { createApp, ref, computed, watch, h } from "./vendor/vue.esm-browser.prod.js";
+import { createApp, ref, computed, watch, h } from "./vendor/vue.esm-browser.prod.mjs";
 
 // Starting points, not answers: which range works is per-LoRA, so ablate before trusting one.
 const PRESETS = [
