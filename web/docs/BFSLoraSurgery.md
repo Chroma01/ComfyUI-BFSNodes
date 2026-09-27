@@ -10,9 +10,22 @@ the camera, a pose it refuses to copy) that defect usually lives in one module f
 range of blocks, not in the whole adapter. Scaling or dropping that group and regenerating
 under a fixed seed tells you where it lives, in minutes.
 
-In two real cases, the culprit was the MLP **input** projection (`gate_up`, `w1`+`w3`,
-`mlp.gate`/`mlp.up`, depending on the architecture), in a subset of blocks. The MLP output
-projection barely mattered, and attention was innocent.
+In the cases tested so far the culprit was the MLP **input** projection, in a subset of
+blocks. The MLP output projection barely mattered and attention was innocent. Treat that as
+a starting point rather than a rule: which group and which block range are right differs per
+LoRA, which is why the panel measures instead of assuming.
+
+**Names depend on the base model**, so the panel lists whatever the file you loaded actually
+contains:
+
+| base | family | MLP input | MLP output | blocks |
+|---|---|---|---|---|
+| Qwen-Image-2.1 | `transformer_blocks` | `img_mlp.gate_up` | `img_mlp.out` | 32 |
+| Krea 2 | `blocks`, plus `txtfusion.*` | `mlp.gate`, `mlp.up` | `mlp.down` | 28 |
+| MiniMax-H3 | `blocks`, plus `token_refiner.blocks` | `mlp.fc1` | `mlp.fc2` | 50 |
+
+Other bases will show other names again (`w1`/`w3`, `fc1`, `proj_in`). Read the list, do not
+assume a name.
 
 ## How it works
 

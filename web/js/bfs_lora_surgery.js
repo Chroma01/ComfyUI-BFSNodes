@@ -64,7 +64,7 @@ function styles() {
   document.head.appendChild(el);
 }
 
-function Panel(props) {
+function Panel(props, expose) {
   const struct = ref(null);
   const error = ref("");
   const loading = ref(false);
@@ -76,13 +76,27 @@ function Panel(props) {
   const dragging = ref(false);
   let dragAdds = true;
 
+  // Stored shape is {rules, ui}. A bare array is still accepted, both because older
+  // workflows carry one and because the Python side takes either.
   function readRules() {
-    try {
-      const parsed = JSON.parse(props.getRules() || "[]");
-      rules.value = Array.isArray(parsed) ? parsed : [];
-    } catch { rules.value = []; }
+    let parsed;
+    try { parsed = JSON.parse(props.getRules() || "[]"); } catch { parsed = []; }
+    if (Array.isArray(parsed)) { rules.value = parsed; return; }
+    rules.value = Array.isArray(parsed?.rules) ? parsed.rules : [];
+    const ui = parsed?.ui;
+    if (ui) {
+      if (ui.family) selFamily.value = ui.family;
+      if (typeof ui.type === "string") selType.value = ui.type;
+      if (typeof ui.scale === "number") scale.value = ui.scale;
+      if (typeof ui.blocks === "string" && ui.blocks) setBlocksFromText(ui.blocks);
+    }
   }
-  function writeRules() { props.setRules(JSON.stringify(rules.value)); }
+  function writeRules() {
+    props.setRules(JSON.stringify({
+      rules: rules.value,
+      ui: { family: selFamily.value, type: selType.value, blocks: blocksSpec(), scale: Number(scale.value) },
+    }));
+  }
 
   async function load() {
     const name = props.getLora();
@@ -92,7 +106,11 @@ function Panel(props) {
       const r = await api.fetchApi(`/bfs/lora/structure?name=${encodeURIComponent(name)}`);
       const data = await r.json();
       if (data.error) { error.value = data.error; struct.value = null; }
-      else { struct.value = data; selFamily.value = data.families?.[0]?.name || ""; }
+      else {
+        struct.value = data;
+        const known = (data.families || []).some(f => f.name === selFamily.value);
+        if (!known) selFamily.value = data.families?.[0]?.name || "";
+      }
     } catch (e) { error.value = String(e); }
     loading.value = false;
   }
@@ -183,6 +201,12 @@ function Panel(props) {
   readRules();
   load();
   watch(() => props.getLora(), load);
+  // ComfyUI restores widget values after the node is created, so the panel has to be told
+  // to re-read once that happened. Without this, opening a saved workflow shows an empty
+  // panel and the first edit would overwrite the stored recipe.
+  if (expose) {
+    expose.reload = () => { readRules(); load(); };
+  }
 
 
   const help = () => h("details", { class: "help" }, [
@@ -196,18 +220,32 @@ function Panel(props) {
       ]),
       h("p", {}, [h("b", {}, "How to use it")]),
       h("ol", {}, [
-        h("li", {}, "Pick a LoRA. The Layers list below shows every family, its block count and its module types."),
+        h("li", {}, "Pick a LoRA. The Layers list below shows the families, block counts and module types found in that specific file."),
         h("li", {}, ["The bar next to each type is ", h("code", {}, "||dW||"),
                      ", how large that group's update is. Big bars are where training invested."]),
         h("li", {}, ["Click ", h("code", {}, "->"), " on a type to select it, then drag across the block ruler to pick a range."]),
         h("li", {}, ["Set a scale and press ", h("code", {}, "add rule"), ". Scale 0 drops the group; 1 leaves it as trained."]),
         h("li", {}, "Queue the prompt and compare against the unmodified LoRA at the same seed."),
       ]),
+      h("p", {}, [h("b", {}, "Names depend on the base model. "),
+        "This panel lists whatever your LoRA actually contains, so what you see here is not a fixed ",
+        "vocabulary. Qwen-Image-2.1 shows ", h("code", {}, "transformer_blocks"), " with ",
+        h("code", {}, "img_mlp.gate_up"), " and ", h("code", {}, "img_mlp.out"),
+        ". Krea 2 shows ", h("code", {}, "blocks"), " with ", h("code", {}, "mlp.gate"), "/",
+        h("code", {}, "mlp.up"), "/", h("code", {}, "mlp.down"), ", plus separate ",
+        h("code", {}, "txtfusion"), " families. MiniMax-H3 shows ", h("code", {}, "mlp.fc1"), "/",
+        h("code", {}, "mlp.fc2"), " and a ", h("code", {}, "token_refiner"),
+        " family. Block counts differ too: 32, 28 and 50 in those three. Read the list below ",
+        "rather than assuming any name."]),
       h("p", {}, [h("b", {}, "Where to look first. "),
-        "The MLP input projection (", h("code", {}, "gate_up"), ", ", h("code", {}, "w1"), "/", h("code", {}, "w3"),
-        ", ", h("code", {}, "mlp.gate"), "/", h("code", {}, "mlp.up"),
-        ") is the usual culprit for blur and lost detail. The MLP output projection rarely matters, ",
-        "and attention is usually innocent. Which block range is the right one differs per LoRA, so test."]),
+        "Across the models tested so far, the group that carries blur and lost detail is the ",
+        h("b", {}, "MLP input projection"), ", whatever your model calls it (",
+        h("code", {}, "gate_up"), ", ", h("code", {}, "mlp.gate"), "/", h("code", {}, "mlp.up"), ", ",
+        h("code", {}, "fc1"), ", ", h("code", {}, "w1"), "/", h("code", {}, "w3"),
+        "). The MLP output projection (", h("code", {}, "out"), ", ", h("code", {}, "down"), ", ",
+        h("code", {}, "fc2"),
+        ") rarely matters, and attention is usually innocent. That is a starting point, not a rule: ",
+        "which group and which block range are right differs per LoRA, so ablate and measure."]),
       h("p", {}, [h("b", {}, "Order matters. "),
         "Later rules override earlier ones where they overlap, so put boosts first and drops last, ",
         "or a boost will undo a drop. Use the arrows to reorder."]),
@@ -326,13 +364,29 @@ app.registerExtension({
     host.style.cssText = "width:100%;height:100%;min-height:340px";
     node.addDOMWidget("bfs_surgery_panel", "div", host, { serialize: false, hideOnZoom: false });
 
+    const panel = {};
     createApp({
       render: Panel({
         getLora: () => loraWidget?.value,
         getRules: () => rulesWidget?.value ?? "[]",
         setRules: v => { if (rulesWidget) rulesWidget.value = v; node.graph?.setDirtyCanvas(true); },
-      }),
+      }, panel),
     }).mount(host);
+
+    // The widget holds the whole configuration, so it must survive save/load and travel
+    // with a shared workflow. Keep it serializable even though it is not drawn.
+    if (rulesWidget) {
+      rulesWidget.options = rulesWidget.options || {};
+      rulesWidget.options.serialize = true;
+      rulesWidget.serializeValue = () => rulesWidget.value;
+    }
+    const prevConfigure = node.onConfigure;
+    node.onConfigure = function (info) {
+      const r = prevConfigure?.apply(this, arguments);
+      // values land during configure; re-read on the next tick so the panel shows them
+      setTimeout(() => panel.reload?.(), 0);
+      return r;
+    };
 
     node.size = [Math.max(node.size[0], 430), Math.max(node.size[1], 520)];
   },
