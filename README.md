@@ -134,3 +134,16 @@ and target video positions remain unchanged. In **LTX Multiple Controls**, the f
 ## License
 
 This project follows the repository license. See [LICENSE](LICENSE).
+
+## MiniMax-H3 downscaled latent guides (1.46.0)
+
+**MiniMax-H3 Downscaled Latent Guide (BFS)** supports aligned lower-resolution
+image/video guides for H3 LoRAs trained with `target_grid_stride_v1`. It encodes
+the smaller guide and patches only the returned model's packed coordinates.
+Connect both its **MODEL** and **positive CONDITIONING** outputs to sampling.
+
+**MiniMax-H3 Guide Target — Image / Video (BFS)** creates an exact output canvas:
+use one frame for images or 73 frames for approximately three seconds at 24 fps.
+At output 1024 x 768 and factor 4, the guide preview is 256 x 192.
+
+See [setup, workflow template, compatibility and validation](MINIMAX_H3_GUIDES.md).
