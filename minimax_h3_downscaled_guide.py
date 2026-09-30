@@ -8,6 +8,14 @@ from __future__ import annotations
 import copy
 import logging
 import math
+import json
+
+try:
+    from .minimax_h3_reference_rope import validate_options, PHASE_VERSION, add_source_phase
+    from .minimax_h3_rope_layout import apply_rope_layout
+except ImportError:
+    from minimax_h3_reference_rope import validate_options, PHASE_VERSION, add_source_phase
+    from minimax_h3_rope_layout import apply_rope_layout
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -88,7 +96,7 @@ def encode_guide(vae, frames):
     return latents.cpu()
 
 
-def downscaled_layout(native, keyframes):
+def downscaled_layout(native, keyframes, refs=()):
     """Select coarse condition rows from the native target grid, reindex all streams.
 
     Native PackedLayout creates full-canvas keyframe rows even for small
@@ -143,12 +151,14 @@ def downscaled_layout(native, keyframes):
         setattr(result, modality + '_update', getattr(native, modality + '_update')[selected])
     # Metadata used only by this wrapper; native signatures remain intact.
     result.bfs_h3_guide_layout = True
-    return result
+    return apply_rope_layout(result, keyframes, refs)
 
 
-def patch_guide_model(model):
+def patch_guide_model(model, phase_enabled=False):
     if model.model_options.get(WRAPPER_MARKER):
-        return model.clone()
+        patched=model.clone()
+        if phase_enabled: install_phase_patch(patched)
+        return patched
     patched = model.clone()
     previous = patched.model_options.get('model_function_wrapper')
     cache = [None, None]
@@ -157,24 +167,56 @@ def patch_guide_model(model):
         conds = args.get('c', {})
         payload = conds.get('minimax_payload')
         keyframes = (payload or {}).get('keyframes', [])
-        if any(MARKER in kf for kf in keyframes):
+        refs = (payload or {}).get('refs', [])
+        if any(MARKER in kf for kf in keyframes + refs):
             native = payload.get('layout')
             if native is None:
                 raise RuntimeError('H3 layout missing from payload; unsupported ComfyUI version')
             if cache[0] is not native:
-                cache[:] = [native, downscaled_layout(native, keyframes)]
+                cache[:] = [native, downscaled_layout(native, keyframes, refs)]
             copied_payload = dict(payload, layout=cache[1])
             args = dict(args, c=dict(conds, minimax_payload=copied_payload))
+        else:
+            cache[:] = [None, None]
         if previous is not None:
             return previous(model_function, args)
         return model_function(args['input'], args['timestep'], **args['c'])
 
     patched.set_model_unet_function_wrapper(wrapper)
     patched.model_options[WRAPPER_MARKER] = True
+    patched.model_options['bfs_h3_phase_getter'] = lambda: getattr(cache[1], 'bfs_source_phase_values', None)
+    if phase_enabled: install_phase_patch(patched)
     return patched
 
 
-def check_lora_metadata(lora_name, factor):
+def install_phase_patch(patched):
+    if patched.model_options.get('bfs_h3_source_phase_patch'): return
+    original=patched.get_model_object('diffusion_model.rope_freqs')
+    getter=patched.model_options['bfs_h3_phase_getter']
+    def rope(position_ids, device):
+        return add_source_phase(original(position_ids,device), getter())
+    patched.add_object_patch('diffusion_model.rope_freqs',rope)
+    patched.model_options['bfs_h3_source_phase_patch']=True
+
+
+def rope_inputs():
+    return {'guide_rope_layout': (['overlap','sidecar'],),
+            'reference_rope_layout': (['native','overlap','sidecar'],),
+            'reference_source_phase': ('BOOLEAN',{'default':False}),
+            'reference_phase_scale': ('FLOAT',{'default':1.0,'min':0.0}),
+            'reference_sidecar_margin': ('FLOAT',{'default':0.0,'min':0.0}),
+            'source_id': ('INT',{'default':1,'min':1,'max':99})}
+
+
+def rope_marker(options, source_id, role):
+    if isinstance(source_id,bool) or not isinstance(source_id,int) or source_id<1:
+        raise ValueError('source_id must match a positive training control channel')
+    return {'rope_layout': options['guide_rope_layout'] if role=='guide' else options['reference_rope_layout'],
+            'source_phase': options['reference_source_phase'], 'source_id': source_id,
+            'phase_scale': options['reference_phase_scale'], 'sidecar_margin': options['reference_sidecar_margin']}
+
+
+def check_lora_metadata(lora_name, factor, options=None):
     if not lora_name or lora_name == '(manual)':
         return
     import folder_paths
@@ -188,7 +230,12 @@ def check_lora_metadata(lora_name, factor):
             raise ValueError(f'LoRA {key} must be {expected!r}; got {metadata.get(key)!r}')
     if int(metadata.get('reference_downscale_factor', 0)) != factor:
         raise ValueError('downscale_factor must match the LoRA training metadata')
-    if metadata.get('guide_latent_only', '').lower() != 'true':
+    stored=json.loads(metadata.get('minimax_h3_reference_rope','{}'))
+    expected=validate_options() if options is None else options
+    stored_options=validate_options(stored.get('guide_rope_layout','overlap'),stored.get('reference_rope_layout','native'),stored.get('reference_source_phase',False),stored.get('reference_phase_scale',1.0),stored.get('reference_sidecar_margin',0.0))
+    if stored_options != expected or stored.get('phase_version',PHASE_VERSION)!=PHASE_VERSION:
+        raise ValueError('Reference RoPE options must match LoRA training metadata')
+    if not any(metadata.get(key, '').lower()=='true' for key in ('guide_latent_only','control_latent_only')):
         raise ValueError('This node expects a caption-only VLM with guide_latent_only=true')
 
 
@@ -209,6 +256,7 @@ class BFSMiniMaxH3DownscaledGuide:
             'audio_vae': ('VAE',),
             'lora_name': (['(manual)'] + folder_paths.get_filename_list('loras'),
                           {'tooltip': 'Validate metadata only. Load the same LoRA using your normal LoRA loader.'}),
+            **rope_inputs(),
         }}
 
     RETURN_TYPES = ('MODEL', 'CONDITIONING', 'IMAGE')
@@ -219,7 +267,8 @@ class BFSMiniMaxH3DownscaledGuide:
 
     @torch.no_grad()
     def apply(self, model, positive, vae, latent, image, downscale_factor=4, frame_idx=0,
-              lora_name='(manual)', audio=None, audio_vae=None):
+              lora_name='(manual)', audio=None, audio_vae=None, guide_rope_layout='overlap', reference_rope_layout='native',
+              reference_source_phase=False, reference_phase_scale=1.0, reference_sidecar_margin=0.0, source_id=1):
         from comfy.ldm.minimax import model as h3
         samples = latent['samples']
         streams = getattr(samples, 'tensors', None)
@@ -231,7 +280,8 @@ class BFSMiniMaxH3DownscaledGuide:
         diffusion = model.get_model_object('diffusion_model')
         if not isinstance(diffusion, h3.MiniMaxH3Model) or tuple(diffusion.patch_size) != (1, 2, 2):
             raise ValueError('This node requires the native MiniMax-H3 model with 1x2x2 patches')
-        check_lora_metadata(lora_name, downscale_factor)
+        options=validate_options(guide_rope_layout,reference_rope_layout,reference_source_phase,reference_phase_scale,reference_sidecar_margin)
+        check_lora_metadata(lora_name, downscale_factor, options)
         width, height = video.shape[-1] * 16, video.shape[-2] * 16
         frame_count = sum(h3.FRAME_PER_TOKEN[k % 5] for k in range(video.shape[2]))
         frames = image.shape[0]
@@ -252,6 +302,7 @@ class BFSMiniMaxH3DownscaledGuide:
         guide = {'resolved_frame_index': index, 'latent': z, MARKER: {
             'downscale_factor': downscale_factor,
             'spatial_version': SPATIAL_VERSION, 'position_version': POSITION_VERSION,
+            **rope_marker(options, source_id, 'guide'),
         }}
         if audio is not None:
             if audio_vae is None:
@@ -271,7 +322,63 @@ class BFSMiniMaxH3DownscaledGuide:
             updated.append([embedding, values])
         LOG.info('BFS H3 guide: %s frames, %sx%s pixels, factor %s, frame %s', frames,
                  preview.shape[2], preview.shape[1], downscale_factor, index)
-        return (patch_guide_model(model), updated, preview)
+        return (patch_guide_model(model, reference_source_phase), updated, preview)
+
+
+class BFSMiniMaxH3IdentityReference:
+    @classmethod
+    def INPUT_TYPES(cls):
+        import folder_paths
+        extra=rope_inputs()
+        extra['source_id']=('INT',{'default':2,'min':1,'max':99})
+        extra['downscale_factor']=('INT',{'default':4,'min':1,'max':8})
+        extra['lora_name']=(['(manual)']+folder_paths.get_filename_list('loras'),)
+        return {'required':{'model':('MODEL',),'positive':('CONDITIONING',),'vae':('VAE',),
+                            'latent':('LATENT',),'image':('IMAGE',)},'optional':extra}
+
+    RETURN_TYPES=('MODEL','CONDITIONING','IMAGE')
+    RETURN_NAMES=('model','positive','reference_preview')
+    FUNCTION='apply'
+    CATEGORY='MiniMax-H3'
+    DESCRIPTION='Caption-only image identity reference. Match source_id to the training control channel. Requires an upscale checkpoint trained with the same reference role and RoPE options.'
+
+    @torch.no_grad()
+    def apply(self,model,positive,vae,latent,image,guide_rope_layout='overlap',reference_rope_layout='native',
+              reference_source_phase=False,reference_phase_scale=1.0,reference_sidecar_margin=0.0,
+              source_id=2,downscale_factor=4,lora_name='(manual)'):
+        from comfy.ldm.minimax import model as h3
+        diffusion=model.get_model_object('diffusion_model')
+        if not isinstance(diffusion,h3.MiniMaxH3Model) or tuple(diffusion.patch_size)!=(1,2,2):
+            raise ValueError('Identity reference requires native MiniMax-H3')
+        if image.ndim!=4 or image.shape[0]!=1:
+            raise ValueError('Identity reference must contain exactly one image')
+        if not positive:raise ValueError('positive conditioning must not be empty')
+        streams=getattr(latent.get('samples'),'tensors',None)
+        if streams is None or len(streams)!=2:raise ValueError('Use a joint H3 target latent')
+        video=streams[0]
+        if video.ndim!=5 or video.shape[:2]!=(1,24):raise ValueError('Target batch must be one H3 video')
+        options=validate_options(guide_rope_layout,reference_rope_layout,reference_source_phase,reference_phase_scale,reference_sidecar_margin)
+        check_lora_metadata(lora_name,downscale_factor,options)
+        if lora_name!='(manual)':
+            import folder_paths
+            from safetensors import safe_open
+            with safe_open(folder_paths.get_full_path_or_raise('loras',lora_name),framework='pt',device='cpu') as f:
+                if (f.metadata() or {}).get('control_latent_only','').lower()!='true':
+                    raise ValueError('Caption-only identity node requires control_latent_only=true in training')
+        ih,iw=image.shape[1:3];target_h,target_w=video.shape[-2]*16,video.shape[-1]*16
+        scale=min(1.0,math.sqrt(target_h*target_w/(ih*iw)))
+        height=max(32,round(ih*scale/32)*32);width=max(32,round(iw*scale/32)*32)
+        pixels=(image[0,...,:3].detach().float().cpu().clamp(0,1).numpy()*255).round().astype(np.uint8)
+        ref=Image.fromarray(pixels).resize((width,height),Image.Resampling.LANCZOS)
+        preview=torch.from_numpy(np.asarray(ref).copy()).float().unsqueeze(0)/255
+        z=encode_guide(vae,preview)
+        block={'kind':'image','latent_h':height//16,'latent_w':width//16,'latent':z,
+               MARKER:rope_marker(options,source_id,'reference')}
+        updated=[]
+        for embedding,values in positive:
+            copied=dict(values);copied['minimax_refs']=list(values.get('minimax_refs',[]))+[block]
+            updated.append([embedding,copied])
+        return patch_guide_model(model,reference_source_phase),updated,preview
 
 
 class BFSMiniMaxH3GuideTarget:
@@ -306,8 +413,10 @@ class BFSMiniMaxH3GuideTarget:
 NODE_CLASS_MAPPINGS = {
     'BFSMiniMaxH3DownscaledGuide': BFSMiniMaxH3DownscaledGuide,
     'BFSMiniMaxH3GuideTarget': BFSMiniMaxH3GuideTarget,
+    'BFSMiniMaxH3IdentityReference': BFSMiniMaxH3IdentityReference,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     'BFSMiniMaxH3DownscaledGuide': 'MiniMax-H3 Downscaled Latent Guide (BFS)',
     'BFSMiniMaxH3GuideTarget': 'MiniMax-H3 Guide Target — Image / Video (BFS)',
+    'BFSMiniMaxH3IdentityReference': 'MiniMax-H3 Identity Reference + RoPE (BFS)',
 }

@@ -106,3 +106,39 @@ A full pretrained ComfyUI GPU sampling run has not been validated as part of
 this change. Matching preprocessing and coordinates establishes the conditioning
 contract; it does not establish the trained LoRA's visual quality. Compare
 LoRA strength 0 and 1 on held-out inputs before evaluating upscale fidelity.
+
+## Experimental reference layouts and source phase (1.47.0)
+
+Optional inputs on Downscaled Guide expose `guide_rope_layout` (overlap/sidecar),
+`reference_rope_layout` (native/overlap/sidecar), `reference_source_phase`,
+`reference_phase_scale`, `reference_sidecar_margin`, and `source_id`. Defaults
+preserve 1.46.0 behavior. H3 sidecar margins use normalized RoPE units, not pixels.
+Select your LoRA to check these values against `minimax_h3_reference_rope` metadata.
+Legacy checkpoints imply overlap/native/phase-off. Changing only inference geometry
+on a legacy LoRA does not establish that the model can use it.
+
+**MiniMax-H3 Identity Reference + RoPE (BFS)** adds a separate single-image latent
+reference without passing it to the VLM. Supply the same target latent and full H3
+VAE. Chain both model and conditioning through Guide and Identity Reference, then
+connect both final outputs to the guider/sampler (and model to the scheduler).
+Use guide `source_id=1`, identity `source_id=2` for training control channels 1 and 2.
+The identity reference keeps its aspect and is resized down only to the trainer's
+/32 reference-image bucket; the guide factor does not resize the portrait.
+The reference preview shows the actual pixels used.
+
+This node requires a checkpoint trained with a matching identity reference role
+and `control_latent_only: true` for caption-only conditioning. The LoRA selector
+checks that mode too. It does not load LoRA weights. Adding a portrait to a LoRA
+trained only with a low-resolution guide is not a validated identity-preservation
+recipe. Keep caption/source conventions consistent during training.
+
+Source phase adds the phase `source_id * phase_scale * 10000**(-d/48)` to H3's
+rotary angles. Text and targets remain source zero. The scoped ModelPatcher object
+patch composes this phase only when this node's marked conditioning is active;
+unmarked conditioning and other models keep their original rotary path.
+
+For a first experiment use overlap plus phase and compare to the phase-off baseline.
+Sidecar and phase have CPU geometry/rotary parity tests, including mixed image,
+video and audio, but no full pretrained H3 quality validation yet. They distinguish
+sources; they do not guarantee the same face. See the
+[training configuration guide](https://github.com/alisson-anjos/ai-toolkit/blob/minimax-h3-latent-guides/H3_REFERENCE_ROPE.md).

@@ -147,3 +147,6 @@ use one frame for images or 73 frames for approximately three seconds at 24 fps.
 At output 1024 x 768 and factor 4, the guide preview is 256 x 192.
 
 See [setup, workflow template, compatibility and validation](MINIMAX_H3_GUIDES.md).
+
+BFSNodes **1.47.0** adds optional MiniMax-H3 overlap/sidecar source-phase RoPE and
+**MiniMax-H3 Identity Reference + RoPE (BFS)**. See [the H3 guide](MINIMAX_H3_GUIDES.md#experimental-reference-layouts-and-source-phase-1470).
