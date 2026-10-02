@@ -84,8 +84,15 @@ matching audio) when *Skipped shots in the output* is set to remove them.
 ## References and prompts
 
 Every shot can have its own reference, second reference and prompt; shots without them use the
-global ones. Connected `ref_image`, `ref_image_2` and `prompt` inputs override the panel's global
-values, so an edited first frame or a prompt from another node can drive the defaults.
+global ones. Click an empty reference slot to upload an image straight from your computer; a filled
+slot has **✕** to remove it and, on a shot, **→ all** to use it for every shot. The last ten
+references you picked are shown under the shot editor for one-click reuse (click = reference,
+shift+click = second reference). Connected `ref_image`, `ref_image_2` and `prompt` inputs override
+the panel's global values, so an edited first frame or a prompt from another node can drive the
+defaults.
+
+The planner also outputs `ref_image` and `ref_image_2`: the references the shots actually use,
+without repeats, so a plan where every shot shares one reference returns a single image.
 
 ## MiniMax H3 with an aligned guide (example)
 

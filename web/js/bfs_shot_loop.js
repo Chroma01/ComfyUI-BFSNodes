@@ -100,6 +100,12 @@ function styles() {
   justify-content:center;cursor:pointer;overflow:hidden;color:#6f6f7a;font-size:10px;text-align:center;flex:none}
 .bsl .refslot img{width:100%;height:100%;object-fit:cover}
 .bsl .refslot:hover{border-color:#5b8cff}
+.bsl .rslot{display:flex;flex-direction:column;gap:3px;align-items:center}
+.bsl .rbtns{display:flex;gap:3px}
+.bsl .rbtns button{padding:1px 6px;font-size:10px}
+.bsl .recent{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;align-items:center}
+.bsl .recent img{width:30px;height:30px;border-radius:5px;object-fit:cover;cursor:pointer;border:1px solid #3a3a45}
+.bsl .recent img:hover{border-color:#5b8cff}
 .bsl .modal{position:absolute;inset:0;background:#0b0b0ecc;z-index:20;display:flex;align-items:center;justify-content:center;padding:14px}
 .bsl .mbox{background:#1b1b21;border:1px solid #3a3a45;border-radius:10px;width:100%;max-height:100%;display:flex;flex-direction:column}
 .bsl .mhd{display:flex;gap:6px;align-items:center;padding:8px;border-bottom:1px solid #2c2c35}
@@ -127,8 +133,6 @@ function Panel(io) {
   const busy = ref(""); const error = ref("");
   const sel = ref(0); const zoom = ref(1);
   const hover = ref(null);       // {frame, x}
-  const gallery = ref(null);     // {target: index|'global', field: 'ref'|'ref2'}
-  const gq = ref("");
   const prog = reactive({ done: 0, count: 0 });
   const tlEl = ref(null);
   const stats = ref([]);         // per-shot content stats from /bfs/shotloop/filters
@@ -182,7 +186,7 @@ function Panel(io) {
   const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return plan.segs[i]; };
 
   async function refreshFiles() {
-    try { const r = await api.fetchApi("/bfs/shotloop/files"); Object.assign(files, await r.json()); } catch (e) { /* ignore */ }
+    try { const r = await api.fetchApi("/bfs/shotloop/files"); const j = await r.json(); files.videos = j.videos || []; } catch (e) { /* ignore */ }
   }
   async function analyze() {
     an.value = null; error.value = "";
@@ -295,8 +299,33 @@ function Panel(io) {
   const num = (k, step = 0.1, min = 0) => h("input", { type: "number", step, min, value: plan[k], onChange: e => { plan[k] = parseFloat(e.target.value) || 0; save(); } });
   const sel_ = (k, opts, after) => h("select", { value: plan[k], onChange: e => { plan[k] = e.target.value; save(); after && after(); } },
     opts.map(o => h("option", { value: Array.isArray(o) ? o[0] : o }, Array.isArray(o) ? o[1] : o)));
-  const refSlot = (name, label, onClick, onClear) => h("div", { class: "refslot", title: name || label, onClick },
-    name ? [h("img", { src: viewUrl(name) })] : [label]);
+  // target: shot index or "global"; field: ref | ref2 (global_ref | global_ref2 for "global")
+  // the last 10 references picked, remembered across workflows (per browser)
+  const RECENT_KEY = "bfs.shotloop.recentRefs";
+  const recent = ref((() => { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; } })());
+  const remember = name => {
+    if (!name) return;
+    recent.value = [name, ...recent.value.filter(x => x !== name)].slice(0, 10);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent.value)); } catch { /* private mode */ }
+  };
+  const setRef = (target, field, name) => {
+    if (target === "global") plan[field] = name; else meta(target)[field] = name;
+    remember(name); save();
+  };
+  const uploadRef = (target, field) => pickFile("image/*", name => setRef(target, field, name));
+  const refAll = (field, name) => { segs.value.forEach((_, i) => { meta(i)[field] = name; }); save(); };
+  const usedRefs = computed(() => {
+    const set = new Set([...recent.value, plan.global_ref, plan.global_ref2, ...plan.segs.flatMap(m => [m?.ref, m?.ref2])].filter(Boolean));
+    return [...set].slice(0, 10);
+  });
+  const refSlot = (name, label, target, field, perShot) => h("div", { class: "rslot" }, [
+    h("div", { class: "refslot", title: name ? name + " (click to replace)" : "click to upload", onClick: () => uploadRef(target, field) },
+      name ? [h("img", { src: viewUrl(name) })] : [label]),
+    h("div", { class: "rbtns" }, [
+      name ? h("button", { title: "remove", onClick: () => setRef(target, field, "") }, "✕") : null,
+      name && perShot ? h("button", { title: "use this reference for every shot", onClick: () => refAll(field, name) }, "→ all") : null,
+    ]),
+  ]);
 
   return () => {
     const S = segs.value, cur = S[sel.value], N = n.value, ppf = pxPerFrame.value, fps = plan.fps;
@@ -432,13 +461,15 @@ function Panel(io) {
       h("h5", [`Shot #${sel.value + 1}`, h("span", { class: "hint", style: "text-transform:none" }, `frames ${cur.start}–${cur.end - 1} · ${cur.len} → generate ${cur.gen}`)]),
       h("div", { class: "row", style: "align-items:flex-start;gap:10px" }, [
         h("div", { class: "refbox" }, [
-          refSlot(cur.ref, "＋ reference\n(uses global)", () => { gallery.value = { target: sel.value, field: "ref" }; }),
-          refSlot(cur.ref2, "＋ ref 2\n(uses global)", () => { gallery.value = { target: sel.value, field: "ref2" }; }),
+          refSlot(cur.ref, "⬆ reference\n(uses global)", sel.value, "ref", true),
+          refSlot(cur.ref2, "⬆ ref 2\n(uses global)", sel.value, "ref2", true),
         ]),
         h("div", { style: "flex:1;min-width:200px" }, [
           h("textarea", { placeholder: "Prompt for this shot (empty = global prompt)", value: cur.prompt, onChange: e => setMeta(sel.value, "prompt", e.target.value) }),
         ]),
       ]),
+      usedRefs.value.length ? h("div", { class: "recent" }, [h("span", { class: "hint" }, "recent (click = ref, shift+click = ref 2):"),
+        ...usedRefs.value.map(n => h("img", { src: viewUrl(n), title: n, onClick: e => setRef(sel.value, e.shiftKey ? "ref2" : "ref", n) }))]) : null,
       h("div", { class: "row", style: "margin-top:6px" }, [
         h("select", { value: cur.force, style: "width:auto", title: "Override the content filters for this shot",
           onChange: e => setMeta(sel.value, "force", e.target.value) },
@@ -446,7 +477,7 @@ function Panel(io) {
         h("button", { onClick: () => setMeta(sel.value, "enabled", !cur.enabled) }, cur.enabled ? "⏸ Disable" : "▶ Enable"),
         h("button", { onClick: () => splitAt(cur.start + Math.floor(cur.len / 2)) }, "✂ Split in half"),
         h("button", { disabled: sel.value >= S.length - 1, onClick: () => mergeNext(sel.value) }, "⇥ Merge with next"),
-        h("button", { onClick: () => applyAll("ref") }, "Ref → all"), h("button", { onClick: () => applyAll("prompt") }, "Prompt → all"),
+        h("button", { onClick: () => applyAll("prompt") }, "Prompt → all"),
         h("button", { class: "dng", onClick: () => { ["ref", "ref2", "prompt"].forEach(k => { meta(sel.value)[k] = ""; }); save(); } }, "Use global"),
       ]),
     ]) : null;
@@ -455,8 +486,8 @@ function Panel(io) {
       h("h5", "Global (used by shots without their own)"),
       h("div", { class: "row", style: "align-items:flex-start;gap:10px" }, [
         h("div", { class: "refbox" }, [
-          refSlot(plan.global_ref, "＋ global\nreference", () => { gallery.value = { target: "global", field: "global_ref" }; }),
-          refSlot(plan.global_ref2, "＋ global\nref 2", () => { gallery.value = { target: "global", field: "global_ref2" }; }),
+          refSlot(plan.global_ref, "⬆ global\nreference", "global", "global_ref", false),
+          refSlot(plan.global_ref2, "⬆ global\nref 2", "global", "global_ref2", false),
         ]),
         h("div", { style: "flex:1;min-width:200px" }, [h("textarea", { placeholder: "Global prompt (a connected `prompt` input overrides it)", value: plan.global_prompt, onChange: e => { plan.global_prompt = e.target.value; save(); } })]),
       ]),
@@ -473,24 +504,7 @@ function Panel(io) {
       h("div", { class: "hint", style: "margin-top:4px" }, "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."),
     ]) : null;
 
-    const modal = gallery.value ? h("div", { class: "modal", onClick: e => { if (e.target === e.currentTarget) gallery.value = null; } }, [
-      h("div", { class: "mbox" }, [
-        h("div", { class: "mhd" }, [
-          h("b", "Choose reference"), h("input", { type: "text", placeholder: "search…", value: gq.value, onInput: e => { gq.value = e.target.value; }, style: "flex:1" }),
-          h("button", { onClick: () => pickFile("image/*", name => { choose(name); }) }, "⬆ Upload"),
-          h("button", { onClick: () => choose("") }, "None"), h("button", { onClick: () => { gallery.value = null; } }, "✕"),
-        ]),
-        h("div", { class: "mgrid" }, files.images.filter(f => f.toLowerCase().includes(gq.value.toLowerCase())).slice(0, 400).map(f =>
-          h("div", { class: "mi", onClick: () => choose(f), title: f }, [h("img", { src: viewUrl(f), loading: "lazy" }), h("div", f)]))),
-      ]),
-    ]) : null;
-    function choose(name) {
-      const g = gallery.value; if (!g) return;
-      if (g.target === "global") plan[g.field] = name; else meta(g.target)[g.field] = name;
-      save(); gallery.value = null;
-    }
-
-    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, filters, cards, editor, globals, queue, modal]);
+    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, filters, cards, editor, globals, queue]);
   };
 }
 

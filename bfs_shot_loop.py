@@ -567,9 +567,9 @@ class BFSShotPlanner:
             },
         }
 
-    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE")
-    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline")
-    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False)
+    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE", "IMAGE", "IMAGE")
+    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline", "ref_image", "ref_image_2")
+    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False, True, True)
     OUTPUT_TOOLTIPS = (
         "One item per shot. Every node that receives this list runs once per shot; connect it to "
         "BFS Shot Unpack or BFS Shot H3 Conditioning, sample, decode, then BFS Shot Join.",
@@ -577,7 +577,9 @@ class BFSShotPlanner:
         "Generation height.", "The whole soundtrack, trimmed to the planned duration.",
         "Human-readable plan.",
         "Every shot in order, including the ones that do not run (disabled or filtered out). Connect it "
-        "to BFS Shot Join so skipped shots are filled with the original video (or dropped).")
+        "to BFS Shot Join so skipped shots are filled with the original video (or dropped).",
+        "The references the shots use, without repeats: one image when every shot shares the same reference.",
+        "The second references the shots use, without repeats.")
     FUNCTION = "plan_shots"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Split a long video into model-sized shots (at camera cuts, fixed length, or by hand), "
@@ -617,6 +619,30 @@ class BFSShotPlanner:
             save_state(rid, st)
             pending = [i for i in todo if i not in st["done"]]
             todo = pending[:1] if pending else [len(segs) - 1]
+        cache_imgs: dict[str, torch.Tensor] = {}
+
+        def ref_for(name, default):
+            if not name:
+                return default
+            if name not in cache_imgs:
+                cache_imgs[name] = _load_image(name)
+            return cache_imgs[name]
+
+        g_names = {"ref": "__socket__" if ref_image is not None else p.get("global_ref", ""),
+                   "ref2": "__socket__" if ref_image_2 is not None else p.get("global_ref2", "")}
+
+        def unique(field, default):
+            seen, out = set(), []
+            for s in segs:
+                key = s[field] or g_names[field]          # the image this shot actually uses
+                img = ref_for(s[field], default)
+                if img is None or key in seen:
+                    continue
+                seen.add(key)
+                out.append(img)
+            return out or [_grey()]
+
+        used_refs, used_refs2 = unique("ref", g_ref), unique("ref2", g_ref2)
         shots = []
         for i, s in enumerate(segs):
             if i not in todo:
@@ -625,8 +651,8 @@ class BFSShotPlanner:
             idx = np.clip(idx, 0, a["n"] - 1)          # past the end: hold the last frame
             frames = _read_frames(path, src[idx], (W, H))
             ft = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
-            ref = _load_image(s["ref"]) if s["ref"] else g_ref
-            ref2 = _load_image(s["ref2"]) if s["ref2"] else g_ref2
+            ref = ref_for(s["ref"], g_ref)
+            ref2 = ref_for(s["ref2"], g_ref2)
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
@@ -652,7 +678,7 @@ class BFSShotPlanner:
             lines.append(f"#{s['index'] + 1}: frames {s['start']}-{s['end'] - 1} ({s['length']} -> generate "
                          f"{s['gen_length']}){' cut' if s['cut_before'] else ''}"
                          f"{' ref' if s['ref'] is not None else ''}{' ref2' if s['ref2'] is not None else ''}")
-        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline)
+        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline, used_refs, used_refs2)
 
 
 class BFSShotUnpack:
@@ -932,7 +958,9 @@ try:
 
     @PromptServer.instance.routes.get("/bfs/shotloop/files")
     async def _bfs_shot_files(request):
-        return web.json_response({"videos": _list_input(VIDEO_EXTS), "images": _list_input(IMAGE_EXTS)})
+        # images are only listed on request: an input folder can hold thousands of them
+        images = _list_input(IMAGE_EXTS) if request.query.get("images") in ("1", "true") else []
+        return web.json_response({"videos": _list_input(VIDEO_EXTS), "images": images})
 
     @PromptServer.instance.routes.get("/bfs/shotloop/analyze")
     async def _bfs_shot_analyze(request):
