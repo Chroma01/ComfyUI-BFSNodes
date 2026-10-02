@@ -60,6 +60,14 @@ camera cuts.
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
 107 frames for H3). *Max shots* and *Max total seconds* cap a long source.
 
+## Preview
+
+*Play shot* plays only the selected shot, from its first to its last frame, and stops (or loops with
+*loop shot*); every shot card has its own ▶. *Play all* plays the whole plan and jumps over shots
+that will not run. The panel shows the shot's start, end and current time (and frame), a yellow
+playhead follows on the timeline, and clicking the timeline seeks. The source video streams from
+the input folder, so only what you play is loaded.
+
 ## Filters
 
 Skip shots that should not run, decided per shot from a few sampled frames:

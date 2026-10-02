@@ -103,6 +103,14 @@ function styles() {
 .bsl .rslot{display:flex;flex-direction:column;gap:3px;align-items:center}
 .bsl .rbtns{display:flex;gap:3px}
 .bsl .rbtns button{padding:1px 6px;font-size:10px}
+.bsl .player{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.bsl .player video{max-height:240px;max-width:100%;border-radius:8px;background:#000;border:1px solid #2c2c35}
+.bsl .pinfo{flex:1;min-width:200px;display:flex;flex-direction:column;gap:6px}
+.bsl .tc{font-family:ui-monospace,monospace;font-size:12px;color:#e6e6ea;background:#101014;border:1px solid #2c2c35;border-radius:6px;padding:6px 8px;line-height:1.6}
+.bsl .tc b{color:#ffd34d}
+.bsl .playhead{position:absolute;top:0;bottom:0;width:2px;background:#ffd34d;box-shadow:0 0 6px #ffd34d;pointer-events:none;z-index:5}
+.bsl .sc .play{position:absolute;top:5px;right:5px;padding:1px 6px;font-size:10px}
+.bsl .seg.playing{box-shadow:0 0 0 2px #ffd34d}
 .bsl .recent{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;align-items:center}
 .bsl .recent img{width:30px;height:30px;border-radius:5px;object-fit:cover;cursor:pointer;border:1px solid #3a3a45}
 .bsl .recent img:hover{border-color:#5b8cff}
@@ -284,14 +292,51 @@ function Panel(io) {
   const frameAt = e => { const box = tlEl.value.getBoundingClientRect(); const x = e.clientX - box.left + tlEl.value.scrollLeft; return { frame: Math.max(0, Math.min(n.value - 1, Math.round(x / pxPerFrame.value))), x }; };
   const thumbFor = f => { const t = an.value?.thumbs; if (!t?.length) return ""; let b = t[0]; for (const x of t) { if (x.f <= f) b = x; else break; } return b.src; };
 
+  // ---- preview player
+  const vid = ref(null);
+  const play = reactive({ mode: "", idx: -1, frame: 0, loop: false });
+  const stopAt = () => { const s = segs.value[play.idx]; return s ? s.end / plan.fps : Infinity; };
+  const tick = () => {
+    const v = vid.value; if (!v) return;
+    play.frame = Math.floor(v.currentTime * plan.fps + 1e-3);
+    if (!play.mode) return;
+    if (play.mode === "all") {
+      const i = segs.value.findIndex(s => play.frame >= s.start && play.frame < s.end);
+      if (i >= 0 && skipWhy(segs.value[i])) {            // jump over shots that will not run
+        const nxt = segs.value.slice(i + 1).find(s => !skipWhy(s));
+        if (nxt) v.currentTime = nxt.start / plan.fps + 1e-3; else { v.pause(); play.mode = ""; }
+        return;
+      }
+      if (i >= 0) play.idx = i;
+      if (play.frame >= n.value) { v.pause(); play.mode = ""; }
+    } else if (v.currentTime >= stopAt() - 1e-3) {
+      const s = segs.value[play.idx];
+      if (play.loop && s) v.currentTime = s.start / plan.fps + 1e-3; else { v.pause(); play.mode = ""; v.currentTime = stopAt() - 0.5 / plan.fps; }
+    }
+  };
+  let raf = 0;
+  const loop = () => { tick(); raf = requestAnimationFrame(loop); };
+  const playShot = i => {
+    const v = vid.value, s = segs.value[i]; if (!v || !s) return;
+    sel.value = i; play.idx = i; play.mode = "shot";
+    v.currentTime = s.start / plan.fps + 1e-3; v.play();
+  };
+  const playAll = () => {
+    const v = vid.value; if (!v) return;
+    play.mode = "all"; const first = segs.value.find(s => !skipWhy(s)) || segs.value[0];
+    play.idx = segs.value.indexOf(first); v.currentTime = (first?.start || 0) / plan.fps + 1e-3; v.play();
+  };
+  const stop = () => { vid.value?.pause(); play.mode = ""; };
+  const seek = f => { const v = vid.value; if (v) { v.currentTime = f / plan.fps + 1e-3; play.frame = f; } };
+
   // ---- queue loop events
   const onProg = e => { prog.done = e.detail.done; prog.count = e.detail.count; };
   const onNext = e => { onProg(e); if (plan.run === "queue" && plan.auto_continue) setTimeout(() => app.queuePrompt(0, 1), 300); };
   onMounted(() => {
-    load(); refreshFiles(); analyze(); progress();
+    load(); refreshFiles(); analyze(); progress(); raf = requestAnimationFrame(loop);
     api.addEventListener("bfs-shotloop-progress", onProg); api.addEventListener("bfs-shotloop-next", onNext);
   });
-  onBeforeUnmount(() => { api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); });
+  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); });
   io.expose({ reload: () => { load(); analyze(); progress(); } });
 
   // ---- view helpers
@@ -384,7 +429,8 @@ function Panel(io) {
       h("h5", ["Timeline", h("span", { class: "grow" }), h("span", { class: "hint", style: "text-transform:none" }, "zoom"),
         h("input", { type: "range", min: 1, max: 8, step: 0.5, value: zoom.value, style: "width:110px", onInput: e => { zoom.value = parseFloat(e.target.value); } })]),
       h("div", { class: "tl", ref: tlEl,
-        onPointermove: e => { if (!e.buttons) hover.value = frameAt(e); }, onPointerleave: () => { hover.value = null; } }, [
+        onPointermove: e => { if (!e.buttons) hover.value = frameAt(e); }, onPointerleave: () => { hover.value = null; },
+        onClick: e => { if (e.target.classList.contains("hdl")) return; seek(frameAt(e).frame); } }, [
         h("div", { class: "tlin", style: `width:${tlWidth.value}px` }, [
           h("div", { class: "strip" }, thumbs.map(t => h("img", { src: t.src, style: `width:${thumbW}px` }))),
           ...cuts.value.filter(c => c < N).map(c => h("div", { class: "cut", style: `left:${c * ppf}px`, title: `cut @ ${c}` })),
@@ -392,13 +438,14 @@ function Panel(io) {
             [h("polyline", { points: sparkPts, fill: "none", stroke: "#ff7a90", "stroke-width": 1, "vector-effect": "non-scaling-stroke" })]),
           h("div", { class: "segs", onDblclick: e => splitAt(frameAt(e).frame) }, [
             ...S.map((s, i) => h("div", {
-              class: ["seg", i === sel.value && "sel", !!skipWhy(s) && "off", s.len > maxLen.value && "long"],
+              class: ["seg", i === sel.value && "sel", !!skipWhy(s) && "off", s.len > maxLen.value && "long", play.mode && play.idx === i && "playing"],
               style: `left:${s.start * ppf}px;width:${Math.max(2, s.len * ppf - 1)}px;background:${hue(i)}`,
               title: `#${i + 1} · frames ${s.start}-${s.end - 1} · ${s.len} → ${s.gen}${skipWhy(s) ? " · skip: " + skipWhy(s) : ""}`, onClick: () => { sel.value = i; },
             }, s.len * ppf > 26 ? `${i + 1}` : "")),
             ...plan.bounds.filter(b => b < N).map((b, k) => h("div", { class: "hdl", style: `left:${b * ppf}px`, title: `boundary @ ${b}`, onPointerdown: e => drag(k, e) })),
           ]),
           hover.value ? h("div", { class: "ph", style: `left:${hover.value.x}px` }) : null,
+          vid.value && plan.video ? h("div", { class: "playhead", style: `left:${Math.min(N, play.frame) * ppf}px` }) : null,
         ]),
         hover.value ? h("div", { class: "tip", style: `left:${Math.min(tlWidth.value - 160, Math.max(0, hover.value.x - (tlEl.value?.scrollLeft || 0) - 70))}px;top:2px` },
           [h("img", { src: thumbFor(hover.value.frame) }), h("div", `frame ${hover.value.frame} · ${fmtT(hover.value.frame, fps)}`)]) : null,
@@ -439,6 +486,7 @@ function Panel(io) {
     const cards = S.length ? h("div", { class: "card" }, [
       h("h5", "Shots"),
       h("div", { class: "shots" }, S.map((s, i) => h("div", { class: ["sc", i === sel.value && "sel"], onClick: () => { sel.value = i; } }, [
+        h("button", { class: "play", title: "play this shot", onClick: e => { e.stopPropagation(); playShot(i); } }, "▶"),
         h("div", { class: "bar", style: `background:${hue(i)}` }),
         h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? h("span", { class: "pill" }, "cut") : null,
           skipWhy(s) ? h("span", { class: "pill warn", title: skipWhy(s) }, "skip") : h("span", { class: "pill ok" }, "run"),
@@ -457,6 +505,30 @@ function Panel(io) {
     ]) : null;
 
     // editor for the selected shot
+    const ps = S[play.idx] || cur;
+    const player = an.value && plan.video ? h("div", { class: "card" }, [
+      h("h5", ["Preview", play.mode ? h("span", { class: "pill warn" }, play.mode === "all" ? "playing all" : "playing shot") : null]),
+      h("div", { class: "player" }, [
+        h("video", { ref: vid, src: viewUrl(plan.video), preload: "metadata", muted: false, playsinline: true,
+          onPause: () => { if (play.mode) play.mode = ""; } }),
+        h("div", { class: "pinfo" }, [
+          h("div", { class: "row" }, [
+            h("button", { class: "pri", disabled: !cur, onClick: () => playShot(sel.value) }, `▶ Play shot #${sel.value + 1}`),
+            h("button", { onClick: playAll }, "▶ Play all"),
+            h("button", { onClick: stop }, "■ Stop"),
+            h("label", { class: "row", style: "gap:4px" }, [h("input", { type: "checkbox", checked: play.loop, onChange: e => { play.loop = e.target.checked; } }), "loop shot"]),
+          ]),
+          ps ? h("div", { class: "tc" }, [
+            h("div", ["Shot ", h("b", `#${S.indexOf(ps) + 1}`), skipWhy(ps) ? `  (skipped: ${skipWhy(ps)})` : ""]),
+            h("div", ["start ", h("b", fmtT(ps.start, fps)), `  (frame ${ps.start})`]),
+            h("div", ["end   ", h("b", fmtT(ps.end, fps)), `  (frame ${ps.end - 1})  ·  ${(ps.len / fps).toFixed(2)}s`]),
+            h("div", ["now   ", h("b", fmtT(Math.min(N, play.frame), fps)), `  (frame ${Math.min(N, play.frame)})`]),
+          ]) : null,
+          h("div", { class: "hint" }, "Click the timeline to seek. Play all skips shots that will not run."),
+        ]),
+      ]),
+    ]) : null;
+
     const editor = cur ? h("div", { class: "card" }, [
       h("h5", [`Shot #${sel.value + 1}`, h("span", { class: "hint", style: "text-transform:none" }, `frames ${cur.start}–${cur.end - 1} · ${cur.len} → generate ${cur.gen}`)]),
       h("div", { class: "row", style: "align-items:flex-start;gap:10px" }, [
@@ -504,7 +576,7 @@ function Panel(io) {
       h("div", { class: "hint", style: "margin-top:4px" }, "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."),
     ]) : null;
 
-    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, filters, cards, editor, globals, queue]);
+    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cards, editor, globals, queue]);
   };
 }
 
