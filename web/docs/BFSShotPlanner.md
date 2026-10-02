@@ -56,7 +56,8 @@ camera cuts.
   into equal parts.
 - **Fixed length**: equal parts no longer than the maximum.
 - **By hand**: drag the white handles on the timeline to move a boundary, double-click the
-  shot bar to split, *Merge with next* to join. Your edits are what runs.
+  shot bar to split, *Merge with next* to join, or select a shot and press **Delete** to remove the cut at its
+  start (it merges into the previous shot). Your edits are what runs.
 
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
 107 frames for H3). *Max shots* and *Max total seconds* cap a long source.

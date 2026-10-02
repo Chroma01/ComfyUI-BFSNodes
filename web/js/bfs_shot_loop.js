@@ -42,6 +42,7 @@ function styles() {
   const el = document.createElement("style");
   el.id = "bfs-shotloop-css";
   el.textContent = `
+.bsl:focus{outline:none}
 .bsl{font:12px/1.45 var(--font-family,system-ui,sans-serif);color:#c9c9cf;background:#17171b;border-radius:10px;
   height:100%;overflow:auto;box-sizing:border-box;padding:10px;position:relative}
 .bsl *{box-sizing:border-box}
@@ -318,6 +319,21 @@ function Panel(io) {
     plan.segs.splice(i + 1, 0, { ...(plan.segs[i] || {}) });
     sel.value = i + 1; save();
   };
+  // Delete / Backspace on a selected shot: remove the cut at its start (merge into the previous shot;
+  // the first shot merges with the next one)
+  const removeCut = i => {
+    const S = segs.value, s = S[i]; if (!s || S.length < 2) return;
+    if (i === 0) { mergeNext(0); sel.value = 0; return; }
+    plan.bounds = plan.bounds.filter(b => b !== s.start); plan.segs.splice(i, 1);
+    sel.value = i - 1; save();
+  };
+  const onKey = e => {
+    if (e.key !== "Delete" && e.key !== "Backspace") return;
+    const t = e.target, tag = (t?.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+    e.preventDefault(); e.stopPropagation();   // keep ComfyUI from deleting the node
+    removeCut(sel.value);
+  };
   const mergeNext = i => {
     const s = segs.value[i]; if (!s || i >= segs.value.length - 1) return;
     plan.bounds = plan.bounds.filter(b => b !== s.end); plan.segs.splice(i + 1, 1); save();
@@ -463,7 +479,7 @@ function Panel(io) {
       h("div", { class: "row", style: "margin-top:8px" }, [
         h("button", { class: "pri", disabled: !plan.video || !!busy.value, onClick: () => autoSplit(true) }, "✂ Auto split"),
         h("button", { disabled: !plan.video, onClick: analyze }, "↻ Re-analyse"),
-        h("span", { class: "hint" }, "Drag the white handles to move a boundary · double-click the shot bar to split there"),
+        h("span", { class: "hint" }, "Drag the white handles to move a boundary · double-click the shot bar to split there · select a shot and press Delete to remove its cut"),
       ]),
     ]);
 
@@ -663,7 +679,7 @@ function Panel(io) {
       h("div", { class: "hint", style: "margin-top:4px" }, "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."),
     ]) : null;
 
-    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, cards, editor, globals, queue]);
+    return h("div", { class: "bsl", tabindex: 0, onKeydown: onKey }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, cards, editor, globals, queue]);
   };
 }
 
