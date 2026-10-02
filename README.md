@@ -146,6 +146,10 @@ Two run modes: *auto loop* (all shots in one run) and *queue loop* (one shot per
 disk, re-queued automatically; nodes after the join only run on the last shot). See
 [`web/docs/BFSShotPlanner.md`](web/docs/BFSShotPlanner.md).
 
+Shots can also be cropped to a **SAM 3 mask** (text or points per shot) and pasted back by the join, continue
+from the previous shot's result, and get **VLM suggestions** (what to segment, a shot description for the
+prompt, run/skip) from a Qwen3-VL connected to the planner.
+
 ## H3 Duet / Side Panel (1.50.0)
 
 Training-free split-screen generation for MiniMax H3 (TSC's latent pin): a panel (the source clip

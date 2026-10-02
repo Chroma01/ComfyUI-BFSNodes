@@ -250,6 +250,41 @@ class ContinuityTest(unittest.TestCase):
         self.assertEqual((segs[0]["chain"], segs[1]["chain"], segs[1]["chain_frame"]), ("off", "first frame", "middle"))
 
 
+class MaskCropTest(unittest.TestCase):
+    def test_spec_takes_target_from_shot_and_settings_from_global(self):
+        spec = SL.mask_spec({"text": "person", "padding": 0.9}, {"padding": 0.3, "text": "ignored"})
+        self.assertEqual((spec["text"], spec["padding"], spec["fill_holes"]), ("person", 0.3, True))
+
+    def test_shape_fills_holes_and_holds_in_time(self):
+        m = torch.zeros(5, 9, 9, dtype=torch.uint8)
+        m[2, 2:7, 2:7] = 1
+        m[2, 4, 4] = 0                                 # a hole
+        out = SL.shape_mask(m, dict(SL.DEFAULT_MASK, temporal_expand=1))
+        self.assertEqual(int(out[2, 4, 4]), 1)
+        self.assertEqual(int(out[1, 3, 3]), 1)          # held one frame back
+        self.assertEqual(int(out[0, 3, 3]), 0)
+        blocks = SL.shape_mask(m, dict(SL.DEFAULT_MASK, temporal_expand=0, blockify=4))
+        self.assertEqual(tuple(blocks.shape), (5, 9, 9))
+
+    def test_box_is_the_union_plus_padding(self):
+        m = torch.zeros(2, 10, 10, dtype=torch.uint8)
+        m[0, 2:4, 2:4] = 1
+        m[1, 6:8, 6:8] = 1
+        self.assertEqual(SL.crop_box(m, 0.0), [0.2, 0.2, 0.8, 0.8])
+        self.assertIsNone(SL.crop_box(torch.zeros(2, 10, 10), 0.1))
+
+    def test_uncrop_pastes_only_inside_the_mask(self):
+        full = torch.zeros(3, 20, 20, 3)
+        mask = torch.zeros(3, 20, 20)
+        mask[:, 5:15, 5:15] = 1
+        shot = {"full_frames": full, "crop": {"box": [0.25, 0.25, 0.75, 0.75], "mask": mask, "paste": "mask",
+                                              "expand": 0, "feather": 0}}
+        out = SL.uncrop(torch.ones(3, 8, 8, 3), shot)
+        self.assertEqual(tuple(out.shape), (3, 20, 20, 3))
+        self.assertEqual(float(out[0, 10, 10, 0]), 1.0)
+        self.assertEqual(float(out[0, 1, 1, 0]), 0.0)
+
+
 class RepackTest(unittest.TestCase):
     def test_replaces_only_connected_pieces_and_fits_the_guide(self):
         shot = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3),

@@ -8,17 +8,23 @@
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, h } from "./vendor/vue.esm-browser.prod.mjs";
+import { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, h, Teleport } from "./vendor/vue.esm-browser.prod.mjs";
 
 const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "",
   megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
-  skip_fill: "original", cast: {}, cast_assign: true, cast_split: false, cast_only: false,
+  skip_fill: "original", mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
+
+// global mask settings (same defaults as the server's DEFAULT_MASK)
+const MASK_DEFAULTS = { threshold: 0.5, max_objects: 4, invert: false, fill_holes: true, temporal_expand: 2, blockify: 0,
+                        padding: 0.15, expand: 16, feather: 12, paste: "mask" };
+
+const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 320, auto_segment: true, auto_shot: true, instruction: "" };
 
 const snapUp = (n, grid) => {
   const [s, o] = GRIDS[grid] || GRIDS["H3 (17n+5)"]; n = Math.max(1, n | 0);
@@ -43,6 +49,16 @@ function styles() {
   el.id = "bfs-shotloop-css";
   el.textContent = `
 .bsl:focus{outline:none}
+.bsl .vsug{margin-top:6px;padding:6px 8px;border:1px dashed #4a4a58;border-radius:6px;display:flex;flex-direction:column;gap:3px}
+.bsl .vsug button{margin-left:6px;padding:1px 6px}
+.bsl .mstrip{display:flex;gap:4px;margin-top:6px;align-items:center;flex-wrap:wrap}
+.bsl .mstrip img{height:90px;border-radius:5px;border:1px solid #3a3a45}
+.bsl .mmodal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center}
+.bsl .mbox{background:#1d1d23;border:1px solid #3a3a45;border-radius:10px;padding:12px;width:min(960px,94vw);max-height:94vh;overflow:auto}
+.bsl .mimg{position:relative;cursor:crosshair;user-select:none;line-height:0}
+.bsl .mimg img{width:100%;border-radius:6px}
+.bsl .pt{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #fff;cursor:pointer}
+.bsl .pt.pos{background:#3ccf6b}.bsl .pt.neg{background:#e8455a}
 .bsl{font:12px/1.45 var(--font-family,system-ui,sans-serif);color:#c9c9cf;background:#17171b;border-radius:10px;
   height:100%;overflow:auto;box-sizing:border-box;padding:10px;position:relative}
 .bsl *{box-sizing:border-box}
@@ -156,6 +172,10 @@ function Panel(io) {
   const tlEl = ref(null);
   const stats = ref([]);         // per-shot content stats from /bfs/shotloop/filters
   const people = ref([]);        // cast from /bfs/shotloop/cast: [{id, thumb, share, first, last}]
+  const maskPrev = ref({});      // "start-end" -> {frames, box, coverage, empty} from /bfs/shotloop/mask
+  const showMasks = ref(true);   // overlay the mask preview on the shot cards
+  const vlmSug = ref({});        // "start-end" -> {segment, shot, people, recommend, reason} from the VLM
+  const modal = reactive({ open: false, idx: -1, key: 0, points: [], text: "", prev: null, busy: "" });
   const segPeople = ref({});     // "start-end" -> {people, main} from /bfs/shotloop/plan
 
   const load = () => {
@@ -164,6 +184,8 @@ function Panel(io) {
     Object.assign(plan, DEFAULTS, p);
     plan.filters = { ...DEFAULTS.filters, ...(p.filters || {}) };
     plan.cast = { ...(p.cast || {}) };
+    plan.mask_cfg = { ...MASK_DEFAULTS, ...(p.mask_cfg || {}) };
+    plan.vlm_cfg = { ...VLM_DEFAULTS, ...(p.vlm_cfg || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
   };
@@ -185,7 +207,8 @@ function Panel(io) {
       const m = plan.segs[out.length] || {};
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
-                 force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first" });
+                 force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first",
+                 crop: !!m.crop, mask: m.mask || {} });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -253,7 +276,8 @@ function Panel(io) {
       if (apply) {
         plan.bounds = j.segs.slice(1).map(s => s.start);
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
-          chain: keep[i]?.chain || "off", chain_frame: keep[i]?.chain_frame || "first" }));
+          chain: keep[i]?.chain || "off", chain_frame: keep[i]?.chain_frame || "first",
+          crop: !!keep[i]?.crop, mask: keep[i]?.mask || {} }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -283,6 +307,56 @@ function Panel(io) {
   const setCast = (id, k, v) => {
     plan.cast = { ...plan.cast, [String(id)]: { ...castOf(id), [k]: v } };
     if (k !== "ignore") remember(v);
+    save();
+  };
+  const segKey = s => `${s.start}-${s.end}`;
+  async function previewMask(i, spec, intoModal = false) {
+    const s = segs.value[i]; if (!s) return;
+    const label = "Segmenting with SAM 3… (the first time downloads/loads the model)";
+    if (intoModal) modal.busy = label; else busy.value = label;
+    error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/mask", { method: "POST", body: JSON.stringify({ plan: { ...plan }, index: i, mask: spec || null }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      if (intoModal) modal.prev = j; else maskPrev.value = { ...maskPrev.value, [segKey(s)]: j };
+    } catch (e) { error.value = String(e.message || e); }
+    if (intoModal) modal.busy = ""; else busy.value = "";
+  }
+  const setMask = (i, k, v) => { const m = meta(i); m.mask = { ...(m.mask || {}), [k]: v }; save(); };
+  const setMaskCfg = (k, v) => { plan.mask_cfg = { ...plan.mask_cfg, [k]: v }; save(); maskPrev.value = {}; };
+  const openPoints = i => {
+    const s = segs.value[i]; if (!s) return;
+    Object.assign(modal, { open: true, idx: i, key: s.mask.key ?? Math.floor(s.len / 2), points: [...(s.mask.points || [])],
+                           text: s.mask.text || "", prev: null, busy: "" });
+  };
+  const savePoints = () => {
+    const m = meta(modal.idx); m.mask = { ...(m.mask || {}), points: modal.points, key: modal.key, text: modal.text }; save();
+    if (modal.prev) maskPrev.value = { ...maskPrev.value, [segKey(segs.value[modal.idx])]: modal.prev };
+    modal.open = false;
+  };
+  const mergeSug = list => { const o = { ...vlmSug.value }; for (const x of list || []) o[`${x.start}-${x.end}`] = x; vlmSug.value = o; };
+  async function analyseVLM() {
+    busy.value = "Asking the VLM about every shot…"; error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/vlm", { method: "POST", body: JSON.stringify({ plan: { ...plan } }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      mergeSug(j.segs);
+    } catch (e) { error.value = String(e.message || e); }
+    busy.value = "";
+  }
+  const setVlmCfg = (k, v) => { plan.vlm_cfg = { ...plan.vlm_cfg, [k]: v }; save(); };
+  const applySug = (i, what) => {
+    const s = segs.value[i], g = s && vlmSug.value[`${s.start}-${s.end}`]; if (!g) return;
+    if (what === "segment" && g.segment) setMask(i, "text", g.segment);
+    if (what === "skip") setMeta(i, "force", g.recommend === "skip" ? "skip" : "auto");
+  };
+  const applyAllSug = () => {
+    segs.value.forEach((s, i) => {
+      const g = vlmSug.value[`${s.start}-${s.end}`]; if (!g) return;
+      const m = meta(i);
+      if (g.segment && !(m.mask?.text || (m.mask?.points || []).length)) m.mask = { ...(m.mask || {}), text: g.segment };
+      if (g.recommend === "skip" && (m.force || "auto") === "auto") m.force = "skip";
+    });
     save();
   };
   const setCastOpt = (k, v) => { plan[k] = v; save(); if (k === "cast_split") autoSplit(true); };
@@ -396,12 +470,14 @@ function Panel(io) {
 
   // ---- queue loop events
   const onProg = e => { prog.done = e.detail.done; prog.count = e.detail.count; };
+  const onVlm = e => { if (e.detail?.video === plan.video) mergeSug(e.detail.segs); };
   const onNext = e => { onProg(e); if (plan.run === "queue" && plan.auto_continue) setTimeout(() => app.queuePrompt(0, 1), 300); };
   onMounted(() => {
     load(); refreshFiles(); analyze(); progress(); raf = requestAnimationFrame(loop);
     api.addEventListener("bfs-shotloop-progress", onProg); api.addEventListener("bfs-shotloop-next", onNext);
+    api.addEventListener("bfs-shotloop-vlm", onVlm);
   });
-  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); });
+  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); api.removeEventListener("bfs-shotloop-vlm", onVlm); });
   io.expose({ reload: () => { load(); analyze(); progress(); } });
 
   // ---- view helpers
@@ -580,6 +656,61 @@ function Panel(io) {
       ]),
     ]) : null;
 
+    // global mask settings
+    const MC = plan.mask_cfg || {};
+    const mnum = (k, step, label, hint, scale = 1) => fld(label, h("input", { type: "number", step, min: 0, value: +(MC[k] * scale).toFixed(3),
+      onChange: e => setMaskCfg(k, (parseFloat(e.target.value) || 0) / scale) }), hint);
+    const mchk = (k, label, title) => h("label", { class: "row", style: "gap:4px", title }, [h("input", { type: "checkbox", checked: !!MC[k], onChange: e => setMaskCfg(k, e.target.checked) }), label]);
+    const cropN = S.filter(x => x.crop).length;
+    const masks = an.value ? h("details", { class: "card", open: cropN > 0 }, [
+      h("summary", h("h5", ["Mask & crop", cropN ? h("span", { class: "pill warn" }, `${cropN} cropped`) : h("span", { class: "pill" }, "off"),
+        h("span", { class: "hint", style: "text-transform:none;letter-spacing:0" }, "SAM 3 per shot (text or points) · generate only the masked region and paste it back")])),
+      h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
+        mchk("fill_holes", "Fill holes", "Fill enclosed gaps so each region is solid"),
+        mchk("invert", "Invert", "Use everything except the segmented object"),
+        h("label", { class: "row", style: "gap:4px", title: "Overlay the mask preview on the shot cards" }, [
+          h("input", { type: "checkbox", checked: showMasks.value, onChange: e => { showMasks.value = e.target.checked; } }), "Show masks on shots"]),
+      ]),
+      h("div", { class: "grid" }, [
+        mnum("padding", 1, "Crop padding (%)", "context around the mask's box", 100),
+        mnum("expand", 1, "Expand (px)", "grow the mask before pasting back"),
+        mnum("feather", 1, "Feather (px)", "soft edge of the paste"),
+        mnum("temporal_expand", 1, "Temporal expand (frames)", "hold the mask a few frames: less flicker"),
+        mnum("blockify", 1, "Blockify (px, 0 = off)", "square blocks; 16 matches H3's latent grid"),
+        mnum("threshold", 0.05, "Detection threshold", "SAM 3 score to keep an object"),
+        mnum("max_objects", 1, "Max objects", "how many matches of the text are tracked"),
+        fld("Paste back", h("select", { value: MC.paste, onChange: e => setMaskCfg("paste", e.target.value) },
+          [h("option", { value: "mask" }, "only the mask (feathered)"), h("option", { value: "box" }, "the whole box (feathered)")])),
+      ]),
+      h("div", { class: "hint", style: "margin-top:4px" }, "Uses the official sam3.1_multiplex_fp16 checkpoint (models/checkpoints), downloaded from Comfy-Org/sam3.1 the first time. Each shot sets what to segment in its editor."),
+    ]) : null;
+
+    // VLM
+    const VC = plan.vlm_cfg || {};
+    const vchk = (k, label, title) => h("label", { class: "row", style: "gap:4px", title }, [h("input", { type: "checkbox", checked: !!VC[k], onChange: e => setVlmCfg(k, e.target.checked) }), label]);
+    const sugN = Object.keys(vlmSug.value).length;
+    const vlmCard = an.value ? h("details", { class: "card", open: !!VC.enabled || sugN > 0 }, [
+      h("summary", h("h5", ["VLM", VC.enabled ? h("span", { class: "pill ok" }, "on") : h("span", { class: "pill" }, "off"),
+        sugN ? h("span", { class: "pill" }, `${sugN} suggestions`) : null,
+        h("span", { class: "hint", style: "text-transform:none;letter-spacing:0" }, "connect a Qwen3-VL (CLIPLoader) to the planner's vlm input: it looks at every shot and suggests settings")])),
+      h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
+        vchk("enabled", "Use the VLM when the workflow runs", "At run time the planner asks the VLM about the shots it runs and applies the options below"),
+        vchk("auto_segment", "Fill the mask text", "Shots without a mask text or points get the VLM's segment suggestion"),
+        vchk("auto_shot", "Fill {shot} in the prompt", "Write {shot} in a prompt: it becomes the VLM's description of that shot (camera, framing, action)"),
+      ]),
+      h("div", { class: "grid" }, [
+        fld("Frames per shot", h("input", { type: "number", min: 1, max: 8, step: 1, value: VC.frames, onChange: e => setVlmCfg("frames", parseInt(e.target.value) || 3) })),
+        fld("Max tokens", h("input", { type: "number", min: 64, max: 2048, step: 32, value: VC.max_tokens, onChange: e => setVlmCfg("max_tokens", parseInt(e.target.value) || 320) })),
+      ]),
+      h("textarea", { style: "margin-top:6px;min-height:44px", placeholder: "Extra instruction for the VLM (optional), e.g. 'segment the woman, not the man'",
+        value: VC.instruction || "", onChange: e => setVlmCfg("instruction", e.target.value) }),
+      h("div", { class: "row", style: "margin-top:6px" }, [
+        h("button", { class: "pri", disabled: !!busy.value, onClick: analyseVLM }, "🤖 Analyse shots"),
+        h("button", { disabled: !sugN, onClick: applyAllSug, title: "Mask text for shots without one, skip where the VLM says skip" }, "Apply suggestions → all"),
+        h("span", { class: "hint" }, "Analyse works once the workflow has run with the VLM connected."),
+      ]),
+    ]) : null;
+
     // shot cards
     const cards = S.length ? h("div", { class: "card" }, [
       h("h5", "Shots"),
@@ -589,7 +720,8 @@ function Panel(io) {
         h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? h("span", { class: "pill" }, "cut") : null,
           skipWhy(s) ? h("span", { class: "pill warn", title: skipWhy(s) }, "skip") : h("span", { class: "pill ok" }, "run"),
           s.force !== "auto" ? h("span", { class: "pill" }, s.force) : null,
-          i > 0 && s.chain !== "off" ? h("span", { class: "pill", title: `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}` }, "⛓") : null]),
+          i > 0 && s.chain !== "off" ? h("span", { class: "pill", title: `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}` }, "⛓") : null,
+          s.crop ? h("span", { class: "pill", title: `cropped to: ${s.mask.text || ((s.mask.points || []).length + " points")}` }, "✂") : null]),
         whoIn(s) ? h("div", { class: "who" }, whoIn(s).people.length ? whoIn(s).people.map(id => h("img", {
           src: personOf(id)?.thumb || "", title: `Person ${id}${id === whoIn(s).main ? " (main)" : ""}${linked(id) ? " · linked" : ""}`,
           class: [id === whoIn(s).main && "main", linked(id) && "lk"] })) : [h("span", { class: "t" }, "no faces")]) : null,
@@ -603,7 +735,9 @@ function Panel(io) {
             return name ? h("img", { class: "rt", src: viewUrl(name), title: own ? name : via ? `${name} (from the person)` : `${name} (global)`,
               style: own ? "" : via ? "outline:1px dashed #8fd18f" : "opacity:.45" }) : h("div", { class: "rt ph2" }, k);
           }),
-          h("img", { class: "rt", src: thumbFor(s.start + Math.floor(s.len / 2)), style: "width:56px" }),
+          h("img", { class: "rt", style: "width:56px", src: showMasks.value && maskPrev.value[`${s.start}-${s.end}`]?.frames?.length
+            ? maskPrev.value[`${s.start}-${s.end}`].frames[Math.floor(maskPrev.value[`${s.start}-${s.end}`].frames.length / 2)].src
+            : thumbFor(s.start + Math.floor(s.len / 2)) }),
         ]),
         h("div", { class: "p" }, s.prompt ? s.prompt : (plan.global_prompt ? "↳ global prompt" : "— no prompt —")),
       ]))),
@@ -673,6 +807,36 @@ function Panel(io) {
         } }, "Continuity → all"),
         sel.value === 0 ? h("span", { class: "hint" }, "the first shot uses only its references") : null,
       ]),
+      h("div", { class: "row", style: "margin-top:8px;align-items:center" }, [
+        h("label", { class: "row", style: "gap:4px", title: "Generate only the masked region: the shot is cropped to one box around the SAM 3 mask (the union over all its frames), and BFS Shot Join pastes the result back, feathered by the mask." }, [
+          h("input", { type: "checkbox", checked: cur.crop, onChange: e => setMeta(sel.value, "crop", e.target.checked) }), "✂ Crop to mask"]),
+        h("input", { type: "text", value: cur.mask.text || "", style: "flex:1;min-width:160px",
+          placeholder: "what to segment, in English: person in white, red car…",
+          title: "SAM 3 text prompt (up to 32 tokens; separate several things with commas). Points, when set, take priority.",
+          onChange: e => setMask(sel.value, "text", e.target.value) }),
+        h("button", { title: "Pick positive / negative points on a frame of this shot", onClick: () => openPoints(sel.value) },
+          (cur.mask.points || []).length ? `🎯 Points (${cur.mask.points.length})` : "🎯 Points…"),
+        h("button", { disabled: !!busy.value || !(cur.mask.text || (cur.mask.points || []).length), onClick: () => previewMask(sel.value) }, "👁 Preview mask"),
+        h("button", { title: "Use this text prompt for every shot (points stay per shot)", onClick: () => {
+          const t = cur.mask.text || ""; segs.value.forEach((_, i) => { const m = meta(i); m.mask = { ...(m.mask || {}), text: t }; }); save();
+        } }, "Mask → all"),
+        h("button", { title: "Crop every shot that has a mask", onClick: () => {
+          segs.value.forEach((x, i) => { if (x.mask.text || (x.mask.points || []).length || cur.mask.text) meta(i).crop = cur.crop; }); save();
+        } }, "Crop → all"),
+      ]),
+      maskPrev.value[`${cur.start}-${cur.end}`] ? h("div", { class: "mstrip" }, [
+        ...maskPrev.value[`${cur.start}-${cur.end}`].frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
+        h("span", { class: "hint" }, maskPrev.value[`${cur.start}-${cur.end}`].empty ? "nothing found: the shot runs uncropped"
+          : `mask covers ${(maskPrev.value[`${cur.start}-${cur.end}`].coverage * 100).toFixed(1)}% · yellow = crop box`),
+      ]) : null,
+      vlmSug.value[`${cur.start}-${cur.end}`] ? (g => h("div", { class: "vsug" }, [
+        h("div", ["🤖 ", h("b", "segment: "), g.segment || "—", g.segment ? h("button", { onClick: () => applySug(sel.value, "segment") }, "Use as mask") : null]),
+        h("div", [h("b", "shot: "), g.shot || "—", g.shot ? h("button", { title: "copy (the {shot} placeholder in the prompt gets it automatically at run time)",
+          onClick: () => navigator.clipboard?.writeText(g.shot) }, "Copy") : null]),
+        h("div", [h("b", "recommend: "), `${g.recommend}${g.people != null ? " · " + g.people + " people" : ""}${g.reason ? " · " + g.reason : ""}`,
+          g.recommend === "skip" ? h("button", { onClick: () => applySug(sel.value, "skip") }, "Skip this shot") : null]),
+        g.raw ? h("div", { class: "hint" }, "unparsed answer: " + g.raw.slice(0, 200)) : null,
+      ]))(vlmSug.value[`${cur.start}-${cur.end}`]) : null,
     ]) : null;
 
     const globals = h("div", { class: "card" }, [
@@ -697,7 +861,44 @@ function Panel(io) {
       h("div", { class: "hint", style: "margin-top:4px" }, "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."),
     ]) : null;
 
-    return h("div", { class: "bsl", tabindex: 0, onKeydown: onKey }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, cards, editor, globals, queue]);
+    const ms = S[modal.idx];
+    const pointsModal = modal.open && ms ? h(Teleport, { to: "body" }, h("div", { class: "bsl", style: "background:none;padding:0" }, h("div", { class: "mmodal", onKeydown: e => e.stopPropagation(), onPointerdown: e => { if (e.target === e.currentTarget) modal.open = false; } }, [
+      h("div", { class: "mbox" }, [
+        h("h5", [`Shot #${modal.idx + 1} · points`, h("span", { class: "hint", style: "text-transform:none" },
+          "click = keep (green) · right-click or shift+click = exclude (red)")]),
+        h("div", { class: "mimg", onContextmenu: e => e.preventDefault(), onPointerdown: e => {
+          const box = e.currentTarget.getBoundingClientRect();
+          const x = (e.clientX - box.left) / box.width, y = (e.clientY - box.top) / box.height;
+          modal.points = [...modal.points, { x: +x.toFixed(4), y: +y.toFixed(4), label: (e.button === 2 || e.shiftKey) ? 0 : 1 }];
+          modal.prev = null;
+        } }, [
+          h("img", { draggable: false, src: api.apiURL(`/bfs/shotloop/frame?video=${encodeURIComponent(plan.video)}&fps=${plan.fps}&f=${ms.start + modal.key}&w=900`) }),
+          ...modal.points.map((p, k) => h("div", { class: ["pt", p.label ? "pos" : "neg"], style: `left:${p.x * 100}%;top:${p.y * 100}%`,
+            title: "click to remove", onPointerdown: e => { e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } })),
+        ]),
+        h("div", { class: "row", style: "margin-top:6px" }, [
+          h("span", { class: "hint" }, `frame ${ms.start + modal.key} (${modal.key + 1}/${ms.len})`),
+          h("input", { type: "range", min: 0, max: ms.len - 1, step: 1, value: modal.key, style: "flex:1",
+            onInput: e => { modal.key = parseInt(e.target.value); modal.prev = null; } }),
+        ]),
+        h("div", { class: "row", style: "margin-top:6px" }, [
+          h("input", { type: "text", value: modal.text, style: "flex:1", placeholder: "text prompt (used when there are no points)",
+            onChange: e => { modal.text = e.target.value; } }),
+          h("button", { onClick: () => { modal.points = []; modal.prev = null; } }, "Clear points"),
+          h("button", { class: "pri", disabled: !!modal.busy || !(modal.points.length || modal.text),
+            onClick: () => previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text }, true) }, "👁 Segment"),
+        ]),
+        modal.busy ? h("div", { class: "hint", style: "margin-top:4px" }, modal.busy) : null,
+        modal.prev ? h("div", { class: "mstrip" }, [...modal.prev.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
+          h("span", { class: "hint" }, modal.prev.empty ? "nothing found" : `covers ${(modal.prev.coverage * 100).toFixed(1)}%`)]) : null,
+        h("div", { class: "row", style: "margin-top:8px;justify-content:flex-end" }, [
+          h("button", { onClick: () => { modal.open = false; } }, "Cancel"),
+          h("button", { class: "pri", onClick: savePoints }, "Save"),
+        ]),
+      ]),
+    ]))) : null;
+
+    return h("div", { class: "bsl", tabindex: 0, onKeydown: onKey }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, masks, vlmCard, cards, editor, globals, queue, pointsModal]);
   };
 }
 

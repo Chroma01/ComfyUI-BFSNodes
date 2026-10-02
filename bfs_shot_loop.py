@@ -333,7 +333,7 @@ DEFAULT_PLAN = {
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
-    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False,
+    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {},
 }
 
 
@@ -378,6 +378,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["prompt"] = m.get("prompt") or ""
         s["chain"] = m.get("chain") or "off"
         s["chain_frame"] = m.get("chain_frame") or "first"
+        s["crop"] = bool(m.get("crop"))
+        s["mask"] = m.get("mask") or {}
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
         s["people"], s["main"] = [], -1
@@ -676,6 +678,282 @@ def person_change_points(cast: dict, start: int, end: int, min_run: int) -> list
     return pts
 
 
+# ---------------------------------------------------------------------------- shot masks (SAM 3) and crop / uncrop
+
+SAM3_FILE = "sam3.1_multiplex_fp16.safetensors"
+SAM3_URL = "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
+_SAM3: dict[str, Any] = {}
+_MASK_CACHE: dict[tuple, dict] = {}
+# global mask settings (the planner's Mask card); a shot only says what to segment (text / points / key frame)
+DEFAULT_MASK = {"text": "", "points": [], "key": 0, "threshold": 0.5, "max_objects": 4, "invert": False,
+                "fill_holes": True, "temporal_expand": 2, "blockify": 0, "padding": 0.15, "expand": 16,
+                "feather": 12, "paste": "mask"}
+SHOT_MASK_KEYS = ("text", "points", "key")
+
+
+def _sam3_path() -> str:
+    """The official SAM 3.1 checkpoint in models/checkpoints, downloaded once when missing."""
+    p = folder_paths.get_full_path("checkpoints", SAM3_FILE)
+    if p:
+        return p
+    import urllib.request
+    dst = os.path.join(folder_paths.get_folder_paths("checkpoints")[0], SAM3_FILE)
+    tmp = dst + ".part"
+    print(f"[BFS Shot Planner] downloading {SAM3_FILE} (1.7 GB) from Comfy-Org/sam3.1 ...")
+    with urllib.request.urlopen(SAM3_URL) as r, open(tmp, "wb") as f:
+        total, done, step = int(r.headers.get("Content-Length") or 0), 0, 0
+        while True:
+            chunk = r.read(1 << 22)
+            if not chunk:
+                break
+            f.write(chunk); done += len(chunk)
+            if total and done * 10 // total > step:
+                step = done * 10 // total
+                print(f"[BFS Shot Planner] {SAM3_FILE}: {step * 10}%")
+    os.replace(tmp, dst)
+    return dst
+
+
+def _sam3():
+    if "model" not in _SAM3:
+        import comfy.sd
+        out = comfy.sd.load_checkpoint_guess_config(_sam3_path(), output_vae=False, output_clip=True,
+                                                    embedding_directory=folder_paths.get_folder_paths("embeddings"))
+        _SAM3["model"], _SAM3["clip"] = out[0], out[1]
+    return _SAM3["model"], _SAM3["clip"]
+
+
+def mask_spec(m: dict | None, cfg: dict | None = None) -> dict:
+    """Global settings (cfg) with the shot's own target (text / points / key frame) on top."""
+    spec = dict(DEFAULT_MASK)
+    spec.update({k: v for k, v in (cfg or {}).items() if v is not None and k not in SHOT_MASK_KEYS})
+    spec.update({k: v for k, v in (m or {}).items() if v is not None and k in SHOT_MASK_KEYS})
+    return spec
+
+
+def shape_mask(masks: torch.Tensor, spec: dict) -> torch.Tensor:
+    """invert -> fill holes -> temporal expand -> blockify, on [N,H,W] 0/1 masks."""
+    x = masks.float()
+    if spec.get("invert"):
+        x = 1 - x
+    if spec.get("fill_holes"):
+        try:
+            from scipy.ndimage import binary_fill_holes
+            x = torch.from_numpy(np.stack([binary_fill_holes(f > 0.5) for f in x.numpy()]).astype(np.float32))
+        except ImportError:
+            pass
+    t = int(spec.get("temporal_expand") or 0)
+    if t > 0 and x.shape[0] > 1:
+        N, H, W = x.shape
+        x = torch.nn.functional.max_pool1d(x.permute(1, 2, 0).reshape(-1, 1, N), 2 * t + 1, 1, t) \
+            .reshape(H, W, N).permute(2, 0, 1)
+    b = int(spec.get("blockify") or 0)
+    if b > 1:
+        H, W = x.shape[1:]
+        cov = torch.nn.functional.avg_pool2d(x[:, None], b, b, ceil_mode=True)[:, 0]
+        x = (cov >= 0.5).float().repeat_interleave(b, 1).repeat_interleave(b, 2)[:, :H, :W]
+    return (x > 0.5).to(torch.uint8)
+
+
+def _track(model, imgs: torch.Tensor, init: torch.Tensor | None, cond, spec: dict) -> torch.Tensor:
+    from comfy_extras.nodes_sam3 import SAM3_TrackToMask, SAM3_VideoTrack
+    data = SAM3_VideoTrack.execute(images=imgs, model=model, initial_mask=init, conditioning=cond,
+                                   detection_threshold=float(spec["threshold"]),
+                                   max_objects=int(spec["max_objects"]), detect_interval=1).args[0]
+    return SAM3_TrackToMask.execute(track_data=data, object_indices="").args[0].float().cpu()
+
+
+def segment_frames(imgs: torch.Tensor, spec: dict) -> torch.Tensor:
+    """[N,H,W,3] -> [N,H,W] masks with SAM 3: tracked from the points on the key frame, or from the text."""
+    from comfy_extras.nodes_sam3 import SAM3_Detect
+    model, clip = _sam3()
+    text = str(spec.get("text") or "").strip()
+    cond = clip.encode_from_tokens_scheduled(clip.tokenize(text)) if text else None
+    pts = spec.get("points") or []
+    N, H, W = imgs.shape[:3]
+    if not pts:
+        if cond is None:
+            raise ValueError("the shot's mask needs a text prompt or points")
+        return _track(model, imgs, None, cond, spec)
+    key = max(0, min(N - 1, int(spec.get("key") or 0)))
+    pos = [{"x": p["x"] * W, "y": p["y"] * H} for p in pts if p.get("label", 1)]
+    neg = [{"x": p["x"] * W, "y": p["y"] * H} for p in pts if not p.get("label", 1)]
+    first = SAM3_Detect.execute(model=model, image=imgs[key:key + 1], positive_coords=json.dumps(pos),
+                                negative_coords=json.dumps(neg), threshold=float(spec["threshold"]),
+                                refine_iterations=2).args[0][:1].float()
+    fwd = _track(model, imgs[key:], first, None, spec)                     # key frame -> end
+    if key == 0:
+        return fwd
+    back = _track(model, imgs[:key + 1].flip(0), first, None, spec).flip(0)  # key frame -> start
+    return torch.cat([back[:-1], fwd], 0)
+
+
+def shot_mask(path: str, analysis: dict, start: int, length: int, spec: dict) -> dict:
+    """Masks of one shot (timeline frames start..start+length) at a working size, cached; plus the crop box."""
+    key = (path, os.path.getmtime(path), float(analysis["fps"]), int(start), int(length),
+           json.dumps({k: spec[k] for k in ("text", "points", "key", "threshold", "max_objects")}, sort_keys=True))
+    if key not in _MASK_CACHE:
+        src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
+        idx = np.clip(np.arange(start, start + length), 0, analysis["n"] - 1)
+        sw, sh = analysis["width"], analysis["height"]
+        s = 640 / max(sw, sh)
+        w, h = max(32, int(sw * s) // 2 * 2), max(32, int(sh * s) // 2 * 2)
+        frames = _read_frames(path, src[idx], (w, h))
+        imgs = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
+        _MASK_CACHE[key] = {"masks": (segment_frames(imgs, spec) > 0.5).to(torch.uint8), "size": (w, h)}
+        _node_boundary()
+    out = dict(_MASK_CACHE[key])
+    out["masks"] = shape_mask(out["masks"], spec)
+    out["box"] = crop_box(out["masks"], float(spec["padding"]))
+    return out
+
+
+def crop_box(masks: torch.Tensor, padding: float) -> list[float] | None:
+    """One box for the whole shot (union of every frame's mask) plus padding, normalised [x0, y0, x1, y1]."""
+    if masks.numel() == 0 or not bool(masks.any()):
+        return None
+    union = masks.amax(0)
+    ys, xs = torch.nonzero(union, as_tuple=True)
+    H, W = union.shape
+    x0, x1, y0, y1 = xs.min().item() / W, (xs.max().item() + 1) / W, ys.min().item() / H, (ys.max().item() + 1) / H
+    px, py = (x1 - x0) * padding, (y1 - y0) * padding
+    return [max(0.0, x0 - px), max(0.0, y0 - py), min(1.0, x1 + px), min(1.0, y1 + py)]
+
+
+def grow_blur(m: torch.Tensor, grow: int, blur: int) -> torch.Tensor:
+    """[N,H,W] in 0-1: dilate by `grow` px, then soften the edge by `blur` px."""
+    x = m.float()[:, None]
+    if grow > 0:
+        x = torch.nn.functional.max_pool2d(x, 2 * grow + 1, 1, grow)
+    for _ in range(2 if blur > 0 else 0):
+        x = torch.nn.functional.avg_pool2d(torch.nn.functional.pad(x, (blur,) * 4, mode="replicate"), 2 * blur + 1, 1)
+    return x[:, 0].clamp(0, 1)
+
+
+def box_px(box: list[float], W: int, H: int, multiple: int = 2) -> tuple[int, int, int, int]:
+    x0, y0 = int(box[0] * W), int(box[1] * H)
+    x1, y1 = max(x0 + multiple, int(round(box[2] * W))), max(y0 + multiple, int(round(box[3] * H)))
+    return x0, y0, min(W, x1), min(H, y1)
+
+
+def uncrop(result: torch.Tensor, shot: dict) -> torch.Tensor:
+    """Paste a cropped shot's result back into its full frames (feathered by the mask or the box)."""
+    c = shot["crop"]
+    full = shot["full_frames"]
+    W, H = full.shape[2], full.shape[1]
+    x0, y0, x1, y1 = box_px(c["box"], W, H)
+    n = min(result.shape[0], full.shape[0])
+    res = torch.nn.functional.interpolate(result[:n, ..., :3].movedim(-1, 1).float(), size=(y1 - y0, x1 - x0),
+                                          mode="bilinear", align_corners=False).movedim(1, -1).clamp(0, 1)
+    out = full[:n].clone()
+    if c.get("paste") == "box":
+        a = torch.zeros(n, H, W)
+        a[:, y0:y1, x0:x1] = 1
+        alpha = grow_blur(a, 0, int(c.get("feather", 12)))
+    else:
+        m = c["mask"][:n].float()
+        alpha = grow_blur(m, int(c.get("expand", 8)), int(c.get("feather", 12)))
+    a = alpha[:, y0:y1, x0:x1, None]
+    out[:, y0:y1, x0:x1] = res * a + out[:, y0:y1, x0:x1] * (1 - a)
+    if result.shape[0] > n:   # frames past the planned length stay as generated, pasted the same way
+        out = torch.cat([out, out[-1:].expand(result.shape[0] - n, -1, -1, -1)], 0)
+    return out
+
+
+def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict, count: int = 6) -> dict:
+    """A few frames of the shot with the mask in red and the crop box, as data URLs."""
+    import cv2
+    r = shot_mask(path, analysis, start, length, spec)
+    masks, (w, h), box = r["masks"], r["size"], r["box"]
+    src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
+    picks = sorted(set(int(round(i)) for i in np.linspace(0, length - 1, min(count, length))))
+    frames = _read_frames(path, src[np.clip(np.array(picks) + start, 0, analysis["n"] - 1)], (w, h))
+    out = []
+    for i, fr in zip(picks, frames):
+        img = fr.copy()
+        m = masks[min(i, masks.shape[0] - 1)].numpy().astype(bool)
+        img[m] = (img[m] * 0.45 + np.array([255, 40, 60]) * 0.55).astype(np.uint8)
+        if box:
+            x0, y0, x1, y1 = box_px(box, w, h)
+            cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), (255, 210, 90), 2)
+        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 80])
+        out.append({"f": start + i, "src": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()})
+    cover = float(masks.float().mean()) if masks.numel() else 0.0
+    return {"box": box, "frames": out, "coverage": cover, "empty": box is None}
+
+
+# ---------------------------------------------------------------------------- VLM suggestions (optional)
+
+DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 320, "auto_segment": True, "auto_shot": True,
+               "instruction": ""}
+_VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
+_VLM_CACHE: dict[tuple, dict] = {}
+
+VLM_QUESTION = """You see {n} frames (in time order) of ONE camera shot from a video that will be edited with an AI video model.
+Answer with one JSON object only, no code fence:
+{{"segment": "the main person or object a user would edit, as a short English noun phrase a segmentation model understands, describing what it looks like (e.g. 'woman in a black top', 'man in a grey suit', 'red car'); never on-screen text",
+"shot": "one or two sentences for a video prompt: camera distance and angle, camera movement, where the subject is in the frame and what they do, in time order; describe actions and framing, not the person's face or clothes",
+"people": <number of people visible>,
+"recommend": "run" or "skip" (skip when the shot has nobody to edit, is a title card, a black frame or text only),
+"reason": "a few words"}}{extra}"""
+
+
+def _node_boundary() -> None:
+    """What ComfyUI does between two nodes: drop the per-thread CUDA malloc graph and prefetch queues. Needed when
+    one node runs a model several times (a second text generation in the same node otherwise hits a device assert)."""
+    try:
+        import comfy.model_prefetch
+        comfy.model_prefetch.cleanup_prefetch_queues()
+    except Exception:  # noqa: BLE001 - older ComfyUI without it
+        pass
+
+
+def vlm_cfg(cfg: dict | None) -> dict:
+    out = dict(DEFAULT_VLM)
+    out.update({k: v for k, v in (cfg or {}).items() if v is not None})
+    return out
+
+
+def _parse_json(text: str) -> dict:
+    t = text.strip()
+    if "```" in t:
+        t = t.split("```")[1]
+        t = t[4:] if t.lower().startswith("json") else t
+    a, b = t.find("{"), t.rfind("}")
+    try:
+        return json.loads(t[a:b + 1]) if a >= 0 and b > a else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -> dict:
+    """Ask the VLM about one shot (a few frames); cached per shot and settings."""
+    key = (path, os.path.getmtime(path), int(start), int(end), id(clip),
+           json.dumps({k: cfg[k] for k in ("frames", "max_tokens", "instruction")}, sort_keys=True))
+    if key in _VLM_CACHE:
+        return _VLM_CACHE[key]
+    from comfy_extras.nodes_textgen import TextGenerate
+    n = max(1, min(8, int(cfg["frames"])))
+    src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
+    picks = np.clip(np.linspace(start, end - 1, n).round().astype(int), 0, analysis["n"] - 1)
+    s = 448 / max(analysis["width"], analysis["height"])
+    size = (max(32, int(analysis["width"] * s) // 2 * 2), max(32, int(analysis["height"] * s) // 2 * 2))
+    imgs = torch.from_numpy(np.stack(_read_frames(path, src[picks], size)).astype(np.float32) / 255.0)
+    extra = ("\n" + cfg["instruction"].strip()) if str(cfg.get("instruction") or "").strip() else ""
+    q = VLM_QUESTION.format(n=n, extra=extra)
+    text = TextGenerate.execute(clip=clip, prompt=q, max_length=int(cfg["max_tokens"]),
+                                sampling_mode={"sampling_mode": "off"}, image=imgs,
+                                mtp="off").args[0]
+    _node_boundary()
+
+    out = _parse_json(text)
+    out = {"segment": str(out.get("segment") or "").strip(), "shot": str(out.get("shot") or "").strip(),
+           "people": out.get("people"), "recommend": str(out.get("recommend") or "run").lower(),
+           "reason": str(out.get("reason") or "").strip(), "raw": "" if out else text}
+    _VLM_CACHE[key] = out
+    return out
+
+
 # ---------------------------------------------------------------------------- continuity between shots
 
 CHAIN_MODES = ("off", "reference", "first frame")
@@ -779,6 +1057,10 @@ class BFSShotPlanner:
                 "prompt": ("STRING", {"forceInput": True,
                                       "tooltip": "Default prompt for shots without their own "
                                                  "(overrides the panel's global prompt)."}),
+                "vlm": ("CLIP", {"tooltip": "Optional vision-language model (CLIPLoader with qwen3vl_4b / qwen3vl_8b). "
+                                            "It looks at every shot and suggests what to segment, a description of the "
+                                            "shot (fills {shot} in the prompt) and whether to run it. Settings in the "
+                                            "panel's VLM card."}),
             },
         }
 
@@ -810,8 +1092,13 @@ class BFSShotPlanner:
             pass
         return plan
 
-    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None):
+    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None, vlm=None):
         p = _load_plan(plan)
+        if vlm is not None:
+            _VLM["clip"] = vlm       # the panel's Analyse button uses it too
+        vcfg = vlm_cfg(p.get("vlm_cfg"))
+        use_vlm = vlm is not None and vcfg["enabled"]
+        suggestions = []
         path = _input_path(p["video"])
         fps = float(p["fps"])
         a = analyze(path, fps)
@@ -860,6 +1147,8 @@ class BFSShotPlanner:
             return out or [_grey()]
 
         used_refs, used_refs2 = unique("ref", g_ref), unique("ref2", g_ref2)
+        # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
+        vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in todo} if use_vlm else {}
         shots = []
         for i, s in enumerate(segs):
             if i not in todo:
@@ -877,16 +1166,43 @@ class BFSShotPlanner:
                 if os.path.exists(fp):
                     prev = torch.load(fp)["frames"].float() / 255.0
                     chain_img = _fit_to(pick_frame(prev, prev_len, s["chain_frame"]), W, H)
+            sug = vlm_out.get(i)
+            if sug is not None:
+                suggestions.append(dict(sug, start=s["start"], end=s["end"]))
+                if vcfg["auto_segment"] and sug["segment"] and not (s["mask"].get("text") or s["mask"].get("points")):
+                    s["mask"] = dict(s["mask"], text=sug["segment"])
+            crop, full_frames = None, None
+            if s.get("crop"):
+                spec = mask_spec(s.get("mask"), p.get("mask_cfg"))
+                r = shot_mask(path, a, s["start"], s["gen_len"], spec)
+                if r["box"] is not None:
+                    full_frames = ft
+                    sx0, sy0, sx1, sy1 = box_px(r["box"], a["width"], a["height"])
+                    cw, chh = generation_size(sx1 - sx0, sy1 - sy0, float(p["megapixels"]), int(p["multiple"]))
+                    hi = _read_frames(path, src[idx], None)               # source resolution, then crop
+                    ft = torch.from_numpy(np.stack([_fit(f[sy0:sy1, sx0:sx1], (cw, chh)) for f in hi])
+                                          .astype(np.float32) / 255.0)
+                    m = torch.nn.functional.interpolate(r["masks"][:, None].float(), size=(H, W), mode="nearest")[:, 0]
+                    crop = {"box": r["box"], "mask": m, "paste": spec["paste"], "expand": int(spec["expand"]),
+                            "feather": int(spec["feather"])}
+                    bx0, by0, bx1, by1 = box_px(r["box"], r["size"][0], r["size"][1])
+                    crop["crop_mask"] = torch.nn.functional.interpolate(
+                        r["masks"][:, None, by0:by1, bx0:bx1].float(), size=(chh, cw), mode="nearest")[:, 0]
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
-                "cut_before": s["cut_before"], "width": W, "height": H, "frames": ft,
-                "ref": ref, "ref2": ref2, "prompt": s["prompt"] or g_prompt or "",
+                "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
+                "crop": crop, "full_frames": full_frames,
+                "ref": ref, "ref2": ref2,
+                "prompt": (s["prompt"] or g_prompt or "").replace(
+                    "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
                 "prev_length": prev_len,
             })
+        if suggestions:
+            _notify("bfs-shotloop-vlm", {"video": p["video"], "segs": suggestions})
         total = sum(s["end"] - s["start"] for s in segs)
         full_audio = _slice_audio(audio, segs[0]["start"] / fps, total / fps) if audio else None
         full_total = sum(s["end"] - s["start"] for s in all_segs)
@@ -900,6 +1216,9 @@ class BFSShotPlanner:
                  + (f" | queue loop: running shot {shots[0]['index'] + 1}/{len(segs)}" if queue else "")]
         for i, why in skipped:
             lines.append(f"skip shot {i + 1} (frames {all_segs[i]['start']}-{all_segs[i]['end'] - 1}): {why}")
+        for i, g in sorted(vlm_out.items()):
+            lines.append(f"VLM #{i + 1}: segment '{g['segment']}', {g['recommend']}"
+                         f"{' (' + g['reason'] + ')' if g['reason'] else ''} | {g['shot']}")
         for s in shots:
             lines.append(f"#{s['index'] + 1}: frames {s['start']}-{s['end'] - 1} ({s['length']} -> generate "
                          f"{s['gen_length']}){' cut' if s['cut_before'] else ''}"
@@ -915,9 +1234,9 @@ class BFSShotUnpack:
         return {"required": {"shot": ("BFS_SHOT",)}}
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING", "INT", "IMAGE", "AUDIO", "INT", "INT", "INT", "BFS_SHOT",
-                    "IMAGE")
+                    "IMAGE", "MASK")
     RETURN_NAMES = ("guide_frames", "ref_image", "ref_image_2", "prompt", "length", "first_frame",
-                    "audio", "width", "height", "index", "shot", "previous_result")
+                    "audio", "width", "height", "index", "shot", "previous_result", "mask")
     OUTPUT_TOOLTIPS = (
         "The shot's guide frames, already at a length the model accepts.",
         "This shot's reference (a grey placeholder if none was set).",
@@ -927,7 +1246,8 @@ class BFSShotUnpack:
         "Generation width.", "Generation height.", "Shot index (0-based).",
         "The same shot, unchanged: connect it to BFS Shot Repack after editing the pieces.",
         "The previous shot's result frame this shot continues from (Continuity in the planner; queue loop), "
-        "or a grey image.")
+        "or a grey image.",
+        "The shot's SAM 3 mask over the guide frames (in the crop when the shot is cropped), or all ones.")
     FUNCTION = "unpack"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Split one shot into its guide frames, references, prompt and length."
@@ -938,7 +1258,8 @@ class BFSShotUnpack:
         return (shot["frames"], shot["ref"] if shot["ref"] is not None else _grey(),
                 shot["ref2"] if shot["ref2"] is not None else _grey(), shot["prompt"], shot["gen_length"],
                 shot["frames"][:1], audio, shot["width"], shot["height"], shot["index"], shot,
-                chain_image(shot) if chain_image(shot) is not None else _grey())
+                chain_image(shot) if chain_image(shot) is not None else _grey(),
+                shot["crop"]["crop_mask"] if shot.get("crop") else torch.ones(shot["frames"].shape[:3]))
 
 
 class BFSShotRepack:
@@ -1094,6 +1415,8 @@ class BFSShotJoin:
         want = bool(comparison[0]) if comparison else False
         lab = (label[0] if label else "") or ""
         self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
+        images = [uncrop(img, sh) if sh.get("crop") and sh.get("full_frames") is not None else img
+                  for img, sh in zip(images, shots)]
         if shots and shots[0].get("queue"):
             out = self._join_queue(images, shots, crossfade, audio, tl)
         else:
@@ -1113,7 +1436,7 @@ class BFSShotJoin:
         torch.save({"frames": (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(),
                     "shot": {k: v for k, v in shot.items() if k in ("index", "count", "start", "end", "length",
                                                                    "gen_length", "fps", "cut_before", "prompt",
-                                                                   "ref", "ref2", "frames")}},
+                                                                   "ref", "ref2", "frames", "full_frames")}},
                    os.path.join(d, f"shot_{shot['index']:04d}.pt"))
         st = run_state(rid)
         if shot["index"] not in st["done"]:
@@ -1159,7 +1482,8 @@ class BFSShotJoin:
                     body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
             out.append(body)
             if hasattr(self, "_parts"):
-                self._parts.append((shots[j], L, shots[j].get("frames")))
+                self._parts.append((shots[j], L, shots[j].get("full_frames") if shots[j].get("full_frames") is not None
+                                    else shots[j].get("frames")))
             prev_tail = img[L:]
         video = torch.cat(out, 0)
         fps = float(shots[order[0]]["fps"])
@@ -1201,7 +1525,8 @@ def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
                     body = body.clone(); body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
             out.append(body); kept.append((seg["start"], L))
             if hasattr(self, "_parts"):
-                self._parts.append((meta.get(seg["run_index"]), L, (meta.get(seg["run_index"]) or {}).get("frames")))
+                sm = meta.get(seg["run_index"]) or {}
+                self._parts.append((sm, L, sm.get("full_frames") if sm.get("full_frames") is not None else sm.get("frames")))
             prev_tail = img[L:]
         else:
             prev_tail = None
@@ -1437,6 +1762,63 @@ try:
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": [{"start": s["start"], "end": s["end"], "stats": s["stats"],
                                             "skip_reason": s["skip_reason"]} for s in segs]})
+
+    @PromptServer.instance.routes.get("/bfs/shotloop/frame")
+    async def _bfs_shot_frame(request):
+        import cv2
+        q = request.rel_url.query
+        try:
+            path = _input_path(q["video"])
+            a = analyze(path, float(q.get("fps", 24)))
+            f = max(0, min(a["n"] - 1, int(q.get("f", 0))))
+            src = _timeline(a["n_src"], a["fps_src"], float(a["fps"]))
+            w = int(q.get("w", 960))
+            h = max(16, int(round(w * a["height"] / max(1, a["width"]))))
+            fr = _read_frames(path, src[[f]], (w, h))[0]
+            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(fr, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.Response(body=buf.tobytes(), content_type="image/jpeg")
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/mask")
+    async def _bfs_shot_mask(request):
+        body = await request.json()
+        try:
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            path = _input_path(p["video"])
+            a = analyze(path, float(p["fps"]))
+            segs = resolve_plan(p, a, path)
+            seg = segs[int(body.get("index", 0))]
+            spec = mask_spec(body.get("mask") or seg.get("mask"), p.get("mask_cfg"))
+            import asyncio   # SAM 3 takes seconds: keep the server responsive
+            out = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: mask_preview(path, a, seg["start"], seg["end"] - seg["start"], spec, int(body.get("count", 6))))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response(out)
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/vlm")
+    async def _bfs_shot_vlm(request):
+        body = await request.json()
+        try:
+            clip = _VLM.get("clip")
+            if clip is None:
+                raise ValueError("No VLM yet: connect a CLIPLoader with qwen3vl_4b / qwen3vl_8b to the planner's "
+                                 "vlm input and run the workflow once, then Analyse works from the panel.")
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            path = _input_path(p["video"])
+            a = analyze(path, float(p["fps"]))
+            segs = resolve_plan(p, a, path)
+            want = body.get("indices")
+            pick = [segs[i] for i in want] if want else segs
+            cfg = vlm_cfg(p.get("vlm_cfg"))
+            import asyncio
+            out = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: [dict(vlm_shot(clip, path, a, s["start"], s["end"], cfg), start=s["start"], end=s["end"])
+                               for s in pick])
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response({"segs": out})
 
     @PromptServer.instance.routes.post("/bfs/shotloop/cast")
     async def _bfs_shot_cast(request):

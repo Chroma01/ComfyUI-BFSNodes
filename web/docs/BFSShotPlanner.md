@@ -123,6 +123,31 @@ defaults.
 The planner also outputs `ref_image` and `ref_image_2`: the references the shots actually use,
 without repeats, so a plan where every shot shares one reference returns a single image.
 
+## Mask & crop (SAM 3)
+
+Generate only part of the frame. In a shot's editor, type what to segment in English (`person in white`,
+`woman with red hair`, `red car`; up to 32 tokens, commas for several things) or click **🎯 Points** to pick
+positive / negative points on any frame of the shot, then **👁 Preview mask** (red = mask, yellow = crop box).
+Tick **✂ Crop to mask** and the shot is cropped to one box around the mask (the union over all its frames, so
+the crop does not shake), at the source resolution, and sent to the model at the generation size; **BFS Shot
+Join** pastes the result back into the full frame, feathered by the mask (or the whole box). **BFS Shot
+Unpack** also outputs the shot's mask (`mask`), e.g. for an inpainting model.
+
+The **Mask & crop** card holds the global settings, with defaults that work as they are: fill holes on,
+temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off
+(16 aligns the mask to H3's latent grid), threshold 0.5, 4 objects. *Show masks on shots* overlays the preview
+on the shot cards. SAM 3 uses the official `sam3.1_multiplex_fp16.safetensors` in `models/checkpoints`,
+downloaded from Comfy-Org/sam3.1 the first time.
+
+## VLM suggestions
+
+Connect a vision-language model to the planner's `vlm` input (CLIPLoader with `qwen3vl_4b` or `qwen3vl_8b`).
+It looks at a few frames of every shot and suggests what to segment, a description of the shot (camera,
+framing, action) and whether to run it. In the **VLM** card: *Use the VLM when the workflow runs* applies the
+suggestions at run time (mask text for shots without one; `{shot}` in a prompt becomes that shot's
+description), *Analyse shots* asks from the panel (after one run with the VLM connected), and each shot's
+editor shows its suggestion with buttons to apply it. The summary output lists them too.
+
 ## Continuity between shots
 
 Each shot (after the first) can continue from the **previous shot's generated result**: in the shot editor,
