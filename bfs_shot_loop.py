@@ -940,7 +940,7 @@ class BFSShotRepack:
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
-    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (<Video 1>)", "both", "none"]
+    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none"]
 
     @classmethod
     def INPUT_TYPES(cls):
