@@ -90,6 +90,23 @@ Skipped shots do not run. Connect the planner's `timeline` output to BFS Shot Jo
 filled with the original video, keeping the full duration and soundtrack, or removed (with the
 matching audio) when *Skipped shots in the output* is set to remove them.
 
+## Cast (people by face)
+
+*Find people* samples the video every 0.25 s, detects faces and groups them into people by face
+identity (InsightFace `buffalo_l` in `models/insightface`; the result is cached per video). Each
+person card shows the face, screen share and first/last appearance (click the face to seek).
+Give a person a reference (and a second one) by clicking the slot, or pick one from the recent
+references; *ignore* leaves that person out. Every shot card shows who is in it, with the main
+person (most screen time) highlighted and linked people outlined in green.
+
+| option | effect |
+|---|---|
+| Shots use their main person's reference | a shot without its own reference takes its main person's (shown with a dashed green outline) |
+| Split where the main person changes | adds a boundary where the largest face switches to another person for at least a second, then re-splits |
+| Only run shots with a linked person | shots where no linked, non-ignored person appears are skipped ("no linked person") |
+
+A reference set on the shot itself always wins; the global reference is the last fallback.
+
 ## References and prompts
 
 Every shot can have its own reference, second reference and prompt; shots without them use the

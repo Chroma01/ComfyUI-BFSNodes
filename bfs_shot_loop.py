@@ -333,6 +333,7 @@ DEFAULT_PLAN = {
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
+    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False,
 }
 
 
@@ -359,6 +360,13 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         cuts = detect_cuts(analysis["score"], analysis["raw"], float(plan["sensitivity"]), fps)
     manual = plan.get("bounds") or None
     mode = "manual" if manual else plan["mode"]
+    cast = cached_cast(path, analysis) if path else None   # only once the people were analysed
+    if cast is not None and plan.get("cast_split") and not manual:
+        extra = []
+        bounds = [0] + cuts + [analysis["n"]]
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            extra += person_change_points(cast, a, b, max(min_len, int(round(fps))))
+        cuts = sorted(set(cuts) | set(extra))
     segs = plan_segments(analysis["n"], cuts, mode, max_len, min_len,
                          int(plan.get("max_parts") or 0), max_total, manual)
     meta = plan.get("segs") or []
@@ -370,6 +378,17 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["prompt"] = m.get("prompt") or ""
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
+        s["people"], s["main"] = [], -1
+        if cast is not None:
+            sp = shot_people(cast, s["start"], s["end"])
+            s["people"], s["main"] = sp["people"], sp["main"]
+            entry = (plan.get("cast") or {}).get(str(sp["main"])) or {}
+            if plan.get("cast_assign", True) and not entry.get("ignore"):
+                s["ref"] = s["ref"] or entry.get("ref", "")
+                s["ref2"] = s["ref2"] or entry.get("ref2", "")
+            linked = [p for p in sp["people"] if (plan.get("cast") or {}).get(str(p), {}).get("ref")
+                      and not (plan.get("cast") or {}).get(str(p), {}).get("ignore")]
+            s["cast_skip"] = bool(plan.get("cast_only")) and not linked
     return segs
 
 
@@ -492,8 +511,149 @@ def apply_filters(plan: dict, analysis: dict, path: str, segs: list[dict]) -> li
         s["force"] = force
         s["stats"] = shot_stats(path, analysis, s, int(f.get("samples") or 6)) if need else None
         s["skip_reason"] = skip_reason(s["stats"], s["end"] - s["start"], f) if need else ""
+        if not s["skip_reason"] and s.get("cast_skip"):
+            s["skip_reason"] = "no linked person"
         s["run"] = s["enabled"] and (force == "run" or (force != "skip" and not s["skip_reason"]))
     return segs
+
+
+# ---------------------------------------------------------------------------- cast (people by face)
+
+_FACE_APP: Any = None
+_CAST_CACHE: dict[tuple, dict] = {}
+
+
+def _face_app():
+    """InsightFace detector + ArcFace recogniser (buffalo_l), or None when unavailable."""
+    global _FACE_APP
+    if _FACE_APP is not None:
+        return _FACE_APP or None
+    try:
+        import insightface
+        root = os.path.join(folder_paths.models_dir, "insightface")
+        app = insightface.app.FaceAnalysis(name="buffalo_l", root=root, allowed_modules=["detection", "recognition"],
+                                           providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        app.prepare(ctx_id=0, det_size=(640, 640))
+        _FACE_APP = app
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BFS Shot Planner] face analysis unavailable: {exc!r}")
+        _FACE_APP = False
+    return _FACE_APP or None
+
+
+def _cast_key(path: str, analysis: dict, step_s: float = 0.25, threshold: float = 0.42, min_share: float = 0.01) -> tuple:
+    return (path, os.path.getmtime(path), float(analysis["fps"]), round(step_s, 3), round(threshold, 3), round(min_share, 4))
+
+
+def cached_cast(path: str, analysis: dict) -> dict | None:
+    """The cast of a video when it was already analysed with the default settings, else None (never computes)."""
+    try:
+        return _CAST_CACHE.get(_cast_key(path, analysis))
+    except OSError:
+        return None
+
+
+def analyze_cast(path: str, analysis: dict, step_s: float = 0.25, threshold: float = 0.42,
+                 min_share: float = 0.01) -> dict:
+    """Detect faces every `step_s` seconds, group them into people by ArcFace similarity.
+
+    Returns {"people": [{id, thumb, count, share}], "samples": [{f, faces: [{pid, area}]}]} where
+    `f` is a timeline frame. Person ids are stable for the same video and settings.
+    """
+    import cv2
+    key = _cast_key(path, analysis, step_s, threshold, min_share)
+    if key in _CAST_CACHE:
+        return _CAST_CACHE[key]
+    app = _face_app()
+    if app is None:
+        raise RuntimeError("Face analysis needs the insightface package and the buffalo_l models in models/insightface.")
+    fps = float(analysis["fps"])
+    step = max(1, int(round(step_s * fps)))
+    frames_idx = np.arange(0, analysis["n"], step)
+    src = _timeline(analysis["n_src"], analysis["fps_src"], fps)
+    w = 960
+    h = max(32, int(round(w * analysis["height"] / max(1, analysis["width"]))))
+    frames = _read_frames(path, src[frames_idx], (w, h))
+    dets = []   # (sample index, embedding, area fraction, crop)
+    for si, fr in enumerate(frames):
+        bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
+        for f in app.get(bgr):
+            x0, y0, x1, y1 = [int(v) for v in f.bbox]
+            area = max(0, x1 - x0) * max(0, y1 - y0) / float(w * h)
+            if area < 0.0015 or f.det_score < 0.5:
+                continue
+            pad = int(0.25 * max(x1 - x0, y1 - y0))
+            crop = fr[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
+            dets.append((si, f.normed_embedding.astype(np.float32), area, crop))
+    # greedy online clustering on cosine similarity, then merge close clusters
+    cents, members = [], []
+    for k, (_, e, _, _) in enumerate(dets):
+        if cents:
+            sims = np.array([c @ e / (np.linalg.norm(c) + 1e-8) for c in cents])
+            j = int(sims.argmax())
+            if sims[j] >= threshold:
+                members[j].append(k); cents[j] = cents[j] + e
+                continue
+        cents.append(e.copy()); members.append([k])
+    merged = True
+    while merged:
+        merged = False
+        for a in range(len(cents)):
+            for b in range(a + 1, len(cents)):
+                ca, cb = cents[a] / np.linalg.norm(cents[a]), cents[b] / np.linalg.norm(cents[b])
+                if ca @ cb >= threshold:
+                    cents[a] = cents[a] + cents[b]; members[a] += members[b]
+                    del cents[b]; del members[b]; merged = True
+                    break
+            if merged:
+                break
+    total = max(1, len(frames))
+    groups = [m for m in members if len({dets[k][0] for k in m}) / total >= min_share]
+    groups.sort(key=lambda m: -len({dets[k][0] for k in m}))
+    people, owner = [], {}
+    for pid, m in enumerate(groups):
+        best = max(m, key=lambda k: dets[k][2])
+        crop = cv2.resize(dets[best][3], (96, 96), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 80])
+        seen = sorted({dets[k][0] for k in m})
+        people.append({"id": pid, "thumb": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(),
+                       "count": len(seen), "share": round(len(seen) / total, 4),
+                       "first": int(frames_idx[seen[0]]), "last": int(frames_idx[seen[-1]])})
+        for k in m:
+            owner[k] = pid
+    samples = [{"f": int(f), "faces": []} for f in frames_idx]
+    for k, (si, _, area, _) in enumerate(dets):
+        if k in owner:
+            samples[si]["faces"].append({"pid": owner[k], "area": round(float(area), 5)})
+    out = {"people": people, "samples": samples, "step": step}
+    _CAST_CACHE[key] = out
+    return out
+
+
+def shot_people(cast: dict, start: int, end: int) -> dict:
+    """Who appears in [start, end): per person, sampled frames seen and summed face area; plus the main one."""
+    score: dict[int, list[float]] = {}
+    for smp in cast["samples"]:
+        if start <= smp["f"] < end:
+            for fc in smp["faces"]:
+                v = score.setdefault(fc["pid"], [0, 0.0]); v[0] += 1; v[1] += fc["area"]
+    main = max(score, key=lambda p: (score[p][0], score[p][1])) if score else -1
+    return {"people": sorted(score), "main": main}
+
+
+def person_change_points(cast: dict, start: int, end: int, min_run: int) -> list[int]:
+    """Frames inside [start, end) where the main (largest) face switches to another person for at least min_run."""
+    runs = []
+    for smp in cast["samples"]:
+        if start <= smp["f"] < end:
+            main = max(smp["faces"], key=lambda fc: fc["area"])["pid"] if smp["faces"] else -1
+            if main >= 0 and (not runs or runs[-1][1] != main):
+                runs.append([smp["f"], main])
+    pts = []
+    for (f0, p0), (f1, p1) in zip(runs, runs[1:]):
+        if f1 - (pts[-1] if pts else start) >= min_run and end - f1 >= min_run:
+            pts.append(f1)
+    return pts
 
 
 # ---------------------------------------------------------------------------- queue loop state
@@ -600,6 +760,8 @@ class BFSShotPlanner:
         path = _input_path(p["video"])
         fps = float(p["fps"])
         a = analyze(path, fps)
+        if p.get("cast") or p.get("cast_split"):
+            analyze_cast(path, a)   # warms the cache so the plan uses the same people as the panel
         all_segs = apply_filters(p, a, path, resolve_plan(p, a, path))
         segs = [s for s in all_segs if s["run"]]
         if not segs:
@@ -1027,6 +1189,11 @@ try:
             p = _load_plan(json.dumps(body.get("plan", {})))
             a = analyze(_input_path(p["video"]), float(p["fps"]))
             path = _input_path(p["video"])
+            if p.get("cast") or p.get("cast_split"):
+                try:
+                    analyze_cast(path, a)
+                except Exception:  # noqa: BLE001 - plan without people
+                    pass
             segs = resolve_plan(p, a, path)
             cuts, used = find_cuts(path, a, p.get("detector", "adaptive"), float(p["sensitivity"]))
             W, H = generation_size(a["width"], a["height"], float(p["megapixels"]), int(p["multiple"]))
@@ -1050,6 +1217,18 @@ try:
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": [{"start": s["start"], "end": s["end"], "stats": s["stats"],
                                             "skip_reason": s["skip_reason"]} for s in segs]})
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/cast")
+    async def _bfs_shot_cast(request):
+        body = await request.json()
+        try:
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            path = _input_path(p["video"])
+            a = analyze(path, float(p["fps"]))
+            c = analyze_cast(path, a)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response({"people": c["people"], "step": c["step"], "samples": len(c["samples"])})
 
     @PromptServer.instance.routes.post("/bfs/shotloop/progress")
     async def _bfs_shot_progress(request):

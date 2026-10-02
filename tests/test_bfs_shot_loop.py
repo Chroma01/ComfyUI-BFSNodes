@@ -176,6 +176,37 @@ class TimelineJoinTest(unittest.TestCase):
         self.assertAlmostEqual(float(video[30, 0, 0, 0]), 128 / 255, places=3)
 
 
+class CastTest(unittest.TestCase):
+    # person 0 on frames 0-47 (big face), person 1 on 48-95, both small on 96-119
+    CAST = {"step": 6, "people": [{"id": 0}, {"id": 1}], "samples":
+            [{"f": f, "faces": [{"pid": 0, "area": 0.1}]} for f in range(0, 48, 6)]
+            + [{"f": f, "faces": [{"pid": 1, "area": 0.1}]} for f in range(48, 96, 6)]
+            + [{"f": f, "faces": []} for f in range(96, 120, 6)]}
+
+    def test_shot_people_and_main(self):
+        self.assertEqual(SL.shot_people(self.CAST, 0, 60), {"people": [0, 1], "main": 0})
+        self.assertEqual(SL.shot_people(self.CAST, 96, 120), {"people": [], "main": -1})
+
+    def test_change_points_need_a_long_enough_run(self):
+        self.assertEqual(SL.person_change_points(self.CAST, 0, 120, 24), [48])
+        self.assertEqual(SL.person_change_points(self.CAST, 0, 60, 24), [])
+
+    def test_plan_splits_assigns_and_skips_by_person(self):
+        path = str(Path(_TMP) / "cast.mp4"); Path(path).write_bytes(b"x")
+        a = {"fps": 24.0, "n": 120, "score": [0.0] * 120, "raw": [0.0] * 120}
+        SL._CAST_CACHE[SL._cast_key(path, a)] = self.CAST
+        orig = SL.find_cuts
+        SL.find_cuts = lambda *args, **kw: ([], "test")
+        try:
+            plan = dict(SL.DEFAULT_PLAN, max_s=10, min_s=0.5, cast={"0": {"ref": "a.png"}}, cast_split=True, cast_only=True)
+            segs = SL.apply_filters(plan, a, path, SL.resolve_plan(plan, a, path))
+        finally:
+            SL.find_cuts = orig
+        self.assertEqual([(s["start"], s["end"]) for s in segs], [(0, 48), (48, 120)])
+        self.assertEqual(segs[0]["ref"], "a.png")
+        self.assertTrue(segs[0]["run"])
+        self.assertEqual(segs[1]["skip_reason"], "no linked person")
+
 
 class RepackTest(unittest.TestCase):
     def test_replaces_only_connected_pieces_and_fits_the_guide(self):

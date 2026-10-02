@@ -137,6 +137,11 @@ workflow once per shot, and join the results back with the original timing and s
   (aligned guide and/or native reference video).
 - **BFS Shot Join** — concatenates, trims to the true lengths, cross-fades soft joins, returns audio.
 
+**Cast (1.49.0)**: *Find people* tracks faces through the video (InsightFace) and groups them
+into people. Link each person to a reference and every shot uses the reference of the person
+with the most screen time in it; optionally split where the main person changes and run only the
+shots where a linked person appears.
+
 Two run modes: *auto loop* (all shots in one run) and *queue loop* (one shot per run, stored on
 disk, re-queued automatically; nodes after the join only run on the last shot). See
 [`web/docs/BFSShotPlanner.md`](web/docs/BFSShotPlanner.md).

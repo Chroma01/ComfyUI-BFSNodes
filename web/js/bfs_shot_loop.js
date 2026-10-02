@@ -15,7 +15,7 @@ const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "",
   megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
-  skip_fill: "original",
+  skip_fill: "original", cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
@@ -114,6 +114,16 @@ function styles() {
 .bsl .recent{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;align-items:center}
 .bsl .recent img{width:30px;height:30px;border-radius:5px;object-fit:cover;cursor:pointer;border:1px solid #3a3a45}
 .bsl .recent img:hover{border-color:#5b8cff}
+.bsl .recent.sm img{width:22px;height:22px}
+.bsl .cast{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.bsl .person{background:#141418;border:1px solid #2c2c35;border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.bsl .person.ign{opacity:.45}
+.bsl .person .face{width:64px;height:64px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid #3a3a45}
+.bsl .refslot.sm{width:56px;height:56px;font-size:10px}
+.bsl .who{display:flex;gap:3px;margin-top:3px;align-items:center}
+.bsl .who img{width:22px;height:22px;border-radius:50%;object-fit:cover;border:1px solid #3a3a45;opacity:.7}
+.bsl .who img.main{width:26px;height:26px;opacity:1;border-color:#fff}
+.bsl .who img.lk{border-color:#8fd18f}
 .bsl .modal{position:absolute;inset:0;background:#0b0b0ecc;z-index:20;display:flex;align-items:center;justify-content:center;padding:14px}
 .bsl .mbox{background:#1b1b21;border:1px solid #3a3a45;border-radius:10px;width:100%;max-height:100%;display:flex;flex-direction:column}
 .bsl .mhd{display:flex;gap:6px;align-items:center;padding:8px;border-bottom:1px solid #2c2c35}
@@ -144,12 +154,15 @@ function Panel(io) {
   const prog = reactive({ done: 0, count: 0 });
   const tlEl = ref(null);
   const stats = ref([]);         // per-shot content stats from /bfs/shotloop/filters
+  const people = ref([]);        // cast from /bfs/shotloop/cast: [{id, thumb, share, first, last}]
+  const segPeople = ref({});     // "start-end" -> {people, main} from /bfs/shotloop/plan
 
   const load = () => {
     let p = {};
     try { p = JSON.parse(io.getPlan() || "{}"); } catch { p = {}; }
     Object.assign(plan, DEFAULTS, p);
     plan.filters = { ...DEFAULTS.filters, ...(p.filters || {}) };
+    plan.cast = { ...(p.cast || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
   };
@@ -176,12 +189,26 @@ function Panel(io) {
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
   });
+  const whoIn = s => segPeople.value[`${s.start}-${s.end}`] || null;
+  const castOf = id => plan.cast[String(id)] || {};
+  const linked = id => !!castOf(id).ref && !castOf(id).ignore;
+  // reference a shot gets from its main person when it has none of its own
+  const castRef = (s, field) => {
+    if (!plan.cast_assign) return "";
+    const who = whoIn(s); if (!who || who.main < 0 || castOf(who.main).ignore) return "";
+    return castOf(who.main)[field] || "";
+  };
+  const personOf = id => people.value.find(p => p.id === id) || null;
   const statFor = s => stats.value.find(x => x.start === s.start && x.end === s.end) || null;
   const skipWhy = s => {
     if (!s.enabled) return "disabled";
     if (s.force === "run") return "";
     if (s.force === "skip") return "skipped by hand";
-    return filtersOn.value ? (statFor(s)?.skip_reason || "") : "";
+    const why = filtersOn.value ? (statFor(s)?.skip_reason || "") : "";
+    if (why) return why;
+    const who = whoIn(s);
+    if (plan.cast_only && who && !who.people.some(p => linked(p))) return "no linked person";
+    return "";
   };
   const filtersOn = computed(() => { const f = plan.filters; return !!(f.person || f.face || f.skip_dark || f.skip_static || f.max_persons > 0 || f.min_frames > 0); });
   const active = computed(() => segs.value.filter(s => !skipWhy(s)));
@@ -206,6 +233,8 @@ function Panel(io) {
       if (j.error) throw new Error(j.error);
       an.value = j;
       await autoSplit(plan.bounds.length === 0);
+      people.value = []; segPeople.value = {};
+      if (Object.keys(plan.cast).length || plan.cast_split || plan.cast_only) await findPeople(false);   // restore the cast of a saved plan
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
@@ -218,6 +247,8 @@ function Panel(io) {
       const j = await r.json();
       if (j.error) throw new Error(j.error);
       cuts.value = j.cuts || []; detectorUsed.value = j.detector || ""; size.w = j.width; size.h = j.height;
+      segPeople.value = Object.fromEntries(j.segs.filter(s => s.main !== undefined && (s.people.length || people.value.length))
+        .map(s => [`${s.start}-${s.end}`, { people: s.people, main: s.main }]));
       if (apply) {
         plan.bounds = j.segs.slice(1).map(s => s.start);
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "" }));
@@ -236,6 +267,23 @@ function Panel(io) {
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
+  async function findPeople(resplit = true) {
+    if (!plan.video) return;
+    busy.value = "Finding people by face…"; error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/cast", { method: "POST", body: JSON.stringify({ plan: { ...plan } }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      people.value = j.people || [];
+    } catch (e) { error.value = String(e.message || e); busy.value = ""; return; }
+    busy.value = "";
+    await autoSplit(resplit && !!plan.cast_split);
+  }
+  const setCast = (id, k, v) => {
+    plan.cast = { ...plan.cast, [String(id)]: { ...castOf(id), [k]: v } };
+    if (k !== "ignore") remember(v);
+    save();
+  };
+  const setCastOpt = (k, v) => { plan[k] = v; save(); if (k === "cast_split") autoSplit(true); };
   const setFilter = (k, v) => { plan.filters = { ...plan.filters, [k]: v }; save(); if (stats.value.length) analyzeContent(); };
   async function upload(file, cb) {
     const fd = new FormData(); fd.append("image", file); fd.append("type", "input"); fd.append("overwrite", "true");
@@ -482,6 +530,39 @@ function Panel(io) {
       ]),
     ]) : null;
 
+    // cast: people found by face, each linked to a reference
+    const castN = people.value.filter(p => linked(p.id)).length;
+    const cchk = (k, label, title) => h("label", { class: "row", style: "gap:4px", title }, [h("input", { type: "checkbox", checked: !!plan[k], onChange: e => setCastOpt(k, e.target.checked) }), label]);
+    const cast = an.value ? h("details", { class: "card", open: people.value.length > 0 }, [
+      h("summary", h("h5", ["Cast", people.value.length ? h("span", { class: "pill" }, `${people.value.length} people · ${castN} linked`) : h("span", { class: "pill" }, "not analysed"),
+        h("span", { class: "hint", style: "text-transform:none;letter-spacing:0" }, "track faces, link each person to a reference, split and assign shots by who is on screen")])),
+      h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
+        cchk("cast_assign", "Shots use their main person's reference", "a shot without its own reference takes the reference of the person with the most screen time in it"),
+        cchk("cast_split", "Split where the main person changes", "adds a boundary when the biggest face switches to someone else (re-splits the plan)"),
+        cchk("cast_only", "Only run shots with a linked person", "shots where no linked person appears are skipped"),
+      ]),
+      people.value.length ? h("div", { class: "cast" }, people.value.map(p => {
+        const c = castOf(p.id);
+        return h("div", { class: ["person", c.ignore && "ign"] }, [
+          h("img", { class: "face", src: p.thumb, title: `first seen ${fmtT(p.first, fps)} (click to seek)`, onClick: () => seek(p.first) }),
+          h("div", { class: "t" }, [h("b", `Person ${p.id}`), ` · ${(p.share * 100).toFixed(1)}%`]),
+          h("div", { class: "t" }, `${fmtT(p.first, fps)} → ${fmtT(p.last, fps)}`),
+          h("div", { class: "refbox" }, ["ref", "ref2"].map(k => h("div", { class: "rslot" }, [
+            h("div", { class: "refslot sm", title: c[k] ? c[k] + " (click to replace)" : "click to upload",
+              onClick: () => pickFile("image/*", name => setCast(p.id, k, name)) }, c[k] ? [h("img", { src: viewUrl(c[k]) })] : [k === "ref" ? "⬆ ref" : "⬆ ref 2"]),
+            c[k] ? h("div", { class: "rbtns" }, [h("button", { title: "remove", onClick: () => setCast(p.id, k, "") }, "✕")]) : null,
+          ]))),
+          usedRefs.value.length ? h("div", { class: "recent sm" }, usedRefs.value.map(n => h("img", { src: viewUrl(n), title: `${n} (click = ref, shift+click = ref 2)`,
+            onClick: e => setCast(p.id, e.shiftKey ? "ref2" : "ref", n) }))) : null,
+          h("label", { class: "row", style: "gap:4px" }, [h("input", { type: "checkbox", checked: !!c.ignore, onChange: e => setCast(p.id, "ignore", e.target.checked) }), "ignore"]),
+        ]);
+      })) : null,
+      h("div", { class: "row", style: "margin-top:8px" }, [
+        h("button", { class: "pri", disabled: !!busy.value, onClick: () => findPeople(true) }, people.value.length ? "↻ Re-analyse people" : "👥 Find people"),
+        h("span", { class: "hint" }, people.value.length ? "faces sampled every 0.25 s and grouped by identity (InsightFace)" : "detects faces across the video and groups them into people"),
+      ]),
+    ]) : null;
+
     // shot cards
     const cards = S.length ? h("div", { class: "card" }, [
       h("h5", "Shots"),
@@ -491,13 +572,19 @@ function Panel(io) {
         h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? h("span", { class: "pill" }, "cut") : null,
           skipWhy(s) ? h("span", { class: "pill warn", title: skipWhy(s) }, "skip") : h("span", { class: "pill ok" }, "run"),
           s.force !== "auto" ? h("span", { class: "pill" }, s.force) : null]),
+        whoIn(s) ? h("div", { class: "who" }, whoIn(s).people.length ? whoIn(s).people.map(id => h("img", {
+          src: personOf(id)?.thumb || "", title: `Person ${id}${id === whoIn(s).main ? " (main)" : ""}${linked(id) ? " · linked" : ""}`,
+          class: [id === whoIn(s).main && "main", linked(id) && "lk"] })) : [h("span", { class: "t" }, "no faces")]) : null,
         statFor(s) ? h("div", { class: "t", style: "margin-top:2px" },
           `👤 ${statFor(s).persons} · ${(statFor(s).person_area * 100).toFixed(1)}% · 🙂 ${statFor(s).faces} · ☀ ${(statFor(s).brightness * 100).toFixed(0)}%`) : null,
         skipWhy(s) ? h("div", { class: "t", style: "color:#ffc46b" }, skipWhy(s)) : null,
         h("div", { class: "t" }, `${fmtT(s.start, fps)} → ${fmtT(s.end, fps)} · ${s.len}f → ${s.gen}f`),
         h("div", { class: "thumbs" }, [
-          s.ref || plan.global_ref ? h("img", { class: "rt", src: viewUrl(s.ref || plan.global_ref), style: s.ref ? "" : "opacity:.45" }) : h("div", { class: "rt ph2" }, "ref"),
-          s.ref2 || plan.global_ref2 ? h("img", { class: "rt", src: viewUrl(s.ref2 || plan.global_ref2), style: s.ref2 ? "" : "opacity:.45" }) : h("div", { class: "rt ph2" }, "ref2"),
+          ...["ref", "ref2"].map(k => {
+            const own = s[k], via = castRef(s, k), name = own || via || plan["global_" + k];
+            return name ? h("img", { class: "rt", src: viewUrl(name), title: own ? name : via ? `${name} (from the person)` : `${name} (global)`,
+              style: own ? "" : via ? "outline:1px dashed #8fd18f" : "opacity:.45" }) : h("div", { class: "rt ph2" }, k);
+          }),
           h("img", { class: "rt", src: thumbFor(s.start + Math.floor(s.len / 2)), style: "width:56px" }),
         ]),
         h("div", { class: "p" }, s.prompt ? s.prompt : (plan.global_prompt ? "↳ global prompt" : "— no prompt —")),
@@ -576,7 +663,7 @@ function Panel(io) {
       h("div", { class: "hint", style: "margin-top:4px" }, "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."),
     ]) : null;
 
-    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cards, editor, globals, queue]);
+    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, cards, editor, globals, queue]);
   };
 }
 
