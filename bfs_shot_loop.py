@@ -710,6 +710,52 @@ class BFSShotUnpack:
                 shot["frames"][:1], audio, shot["width"], shot["height"], shot["index"])
 
 
+class BFSShotRepack:
+    """Put edited pieces back into a shot (runs once per shot), e.g. a reference with its background removed."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {"shot": ("BFS_SHOT",)},
+            "optional": {
+                "guide_frames": ("IMAGE", {"tooltip": "Replacement guide frames. Resized to the shot's generation "
+                                                      "size; padded or trimmed to its length."}),
+                "ref_image": ("IMAGE", {"tooltip": "Replacement reference (e.g. background removed)."}),
+                "ref_image_2": ("IMAGE", {"tooltip": "Replacement second reference."}),
+                "prompt": ("STRING", {"forceInput": True, "tooltip": "Replacement prompt."}),
+            },
+        }
+
+    RETURN_TYPES = ("BFS_SHOT",)
+    RETURN_NAMES = ("shot",)
+    FUNCTION = "repack"
+    CATEGORY = "BFS/shot loop"
+    DESCRIPTION = ("Rebuild a shot after editing its pieces (Unpack -> any processing -> Repack). Inputs left "
+                   "unconnected keep the shot's original values; timing, cuts and audio are unchanged.")
+
+    def repack(self, shot, guide_frames=None, ref_image=None, ref_image_2=None, prompt=None):
+        out = dict(shot)
+        if guide_frames is not None:
+            fr = guide_frames
+            H, W = shot["height"], shot["width"]
+            if tuple(fr.shape[1:3]) != (H, W):
+                arr = (fr.clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()
+                fr = torch.from_numpy(np.stack([_fit(a, (W, H)) for a in arr]).astype(np.float32) / 255.0)
+            n = shot["gen_length"]
+            if fr.shape[0] != n:
+                print(f"[BFS Shot Repack] shot {shot['index'] + 1}: guide has {fr.shape[0]} frames, "
+                      f"expected {n}; {'trimming' if fr.shape[0] > n else 'holding the last frame'}")
+                fr = fr[:n] if fr.shape[0] > n else torch.cat([fr, fr[-1:].expand(n - fr.shape[0], -1, -1, -1)], 0)
+            out["frames"] = fr
+        if ref_image is not None:
+            out["ref"] = ref_image[:1]
+        if ref_image_2 is not None:
+            out["ref2"] = ref_image_2[:1]
+        if prompt is not None:
+            out["prompt"] = prompt
+        return (out,)
+
+
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
@@ -930,12 +976,14 @@ BFSShotJoin._join_timeline = _join_timeline_impl
 NODE_CLASS_MAPPINGS = {
     "BFSShotPlanner": BFSShotPlanner,
     "BFSShotUnpack": BFSShotUnpack,
+    "BFSShotRepack": BFSShotRepack,
     "BFSShotH3Conditioning": BFSShotH3Conditioning,
     "BFSShotJoin": BFSShotJoin,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BFSShotPlanner": "BFS Shot Planner",
     "BFSShotUnpack": "BFS Shot Unpack",
+    "BFSShotRepack": "BFS Shot Repack",
     "BFSShotH3Conditioning": "BFS Shot H3 Conditioning",
     "BFSShotJoin": "BFS Shot Join",
 }

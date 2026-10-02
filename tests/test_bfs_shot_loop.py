@@ -176,5 +176,21 @@ class TimelineJoinTest(unittest.TestCase):
         self.assertAlmostEqual(float(video[30, 0, 0, 0]), 128 / 255, places=3)
 
 
+
+class RepackTest(unittest.TestCase):
+    def test_replaces_only_connected_pieces_and_fits_the_guide(self):
+        shot = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3),
+                    ref=torch.zeros(1, 4, 4, 3), ref2=None, prompt="old", audio=None)
+        ref = torch.ones(1, 6, 6, 3)
+        out = SL.BFSShotRepack().repack(shot, ref_image=ref)[0]
+        self.assertTrue(torch.equal(out["ref"], ref))
+        self.assertEqual(out["prompt"], "old")
+        self.assertIs(out["frames"], shot["frames"])
+        out = SL.BFSShotRepack().repack(shot, guide_frames=torch.ones(30, 16, 16, 3), prompt="new")[0]
+        self.assertEqual(tuple(out["frames"].shape), (22, 8, 8, 3))
+        self.assertEqual(out["prompt"], "new")
+        self.assertEqual(out["length"], 20)
+
+
 if __name__ == "__main__":
     unittest.main()

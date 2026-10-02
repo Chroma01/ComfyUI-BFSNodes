@@ -18,6 +18,7 @@ every shot inside that range.
 |---|---|
 | **BFS Shot Planner** | Pick a video, split it on a timeline, set a reference and prompt per shot. Outputs the shots as a ComfyUI **list**. |
 | **BFS Shot Unpack** | Opens one shot into plain values: guide frames, reference, second reference, prompt, length, first frame, audio, size, index. Use it with any model. |
+| **BFS Shot Repack** | Puts edited pieces back into a shot (Unpack -> e.g. remove the reference background -> Repack). Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
 | **BFS Shot H3 Conditioning** | Ready-made MiniMax H3 conditioning for one shot, built with the native nodes (Reference to Video + Add Guide). |
 | **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. |
 
