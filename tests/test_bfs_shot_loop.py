@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+_TMP = tempfile.mkdtemp(prefix="bfs_shotloop_test_")
+
+# The module only needs a few folder_paths calls; stub them so the tests run without ComfyUI.
+_fp = types.ModuleType("folder_paths")
+_fp.get_temp_directory = lambda: _TMP
+_fp.get_input_directory = lambda: _TMP
+_fp.get_annotated_filepath = lambda name: str(Path(_TMP) / name)
+sys.modules.setdefault("folder_paths", _fp)
+
+
+class _Blocker:
+    def __init__(self, message):
+        self.message = message
+
+
+_ce = types.ModuleType("comfy_execution")
+_gu = types.ModuleType("comfy_execution.graph_utils")
+_gu.ExecutionBlocker = _Blocker
+sys.modules.setdefault("comfy_execution", _ce)
+sys.modules.setdefault("comfy_execution.graph_utils", _gu)
+
+SPEC = importlib.util.spec_from_file_location("bfs_shot_loop", ROOT / "bfs_shot_loop.py")
+assert SPEC is not None and SPEC.loader is not None
+SL = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SL)
+H3 = "H3 (17n+5)"
+
+
+def _shot(i, start, end, cut=False, gen=None, count=1, queue=False, run_id=""):
+    length = end - start
+    return {"index": i, "count": count, "start": start, "end": end, "length": length,
+            "gen_length": gen or SL.snap_up(length, H3), "fps": 24.0, "cut_before": cut,
+            "queue": queue, "run_id": run_id}
+
+
+class GridTest(unittest.TestCase):
+    def test_h3_grid(self):
+        self.assertEqual([SL.snap_up(x, H3) for x in (1, 5, 6, 22, 23, 107, 108)], [5, 5, 22, 22, 39, 107, 124])
+        self.assertEqual([SL.snap_down(x, H3) for x in (4, 5, 21, 22, 106, 107, 110)], [5, 5, 5, 22, 90, 107, 107])
+
+    def test_other_grids(self):
+        self.assertEqual(SL.snap_up(50, "LTX / Wan (8n+1)"), 57)
+        self.assertEqual(SL.snap_down(50, "LTX / Wan (8n+1)"), 49)
+        self.assertEqual(SL.snap_up(6, "Wan (4n+1)"), 9)
+        self.assertEqual(SL.snap_up(37, "any"), 37)
+
+    def test_generation_size_is_on_the_multiple(self):
+        w, h = SL.generation_size(1280, 720, 0.15, 32)
+        self.assertEqual((w % 32, h % 32), (0, 0))
+        self.assertGreater(w, h)
+
+
+class PlanTest(unittest.TestCase):
+    def test_fixed_mode_splits_evenly_under_the_limit(self):
+        segs = SL.plan_segments(300, [], "fixed", 107, 24)
+        self.assertEqual([s["end"] - s["start"] for s in segs], [100, 100, 100])
+
+    def test_shots_split_at_cuts_and_long_shots_are_divided(self):
+        segs = SL.plan_segments(300, [50, 80], "shots", 107, 10)
+        bounds = [(s["start"], s["end"]) for s in segs]
+        self.assertEqual(bounds[:2], [(0, 50), (50, 80)])
+        self.assertTrue(all(e - s <= 107 for s, e in bounds))
+        self.assertEqual(bounds[-1][1], 300)
+        self.assertTrue(segs[1]["cut_before"])
+
+    def test_short_shots_merge_into_a_neighbour_that_still_fits(self):
+        segs = SL.plan_segments(200, [10, 100], "shots", 107, 24)
+        self.assertEqual([(s["start"], s["end"]) for s in segs], [(0, 100), (100, 200)])
+
+    def test_limits_and_manual_bounds(self):
+        self.assertEqual(len(SL.plan_segments(1000, [], "fixed", 100, 10, max_parts=3)), 3)
+        self.assertEqual(SL.plan_segments(1000, [], "fixed", 100, 10, max_total=250)[-1]["end"], 250)
+        manual = SL.plan_segments(100, [], "manual", 107, 10, manual=[30, 70])
+        self.assertEqual([(s["start"], s["end"]) for s in manual], [(0, 30), (30, 70), (70, 100)])
+
+    def test_builtin_detector_finds_spikes_and_respects_the_gap(self):
+        score = [1.0] * 100
+        raw = [0.01] * 100
+        for i in (20, 22, 60):
+            score[i], raw[i] = 50.0, 0.5
+        self.assertEqual(SL.detect_cuts(score, raw, 0.5, 24.0), [20, 60])
+
+
+class JoinTest(unittest.TestCase):
+    def _frames(self, n, value):
+        return torch.full((n, 8, 8, 3), float(value))
+
+    def test_trims_to_true_lengths_in_order(self):
+        shots = [_shot(1, 30, 50, cut=True, gen=22), _shot(0, 0, 30, gen=39)]
+        imgs = [self._frames(22, 0.8), self._frames(39, 0.2)]
+        video, audio, fps = SL.BFSShotJoin()._join_all(imgs, shots, [0])
+        self.assertEqual(video.shape[0], 50)
+        self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.2)
+        self.assertAlmostEqual(float(video[-1, 0, 0, 0]), 0.8)
+        self.assertEqual(fps, 24.0)
+
+    def test_crossfade_only_across_soft_joins(self):
+        imgs = [self._frames(39, 0.0), self._frames(39, 1.0)]
+        soft = SL.BFSShotJoin()._join_all(imgs, [_shot(0, 0, 30, gen=39), _shot(1, 30, 60, gen=39)], [4])[0]
+        hard = SL.BFSShotJoin()._join_all(imgs, [_shot(0, 0, 30, gen=39), _shot(1, 30, 60, cut=True, gen=39)], [4])[0]
+        self.assertGreater(float(soft[31, 0, 0, 0]), 0.0)
+        self.assertLess(float(soft[31, 0, 0, 0]), 1.0)
+        self.assertEqual(float(hard[31, 0, 0, 0]), 1.0)
+
+    def test_audio_is_trimmed_to_the_video(self):
+        audio = {"waveform": torch.zeros(1, 2, 48000 * 10), "sample_rate": 48000}
+        imgs = [self._frames(39, 0.5)]
+        _, a, _ = SL.BFSShotJoin()._join_all(imgs, [_shot(0, 0, 24, gen=39)], [0], [audio])
+        self.assertEqual(a["waveform"].shape[-1], 48000)
+
+    def test_queue_mode_blocks_until_every_shot_is_stored(self):
+        join = SL.BFSShotJoin()
+        shots = [_shot(0, 0, 20, count=2, queue=True, run_id="t1"), _shot(1, 20, 45, cut=True, count=2, queue=True, run_id="t1")]
+        first = join.join([self._frames(22, 0.1)], [shots[0]], [0])
+        self.assertIsInstance(first[0], _Blocker)
+        video, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
+        self.assertEqual(video.shape[0], 45)
+        self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

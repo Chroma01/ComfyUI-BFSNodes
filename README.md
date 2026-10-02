@@ -123,6 +123,24 @@ The offset is applied only to appearance/reference inputs. Guide videos, masks, 
 and target video positions remain unchanged. In **LTX Multiple Controls**, the field is named
 `identity_temporal_offset_latents` and affects only `identity_image`.
 
+## Shot Planner / Shot Loop (1.48.0)
+
+Split a long video into shots a video model can follow (at camera cuts via PySceneDetect, fixed
+length, or by hand on a timeline), set a reference image and prompt per shot, run the rest of the
+workflow once per shot, and join the results back with the original timing and soundtrack.
+
+- **BFS Shot Planner** — interactive timeline (thumbnails, cut detector curve, draggable
+  boundaries, per-shot reference gallery and prompt). Outputs the shots as a ComfyUI list, so
+  every node downstream runs once per shot.
+- **BFS Shot Unpack** — guide frames, references, prompt and length of one shot, for any model.
+- **BFS Shot H3 Conditioning** — MiniMax H3 conditioning for one shot with the native nodes
+  (aligned guide and/or native reference video).
+- **BFS Shot Join** — concatenates, trims to the true lengths, cross-fades soft joins, returns audio.
+
+Two run modes: *auto loop* (all shots in one run) and *queue loop* (one shot per run, stored on
+disk, re-queued automatically; nodes after the join only run on the last shot). See
+[`web/docs/BFSShotPlanner.md`](web/docs/BFSShotPlanner.md).
+
 ## Requirements
 
 - ComfyUI

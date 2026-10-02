@@ -75,6 +75,12 @@ except Exception as _e:  # noqa
 CAN_NODE_CLASS_MAPPINGS, CAN_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 
 try:
+    from .bfs_shot_loop import NODE_CLASS_MAPPINGS as SHOT_NODE_CLASS_MAPPINGS
+    from .bfs_shot_loop import NODE_DISPLAY_NAME_MAPPINGS as SHOT_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] Shot loop nodes not loaded: {_e!r}")
+    SHOT_NODE_CLASS_MAPPINGS, SHOT_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
     from .minimax_h3_downscaled_guide import NODE_CLASS_MAPPINGS as H3GUIDE_NODE_CLASS_MAPPINGS
     from .minimax_h3_downscaled_guide import NODE_DISPLAY_NAME_MAPPINGS as H3GUIDE_NODE_DISPLAY_NAME_MAPPINGS
 except Exception as _e:  # noqa
@@ -97,6 +103,7 @@ except Exception as _e:  # noqa
 
 NODE_CLASS_MAPPINGS = {
     **H3GUIDE_NODE_CLASS_MAPPINGS,
+    **SHOT_NODE_CLASS_MAPPINGS,
     **GV_NODE_CLASS_MAPPINGS,
     **CAN_NODE_CLASS_MAPPINGS,
     **BFS_NODE_CLASS_MAPPINGS,
@@ -122,6 +129,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     **H3GUIDE_NODE_DISPLAY_NAME_MAPPINGS,
+    **SHOT_NODE_DISPLAY_NAME_MAPPINGS,
     **GV_NODE_DISPLAY_NAME_MAPPINGS,
     **CAN_NODE_DISPLAY_NAME_MAPPINGS,
     **BFS_NODE_DISPLAY_NAME_MAPPINGS,

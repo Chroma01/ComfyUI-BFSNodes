@@ -6,3 +6,4 @@ librosa
 opencv-python
 insightface==0.7.3
 onnxruntime
+scenedetect

@@ -1,7 +1,7 @@
 [project]
 name = "bfsnodes"
-description = "Custom ComfyUI nodes for reference-guided video: the BFS Sampler (guide-driven IC-LoRAs with auto-configured crop, mask inpainting and temporal chunking in one node), LTX Multiple Controls and Identity Transfer (IPT2V reference + source-phase RoPE), LTXV Edit Anything, Head-Swap/Anime2Real Bernini conditioning, the AMV Guide Builder, MiniMax-H3 aligned downscaled latent guides with training-matched posterior encoding and spatial coordinates, experimental overlap/sidecar source-phase RoPE and caption-only identity references, true single-frame/video targets, single-frame VAE loaders with tile control, and LoRA Surgery (read any LoRA's layers and blocks, then scale or drop them live to find which modules carry a defect, and save the result as a new LoRA)."
-version = "1.47.0"
+description = "Custom ComfyUI nodes for reference-guided video: the BFS Sampler (guide-driven IC-LoRAs with auto-configured crop, mask inpainting and temporal chunking in one node), LTX Multiple Controls and Identity Transfer (IPT2V reference + source-phase RoPE), LTXV Edit Anything, Head-Swap/Anime2Real Bernini conditioning, the AMV Guide Builder, MiniMax-H3 aligned downscaled latent guides with training-matched posterior encoding and spatial coordinates, experimental overlap/sidecar source-phase RoPE and caption-only identity references, true single-frame/video targets, single-frame VAE loaders with tile control, LoRA Surgery (read any LoRA's layers and blocks, then scale or drop them live to find which modules carry a defect, and save the result as a new LoRA), and the Shot Planner / Shot Loop (split long videos into model-sized shots at camera cuts with PySceneDetect on an interactive timeline, set a reference and prompt per shot, run any workflow once per shot in one run or as a queue loop, and join the results with the original timing and audio)."
+version = "1.48.0"
 license = {file = "LICENSE"}
 dependencies = [
     "torch",
@@ -10,6 +10,7 @@ dependencies = [
     "safetensors",
     "librosa",
     "opencv-python",
+    "scenedetect",
     "insightface==0.7.3",
     "onnxruntime",
     "transformers>=4.55.0",
