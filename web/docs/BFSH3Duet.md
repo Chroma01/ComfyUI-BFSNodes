@@ -22,6 +22,15 @@ The panel is cut off before decoding, so it never reaches the output.
   prompting guide: never describe the source performer, restate the identity in every shot.
 - **A reference image**: a static picture of the person next to the video.
 
+## Prompt
+
+The node's prompt box starts with a template. The side panel has **no tag**: it is not a `<Picture n>`
+or `<Video n>`, and the text encoder never sees it. Name it by its place ("the LEFT half is the kept
+footage"); `{layout}` inserts that sentence for the current side and size. Describe only the generated
+part: never the panel's performer, clothes or room, even to contrast them, because whatever you leave
+undescribed is copied from the panel. Restate the new identity in every shot ("her face from
+`<Picture 1>`" plus two or three face, hair or outfit words) and give exact times for cuts.
+
 ## Settings
 
 | setting | effect |

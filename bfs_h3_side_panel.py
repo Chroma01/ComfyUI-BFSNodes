@@ -25,6 +25,36 @@ GRAY = 0.5   # #808080
 PATCH_PX = 32  # one DiT patch (2x2 latent cells of 16 px)
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)   # H3 video latent: frames per latent step, k % 5
 
+PANEL_PROMPT_HINT = (
+    "How to refer to the side panel in the prompt: the panel has NO tag (it is not <Picture n> or <Video n>; "
+    "the text encoder never sees it). Name it by its place: 'the LEFT half is the kept footage' (write {layout} "
+    "to insert that sentence for the current size and side). Describe only the generated part: never describe "
+    "the panel's performer, clothes or room, even to contrast them; what you leave undescribed is copied from "
+    "the panel. Restate the new identity in every shot ('her face from <Picture 1>' plus two or three face, hair "
+    "or outfit words). Give exact times for cuts ('[Shot 2] At 00:03.708, both halves cut together to ...').")
+
+DUET_PROMPT_TEMPLATE = """subject_definitions:
+<Subject 1> is the woman whose appearance comes from <Picture 1>: {skin, face shape, eyes, brows, nose, lips}, {hair colour, length and cut}, wearing {the outfit, piece by piece}.
+
+summary:
+[reference generation] The target video is a split screen: the kept footage beside <Subject 1>, who moves in sync with it, in the same room.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - {her key look words} are retained.
+The kept footage: fully_preserved - the panel is kept exactly.
+
+detailed_description:
+The target video is in a realistic style, as {the medium, e.g. handheld vertical smartphone footage under soft daylight}. {layout}
+
+[Shot 1] {Camera distance, angle and movement.} <Subject 1>, her face from <Picture 1> with {two face words}, {two hair or outfit words}, {what she does, one sentence per real action}.
+
+overall_soundscape:
+{The sounds of the scene and when they happen.}
+
+non_diegetic_music:
+None."""
+
+
 POSITIONS = ["top", "left", "right", "bottom"]
 FITS = ["contain", "cover", "stretch"]
 HOLDS = ["all frames", "first latent frame"]
@@ -267,7 +297,8 @@ class BFSH3SidePanel:
     FUNCTION = "apply"
     CATEGORY = "BFS/MiniMax H3"
     DESCRIPTION = ("Training-free virtual panel: the panel is held in a strip next to the video (like a split-screen "
-                   "duet) and BFS H3 Side Panel Crop removes it before decoding. Works with or without an aligned guide.")
+                   "duet) and BFS H3 Side Panel Crop removes it before decoding. Works with or without an aligned guide.\n\n"
+                   + PANEL_PROMPT_HINT)
 
     def apply(self, positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise=0.0, guide=None, guide_frame_idx=0):
         samples = latent["samples"]
@@ -429,8 +460,8 @@ class BFSH3Duet:
                 "model": ("MODEL",),
                 "clip": ("CLIP",),
                 "vae": ("VAE",),
-                "prompt": ("STRING", {"multiline": True, "dynamic_prompts": True,
-                                      "tooltip": "REF2VA prompt. Name the panel by its place (e.g. 'the LEFT half is the kept footage', see layout_text) and never give it a tag; <Picture n> are the ref images."}),
+                "prompt": ("STRING", {"multiline": True, "dynamic_prompts": False, "default": DUET_PROMPT_TEMPLATE,
+                                      "tooltip": "REF2VA prompt; <Picture n> are the ref images. " + PANEL_PROMPT_HINT}),
                 "width": ("INT", {"default": 576, "min": 32, "max": 4096, "step": 32, "tooltip": "Generated video width (the output)."}),
                 "height": ("INT", {"default": 1024, "min": 32, "max": 4096, "step": 32}),
                 "length": ("INT", {"default": 0, "min": 0, "max": 3600, "tooltip": "Frames at 24 fps, snapped to 17k+5. 0 = the guide's or panel clip's length."}),
@@ -462,7 +493,8 @@ class BFSH3Duet:
     FUNCTION = "run"
     CATEGORY = "BFS/MiniMax H3"
     DESCRIPTION = ("MiniMax H3 duet in one node: the panel (source clip or reference) is pinned beside the video, "
-                   "the video is generated in sync with it, and only the video comes out. Optional aligned guide.")
+                   "the video is generated in sync with it, and only the video comes out. Optional aligned guide.\n\n"
+                   + PANEL_PROMPT_HINT)
 
     def run(self, model, clip, vae, prompt, width, height, length, position, size, fit, gap, panel_noise, hold,
             ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, panel=None, audio_vae=None,
@@ -520,7 +552,8 @@ class BFSShotH3Duet:
     FUNCTION = "render"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Renders one shot with MiniMax H3 (duet, aligned guide, or both) and returns its frames for "
-                   "BFS Shot Join. Runs once per shot of the Planner's list.")
+                   "BFS Shot Join. Runs once per shot of the Planner's list. The prompt comes from the Planner (per shot "
+                   "or global).\n\nDuet modes: " + PANEL_PROMPT_HINT)
 
     def render(self, shot, model, clip, vae, mode, use_ref_2, position, size, fit, gap, panel_noise,
                ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None,
