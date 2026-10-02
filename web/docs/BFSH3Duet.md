@@ -1,6 +1,12 @@
 # BFS H3 Duet / Side Panel
 
-Training-free split-screen ("duet") generation for MiniMax H3, following TSC's latent-pin workflow.
+Training-free split-screen ("duet") generation for MiniMax H3.
+
+**Credits:** the initial idea for this H3 node came from TSC's latent-pin duet. BFS had already used the
+same principle on LTX (a green side panel holding the reference) and implemented the virtual sidecar
+approach (reference tokens placed beside the frame in RoPE). New here: the **shifted RoPE layout** (the
+video keeps the RoPE positions of a render without the panel and the panel sits past its edge, with an
+optional gap), dynamic references, task prompts and the shot-loop node.
 A panel is pinned next to the video in the same canvas with a noise mask. H3 keeps the panel
 exactly (it treats it like its own condition rows) and generates the video next to it, in sync.
 The panel is cut off before decoding, so it never reaches the output.
@@ -22,6 +28,29 @@ The panel is cut off before decoding, so it never reaches the output.
   prompting guide: never describe the source performer, restate the identity in every shot.
 - **A reference image**: a static picture of the person next to the video.
 
+## Tasks
+
+Use it for any edit that keeps the source's motion, camera and timing. With an empty prompt box the node
+writes the prompt from **task** + **instruction** (the `prompt` output shows what it sent):
+
+| task | instruction example | panel_noise |
+|---|---|---|
+| character swap | (empty, or the new person's look) + the person's pictures as references | 0 |
+| style | `a 1990s anime cel style` | 0.1-0.2 |
+| setting | `a sunny beach at sunset, waves rolling behind her` | 0 |
+| appearance | `an elderly woman with short grey hair` | 0.1 |
+| lighting / weather | `night, lit by pink and blue neon signs` | 0 |
+
+It does not change the motion or the camera: the panel makes the video copy them in sync.
+
+The task prompt is a **draft**: it cannot see the video, so it is generic. In tests, a prompt written for the
+clip (the example below) kept the room, framing and sync; the drafts got the change only partly (the style
+barely changed, the setting and light lost the framing, the swap took the reference's backdrop). Start from
+the `prompt` output and describe the clip.
+
+References work like the official Reference to Video node: up to 9 images (`<Picture n>`), 3 videos
+(`<Video n>`, each with its soundtrack) and 3 audios (`<Audio n>`), new slots appear as you connect them.
+
 ## Prompt
 
 The node's prompt box starts with a template. The side panel has **no tag**: it is not a `<Picture n>`
@@ -30,6 +59,33 @@ footage"); `{layout}` inserts that sentence for the current side and size. Descr
 part: never the panel's performer, clothes or room, even to contrast them, because whatever you leave
 undescribed is copied from the panel. Restate the new identity in every shot ("her face from
 `<Picture 1>`" plus two or three face, hair or outfit words) and give exact times for cuts.
+
+Example (character swap, source clip pinned on the left, a face picture and a full-body picture):
+
+```
+subject_definitions:
+<Subject 1> is the woman whose appearance comes from <Picture 1> and <Picture 2>: fair skin, a narrow oval face, grey-green eyes, light brown hair in a low ponytail, wearing a white long-sleeved top under a navy denim apron.
+
+summary:
+[reference generation] The target video is a split screen: the kept footage beside <Subject 1>, who moves in sync with it, in the same bedroom.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - her face, ponytail, white top and navy apron are retained.
+The kept footage: fully_preserved - the panel is kept exactly.
+
+detailed_description:
+The target video is in a realistic style, as handheld vertical smartphone footage under soft daylight. {layout}
+
+[Shot 1] A medium close-up at chest height, the phone steady at eye level. <Subject 1>, her face from <Picture 1> with grey-green eyes and soft pink lips, her light brown ponytail and navy apron, talks to the camera with small nods.
+
+[Shot 2] At 00:03.708, both halves cut together to a closer framing. <Subject 1>, her face from <Picture 1>, the white sleeves and apron straps visible, raises one open hand beside her mouth and smiles.
+
+overall_soundscape:
+Her voice speaking to the camera in a quiet bedroom.
+
+non_diegetic_music:
+None.
+```
 
 ## Settings
 

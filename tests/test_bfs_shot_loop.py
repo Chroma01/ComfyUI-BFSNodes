@@ -125,7 +125,7 @@ class JoinTest(unittest.TestCase):
         shots = [_shot(0, 0, 20, count=2, queue=True, run_id="t1"), _shot(1, 20, 45, cut=True, count=2, queue=True, run_id="t1")]
         first = join.join([self._frames(22, 0.1)], [shots[0]], [0])
         self.assertIsInstance(first[0], _Blocker)
-        video, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
+        video, _, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
         self.assertEqual(video.shape[0], 45)
         self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
 
@@ -206,6 +206,22 @@ class CastTest(unittest.TestCase):
         self.assertEqual(segs[0]["ref"], "a.png")
         self.assertTrue(segs[0]["run"])
         self.assertEqual(segs[1]["skip_reason"], "no linked person")
+
+
+class ComparisonTest(unittest.TestCase):
+    def test_join_returns_a_labelled_side_by_side(self):
+        shots = [dict(_shot(0, 0, 20, gen=22), frames=torch.zeros(22, 32, 48, 3), ref=torch.ones(1, 40, 30, 3),
+                      ref2=None, prompt="a test prompt"),
+                 dict(_shot(1, 20, 40, cut=True, gen=22), frames=torch.zeros(22, 32, 48, 3), ref=None, ref2=None,
+                      prompt="")]
+        imgs = [torch.full((22, 32, 48, 3), 0.5), torch.full((22, 32, 48, 3), 0.7)]
+        video, _, _, comp = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True], label=["steps 20"])
+        self.assertEqual(video.shape[0], 40)
+        self.assertEqual(comp.shape[0], 40)
+        self.assertEqual(comp.shape[2], 48 * 2 + 32)
+        self.assertGreater(comp.shape[1], 32)
+        off = SL.BFSShotJoin().join(imgs, shots, [0])[3]
+        self.assertEqual(off.shape[0], 1)
 
 
 class RepackTest(unittest.TestCase):

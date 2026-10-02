@@ -1018,21 +1018,34 @@ class BFSShotJoin:
                                                        "(e.g. the planner's audio output)."}),
                          "timeline": ("BFS_SHOT_TIMELINE", {"tooltip": "The planner's timeline. With it, shots that "
                              "did not run are filled with the original video (or dropped, per the planner's setting) "
-                             "and the soundtrack follows."})},
+                             "and the soundtrack follows."}),
+                         "comparison": ("BOOLEAN", {"default": False, "tooltip": "Also output a side-by-side video: "
+                             "original shot | references | result, with the shot's info on top and its prompt below."}),
+                         "label": ("STRING", {"default": "", "multiline": False, "tooltip": "Extra text for the "
+                             "comparison's top bar, e.g. the model, LoRA, steps and seed."})},
         }
 
     INPUT_IS_LIST = True
-    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT")
-    RETURN_NAMES = ("images", "audio", "fps")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "IMAGE")
+    RETURN_NAMES = ("images", "audio", "fps", "comparison")
     FUNCTION = "join"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
-    def join(self, images, shots, crossfade, audio=None, timeline=None):
+    def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None):
         tl = timeline[0] if timeline else None
+        want = bool(comparison[0]) if comparison else False
+        lab = (label[0] if label else "") or ""
+        self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
         if shots and shots[0].get("queue"):
-            return self._join_queue(images, shots, crossfade, audio, tl)
-        return self._join_all(images, shots, crossfade, audio, tl)
+            out = self._join_queue(images, shots, crossfade, audio, tl)
+        else:
+            out = self._join_all(images, shots, crossfade, audio, tl)
+        if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
+            return out + (out[0],)
+        video = out[0]
+        comp = comparison_video(video, self._parts, lab) if want else video[:1]
+        return tuple(out) + (comp,)
 
     def _join_queue(self, images, shots, crossfade, audio, tl=None):
         from comfy_execution.graph_utils import ExecutionBlocker
@@ -1042,7 +1055,8 @@ class BFSShotJoin:
         img = images[0]
         torch.save({"frames": (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(),
                     "shot": {k: v for k, v in shot.items() if k in ("index", "count", "start", "end", "length",
-                                                                   "gen_length", "fps", "cut_before")}},
+                                                                   "gen_length", "fps", "cut_before", "prompt",
+                                                                   "ref", "ref2", "frames")}},
                    os.path.join(d, f"shot_{shot['index']:04d}.pt"))
         st = run_state(rid)
         if shot["index"] not in st["done"]:
@@ -1087,6 +1101,8 @@ class BFSShotJoin:
                     body = body.clone()
                     body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
             out.append(body)
+            if hasattr(self, "_parts"):
+                self._parts.append((shots[j], L, shots[j].get("frames")))
             prev_tail = img[L:]
         video = torch.cat(out, 0)
         fps = float(shots[order[0]]["fps"])
@@ -1127,13 +1143,19 @@ def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
                     w = torch.linspace(0, 1, n + 2)[1:-1].view(-1, 1, 1, 1)
                     body = body.clone(); body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
             out.append(body); kept.append((seg["start"], L))
+            if hasattr(self, "_parts"):
+                self._parts.append((meta.get(seg["run_index"]), L, (meta.get(seg["run_index"]) or {}).get("frames")))
             prev_tail = img[L:]
         else:
             prev_tail = None
             if tl.get("fill", "original") == "drop":
                 continue
             frames = _read_frames(tl["path"], src[seg["start"]:seg["end"]], (W, H))
-            out.append(torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)); kept.append((seg["start"], L))
+            orig = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
+            out.append(orig); kept.append((seg["start"], L))
+            if hasattr(self, "_parts"):
+                self._parts.append(({"skipped": True, "start": seg["start"], "end": seg["end"], "fps": fps,
+                                     "cut_before": seg["cut_before"]}, L, orig))
     video = torch.cat(out, 0)
     a = (audio[0] if audio else None) or tl.get("audio")
     if a is not None:
@@ -1152,6 +1174,128 @@ def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
 
 
 BFSShotJoin._join_timeline = _join_timeline_impl
+
+
+def _font(size: int):
+    from PIL import ImageFont
+    for name in ("DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "arial.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _text_bar(lines: list[str], width: int, size: int, max_lines: int, fg=(235, 235, 235), bg=(18, 18, 22)):
+    """A dark bar with word-wrapped lines, as a float tensor [h, width, 3]."""
+    from PIL import Image, ImageDraw
+    font = _font(size)
+    probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    wrapped = []
+    for line in lines:
+        words, cur = line.split(), ""
+        for w in words:
+            t = (cur + " " + w).strip()
+            if probe.textlength(t, font=font) <= width - 2 * size and cur:
+                cur = t
+            elif not cur:
+                cur = w
+            else:
+                wrapped.append(cur); cur = w
+        wrapped.append(cur)
+    if len(wrapped) > max_lines:
+        wrapped = wrapped[:max_lines]
+        wrapped[-1] = wrapped[-1][: max(0, len(wrapped[-1]) - 3)] + "..."
+    lh = int(size * 1.3)
+    img = Image.new("RGB", (width, lh * len(wrapped) + size), bg)
+    d = ImageDraw.Draw(img)
+    for i, t in enumerate(wrapped):
+        d.text((size, size // 2 + i * lh), t, fill=fg, font=font)
+    return torch.from_numpy(np.asarray(img).astype(np.float32) / 255.0)
+
+
+def _column_labels(columns: list[tuple[str, int]], size: int) -> torch.Tensor:
+    """One row with each label centred over its column."""
+    from PIL import Image, ImageDraw
+    font = _font(size)
+    total = sum(w for _, w in columns)
+    img = Image.new("RGB", (total, int(size * 1.6)), (30, 30, 36))
+    d = ImageDraw.Draw(img)
+    x = 0
+    for name, w in columns:
+        tw = d.textlength(name, font=font)
+        d.text((x + (w - tw) / 2, size * 0.25), name, fill=(255, 210, 90), font=font)
+        x += w
+    return torch.from_numpy(np.asarray(img).astype(np.float32) / 255.0)
+
+
+def _fit_box(img: torch.Tensor | None, w: int, h: int) -> torch.Tensor:
+    """[1,H,W,3] or None -> [h,w,3], letterboxed on dark grey."""
+    out = torch.full((h, w, 3), 0.1)
+    if img is None:
+        return out
+    x = img[:1, ..., :3].movedim(-1, 1).float()
+    s = min(w / x.shape[-1], h / x.shape[-2])
+    nw, nh = max(1, int(x.shape[-1] * s)), max(1, int(x.shape[-2] * s))
+    x = torch.nn.functional.interpolate(x, size=(nh, nw), mode="bilinear", align_corners=False)[0].movedim(0, -1)
+    out[(h - nh) // 2:(h - nh) // 2 + nh, (w - nw) // 2:(w - nw) // 2 + nw] = x.clamp(0, 1)
+    return out
+
+
+def comparison_video(video: torch.Tensor, parts: list, label: str = "") -> torch.Tensor:
+    """original | references | result for every output frame, with shot info on top and the prompt below."""
+    H, W = video.shape[1:3]
+    rw = max(32, W // 2)
+    total_w = W * 2 + rw
+    size = max(12, total_w // 70)
+    n = sum(L for _, L, _ in parts) or video.shape[0]
+    count = sum(1 for s, _, _ in parts if s and not s.get("skipped"))
+    cols = _column_labels([("original", W), ("references", rw), ("result", W)], size)
+    frames, pos, k = [], 0, 0
+    for shot, L, orig in parts:
+        shot = shot or {}
+        fps = float(shot.get("fps") or 24.0)
+        skipped = bool(shot.get("skipped"))
+        if not skipped:
+            k += 1
+        t0, t1 = shot.get("start", 0) / fps, shot.get("end", 0) / fps
+        head = [f"{'skipped (original video)' if skipped else f'shot {k}/{count}'}   "
+                f"{int(t0 // 60)}:{t0 % 60:05.2f} -> {int(t1 // 60)}:{t1 % 60:05.2f}   {L} frames"
+                f"{' -> ' + str(shot.get('gen_length')) + ' generated' if shot.get('gen_length') else ''}"
+                f"{'   cut' if shot.get('cut_before') else ''}"]
+        if label:
+            head.append(label)
+        top = torch.cat([_text_bar(head, total_w, size, 3), cols], 0)
+        prompt = " ".join(str(shot.get("prompt") or "").split())
+        bottom = _text_bar([("prompt: " + prompt) if prompt else ("" if skipped else "prompt: (none)")], total_w,
+                           max(10, int(size * 0.8)), 6)
+        refs = [r for r in (shot.get("ref"), shot.get("ref2")) if r is not None]
+        if refs:
+            rh = H // len(refs)
+            col = torch.cat([_fit_box(r, rw, rh) for r in refs] + ([torch.full((H - rh * len(refs), rw, 3), 0.1)]
+                                                                    if H - rh * len(refs) else []), 0)
+        else:
+            col = _fit_box(None, rw, H)
+        for i in range(L):
+            res = video[pos + i, ..., :3]
+            if orig is not None and orig.shape[0]:
+                o = orig[min(i, orig.shape[0] - 1)][..., :3].float()
+                if o.shape[:2] != (H, W):
+                    o = torch.nn.functional.interpolate(o.movedim(-1, 0)[None], size=(H, W), mode="bilinear",
+                                                        align_corners=False)[0].movedim(0, -1)
+            else:
+                o = torch.full((H, W, 3), 0.1)
+            frames.append(torch.cat([top, torch.cat([o.cpu(), col, res.cpu()], 1), bottom], 0))
+        pos += L
+    if not frames:
+        return video[:1]
+    hmax = max(f.shape[0] for f in frames)
+    frames = [f if f.shape[0] == hmax else torch.cat([f, torch.full((hmax - f.shape[0], total_w, 3), 18 / 255)], 0)
+              for f in frames]
+    return torch.stack(frames[:n])
 
 
 NODE_CLASS_MAPPINGS = {
