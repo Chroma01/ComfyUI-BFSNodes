@@ -531,9 +531,17 @@ def _face_app():
     try:
         import insightface
         root = os.path.join(folder_paths.models_dir, "insightface")
+        # CPU only: light, no VRAM, and no CUDA/cuDNN loading (a missing cuDNN aborts the whole process)
         app = insightface.app.FaceAnalysis(name="buffalo_l", root=root, allowed_modules=["detection", "recognition"],
-                                           providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-        app.prepare(ctx_id=0, det_size=(640, 640))
+                                           providers=["CPUExecutionProvider"])
+        app.prepare(ctx_id=-1, det_size=(320, 320))
+        # small models: a few threads are faster than onnxruntime's default pool (one per core) and stay light
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = min(4, os.cpu_count() or 4)
+        so.inter_op_num_threads = 1
+        for model in app.models.values():
+            model.session = ort.InferenceSession(model.model_file, so, providers=["CPUExecutionProvider"])
         _FACE_APP = app
     except Exception as exc:  # noqa: BLE001
         print(f"[BFS Shot Planner] face analysis unavailable: {exc!r}")
@@ -541,7 +549,7 @@ def _face_app():
     return _FACE_APP or None
 
 
-def _cast_key(path: str, analysis: dict, step_s: float = 0.25, threshold: float = 0.42, min_share: float = 0.01) -> tuple:
+def _cast_key(path: str, analysis: dict, step_s: float = 0.5, threshold: float = 0.42, min_share: float = 0.01) -> tuple:
     return (path, os.path.getmtime(path), float(analysis["fps"]), round(step_s, 3), round(threshold, 3), round(min_share, 4))
 
 
@@ -553,9 +561,10 @@ def cached_cast(path: str, analysis: dict) -> dict | None:
         return None
 
 
-def analyze_cast(path: str, analysis: dict, step_s: float = 0.25, threshold: float = 0.42,
-                 min_share: float = 0.01) -> dict:
-    """Detect faces every `step_s` seconds, group them into people by ArcFace similarity.
+def analyze_cast(path: str, analysis: dict, step_s: float = 0.5, threshold: float = 0.42,
+                 min_share: float = 0.01, max_faces: int = 3) -> dict:
+    """Detect faces every `step_s` seconds (CPU), keep the `max_faces` most probable ones per frame, group them
+    into people by ArcFace similarity.
 
     Returns {"people": [{id, thumb, count, share}], "samples": [{f, faces: [{pid, area}]}]} where
     `f` is a timeline frame. Person ids are stable for the same video and settings.
@@ -575,13 +584,22 @@ def analyze_cast(path: str, analysis: dict, step_s: float = 0.25, threshold: flo
     h = max(32, int(round(w * analysis["height"] / max(1, analysis["width"]))))
     frames = _read_frames(path, src[frames_idx], (w, h))
     dets = []   # (sample index, embedding, area fraction, crop)
+    from insightface.app.common import Face
+    rec = app.models["recognition"]
     for si, fr in enumerate(frames):
         bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
-        for f in app.get(bgr):
-            x0, y0, x1, y1 = [int(v) for v in f.bbox]
+        boxes, kpss = app.det_model.detect(bgr, max_num=0, metric="default")
+        # only the most probable faces of the frame get recognised, so a crowd stays cheap and out of the cast
+        cand = []
+        for k in range(boxes.shape[0]):
+            x0, y0, x1, y1 = [int(v) for v in boxes[k, :4]]
             area = max(0, x1 - x0) * max(0, y1 - y0) / float(w * h)
-            if area < 0.0015 or f.det_score < 0.5:
-                continue
+            if area >= 0.0015 and boxes[k, 4] >= 0.5:
+                cand.append((float(boxes[k, 4]), k, area))
+        for score, k, area in sorted(cand, reverse=True)[:max_faces]:
+            f = Face(bbox=boxes[k, :4], kps=kpss[k] if kpss is not None else None, det_score=score)
+            rec.get(bgr, f)
+            x0, y0, x1, y1 = [int(v) for v in f.bbox]
             pad = int(0.25 * max(x1 - x0, y1 - y0))
             crop = fr[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
             dets.append((si, f.normed_embedding.astype(np.float32), area, crop))
@@ -850,16 +868,17 @@ class BFSShotUnpack:
     def INPUT_TYPES(cls):
         return {"required": {"shot": ("BFS_SHOT",)}}
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING", "INT", "IMAGE", "AUDIO", "INT", "INT", "INT")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING", "INT", "IMAGE", "AUDIO", "INT", "INT", "INT", "BFS_SHOT")
     RETURN_NAMES = ("guide_frames", "ref_image", "ref_image_2", "prompt", "length", "first_frame",
-                    "audio", "width", "height", "index")
+                    "audio", "width", "height", "index", "shot")
     OUTPUT_TOOLTIPS = (
         "The shot's guide frames, already at a length the model accepts.",
         "This shot's reference (a grey placeholder if none was set).",
         "This shot's second reference (a grey placeholder if none was set).",
         "This shot's prompt.", "Frames to generate (the grid-valid length).",
         "First guide frame of the shot.", "Soundtrack of the shot (silence if the video has none).",
-        "Generation width.", "Generation height.", "Shot index (0-based).")
+        "Generation width.", "Generation height.", "Shot index (0-based).",
+        "The same shot, unchanged: connect it to BFS Shot Repack after editing the pieces.")
     FUNCTION = "unpack"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Split one shot into its guide frames, references, prompt and length."
@@ -869,7 +888,7 @@ class BFSShotUnpack:
                                   "sample_rate": 44100}
         return (shot["frames"], shot["ref"] if shot["ref"] is not None else _grey(),
                 shot["ref2"] if shot["ref2"] is not None else _grey(), shot["prompt"], shot["gen_length"],
-                shot["frames"][:1], audio, shot["width"], shot["height"], shot["index"])
+                shot["frames"][:1], audio, shot["width"], shot["height"], shot["index"], shot)
 
 
 class BFSShotRepack:

@@ -146,6 +146,14 @@ Two run modes: *auto loop* (all shots in one run) and *queue loop* (one shot per
 disk, re-queued automatically; nodes after the join only run on the last shot). See
 [`web/docs/BFSShotPlanner.md`](web/docs/BFSShotPlanner.md).
 
+## H3 Duet / Side Panel (1.50.0)
+
+Training-free split-screen generation for MiniMax H3 (TSC's latent pin): a panel (the source clip
+or a reference) is pinned beside the video with a noise mask, the video is generated in sync with
+it, and the panel is cropped off before decoding. **BFS H3 Duet** does it all in one node;
+**BFS H3 Side Panel** + **BFS H3 Side Panel Crop** are the building blocks. Optional aligned latent
+guide. See [`web/docs/BFSH3Duet.md`](web/docs/BFSH3Duet.md).
+
 ## Requirements
 
 - ComfyUI

@@ -18,7 +18,7 @@ every shot inside that range.
 |---|---|
 | **BFS Shot Planner** | Pick a video, split it on a timeline, set a reference and prompt per shot. Outputs the shots as a ComfyUI **list**. |
 | **BFS Shot Unpack** | Opens one shot into plain values: guide frames, reference, second reference, prompt, length, first frame, audio, size, index. Use it with any model. |
-| **BFS Shot Repack** | Puts edited pieces back into a shot (Unpack -> e.g. remove the reference background -> Repack). Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
+| **BFS Shot Repack** | Puts edited pieces back into a shot: Unpack's `shot` output goes to Repack's `shot`, the edited piece (e.g. the reference with its background removed) to its input. Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
 | **BFS Shot H3 Conditioning** | Ready-made MiniMax H3 conditioning for one shot, built with the native nodes (Reference to Video + Add Guide). |
 | **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. |
 
@@ -92,8 +92,9 @@ matching audio) when *Skipped shots in the output* is set to remove them.
 
 ## Cast (people by face)
 
-*Find people* samples the video every 0.25 s, detects faces and groups them into people by face
-identity (InsightFace `buffalo_l` in `models/insightface`; the result is cached per video). Each
+*Find people* samples the video every 0.5 s, detects faces and groups them into people by face
+identity (InsightFace `buffalo_l` in `models/insightface`, on the CPU with a few threads so it stays
+light and never touches the GPU; the result is cached per video). Each
 person card shows the face, screen share and first/last appearance (click the face to seek).
 Give a person a reference (and a second one) by clicking the slot, or pick one from the recent
 references; *ignore* leaves that person out. Every shot card shows who is in it, with the main

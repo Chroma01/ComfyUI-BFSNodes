@@ -559,7 +559,7 @@ function Panel(io) {
       })) : null,
       h("div", { class: "row", style: "margin-top:8px" }, [
         h("button", { class: "pri", disabled: !!busy.value, onClick: () => findPeople(true) }, people.value.length ? "↻ Re-analyse people" : "👥 Find people"),
-        h("span", { class: "hint" }, people.value.length ? "faces sampled every 0.25 s and grouped by identity (InsightFace)" : "detects faces across the video and groups them into people"),
+        h("span", { class: "hint" }, people.value.length ? "faces sampled every 0.5 s and grouped by identity (InsightFace, CPU)" : "detects faces across the video and groups them into people"),
       ]),
     ]) : null;
 
