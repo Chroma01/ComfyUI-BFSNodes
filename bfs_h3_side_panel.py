@@ -108,6 +108,14 @@ def join_latent(target: torch.Tensor, strip: torch.Tensor, position: str) -> tor
     return torch.cat([target, strip], dim=3)
 
 
+def make_info(width: int, height: int, position: str, size: float, gap_px: int) -> dict:
+    """Layout of the canvas in latent cells: the video area (h, w) and the strip beside it."""
+    sw, sh, _, _ = strip_size(width, height, position, size, gap_px)
+    return {"position": position, "h": height // 16, "w": width // 16,
+            "strip_h": sh // 16 if position in ("top", "bottom") else 0,
+            "strip_w": sw // 16 if position in ("left", "right") else 0}
+
+
 def target_box(info: dict, scale: int = 1) -> tuple[int, int, int, int]:
     """(y0, y1, x0, x1) of the video area, in latent cells (scale 1) or pixels (scale 16)."""
     h, w, sh, sw, pos = info["h"], info["w"], info["strip_h"], info["strip_w"], info["position"]
@@ -208,10 +216,7 @@ class BFSH3SidePanel:
             raise ValueError(f"the video size {W}x{H} must be a multiple of 32")
         F = frame_count_of(T)
         gap_px = gap * PATCH_PX
-        sw, sh, _, _ = strip_size(W, H, position, size, gap_px)
-        info = {"position": position, "h": h, "w": w,
-                "strip_h": sh // 16 if position in ("top", "bottom") else 0,
-                "strip_w": sw // 16 if position in ("left", "right") else 0}
+        info = make_info(W, H, position, size, gap_px)
 
         # held strip: encode the strip alone (the video area is generated, so it needs no pixels)
         strip_px = strip_frames(panel, list(range(F)), W, H, position, size, gap_px, fit)
@@ -293,6 +298,49 @@ class BFSH3SidePanelCrop:
         return (out_latent, out_images)
 
 
+def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name, scheduler,
+              seed, panel=None, guide=None, guide_frame_idx=0, position="left", size=1.0, fit="contain", gap=0,
+              panel_noise=0.0, hold="all frames", ref_image_size="match", decode_canvas=False):
+    """Reference to Video -> optional pinned panel -> optional aligned guide -> sample -> crop -> decode.
+    Without a panel this is plain H3 ref2va with an aligned guide. `{layout}` in the prompt becomes the
+    layout sentence. Returns (images, audio, canvas, layout_text, cropped latent)."""
+    import comfy.samplers
+    from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
+    from comfy_extras.nodes_custom_sampler import Guider_Basic, Noise_RandomNoise, SamplerCustomAdvanced
+
+    text = layout_text(make_info(width, height, position, size, gap * PATCH_PX)) if panel is not None else ""
+    prompt = prompt.replace("{layout}", text)
+    positive, latent = MiniMaxH3ReferenceToVideo.execute(
+        clip=clip, prompt=prompt, width=width, height=height, length=length, ref_image_size=ref_image_size,
+        vae=vae, audio_vae=audio_vae, ref_images=refs or None).args[:2]
+    info, preview = None, None
+    if panel is not None:
+        positive, latent, info, preview, _ = BFSH3SidePanel().apply(
+            positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise, guide, guide_frame_idx)
+    elif guide is not None:
+        positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=guide_frame_idx,
+                                             vae=vae, image=guide).args[0]
+
+    guider = Guider_Basic(model)
+    guider.set_conds(positive)
+    sigmas = comfy.samplers.calculate_sigmas(model.get_model_object("model_sampling"), scheduler, steps).cpu()
+    out = SamplerCustomAdvanced.execute(Noise_RandomNoise(seed), guider, comfy.samplers.sampler_object(sampler_name),
+                                        sigmas, latent).args[0]
+    cropped = BFSH3SidePanelCrop().crop(info, latent=out)[0] if info is not None else \
+        {k: v for k, v in out.items() if k != "noise_mask"}
+    video_lat, audio_lat = cropped["samples"].unbind()
+    images = _decode(vae, video_lat)
+    if info is not None and decode_canvas:
+        canvas = _decode(vae, out["samples"].unbind()[0])
+    else:
+        canvas = preview if preview is not None else images[:1]
+    audio = None
+    if audio_vae is not None:
+        from comfy_extras.nodes_audio import vae_decode_audio
+        audio = vae_decode_audio(audio_vae, {"samples": audio_lat})
+    return images, audio, canvas, text, cropped
+
+
 def _sampler_lists():
     try:
         import comfy.samplers
@@ -316,7 +364,6 @@ class BFSH3Duet:
                 "vae": ("VAE",),
                 "prompt": ("STRING", {"multiline": True, "dynamic_prompts": True,
                                       "tooltip": "REF2VA prompt. Name the panel by its place (e.g. 'the LEFT half is the kept footage', see layout_text) and never give it a tag; <Picture n> are the ref images."}),
-                "panel": ("IMAGE", {"tooltip": "Pinned in the strip: the source clip (TSC duet) or a reference image."}),
                 "width": ("INT", {"default": 576, "min": 32, "max": 4096, "step": 32, "tooltip": "Generated video width (the output)."}),
                 "height": ("INT", {"default": 1024, "min": 32, "max": 4096, "step": 32}),
                 "length": ("INT", {"default": 0, "min": 0, "max": 3600, "tooltip": "Frames at 24 fps, snapped to 17k+5. 0 = the guide's or panel clip's length."}),
@@ -330,6 +377,8 @@ class BFSH3Duet:
                 "decode_canvas": ("BOOLEAN", {"default": False, "tooltip": "Also decode the whole canvas, to check the sync (one more VAE decode)."}),
             },
             "optional": {
+                "panel": ("IMAGE", {"tooltip": "Pinned in the strip: the source clip (TSC duet) or a reference image. "
+                                               "Leave it empty for a plain guided render."}),
                 "audio_vae": ("VAE",),
                 "ref_image_1": ("IMAGE", {"tooltip": "<Picture 1>"}),
                 "ref_image_2": ("IMAGE", {"tooltip": "<Picture 2>"}),
@@ -346,47 +395,84 @@ class BFSH3Duet:
     DESCRIPTION = ("MiniMax H3 duet in one node: the panel (source clip or reference) is pinned beside the video, "
                    "the video is generated in sync with it, and only the video comes out. Optional aligned guide.")
 
-    def run(self, model, clip, vae, prompt, panel, width, height, length, position, size, fit, gap, panel_noise, hold,
-            ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None,
+    def run(self, model, clip, vae, prompt, width, height, length, position, size, fit, gap, panel_noise, hold,
+            ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, panel=None, audio_vae=None,
             ref_image_1=None, ref_image_2=None, ref_image_3=None, guide=None, guide_frame_idx=0):
-        import comfy.samplers
-        from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
-        from comfy_extras.nodes_custom_sampler import Guider_Basic, Noise_RandomNoise, SamplerCustomAdvanced
-
+        if panel is None and guide is None:
+            raise ValueError("BFS H3 Duet needs a panel, a guide, or both")
         if length <= 0:
             src = guide if guide is not None else panel
             length = src.shape[0] if src.shape[0] >= 5 else 124
         refs = {f"ref_image_{i}": r for i, r in enumerate((ref_image_1, ref_image_2, ref_image_3), 1) if r is not None}
-        positive, latent = MiniMaxH3ReferenceToVideo.execute(
-            clip=clip, prompt=prompt, width=width, height=height, length=length, ref_image_size=ref_image_size,
-            vae=vae, audio_vae=audio_vae, ref_images=refs or None).args
-        positive, latent, info, preview, text = BFSH3SidePanel().apply(
-            positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise, guide, guide_frame_idx)
+        return h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name,
+                         scheduler, seed, panel, guide, guide_frame_idx, position, size, fit, gap, panel_noise, hold,
+                         ref_image_size, decode_canvas)
 
-        guider = Guider_Basic(model)
-        guider.set_conds(positive)
-        sigmas = comfy.samplers.calculate_sigmas(model.get_model_object("model_sampling"), scheduler, steps).cpu()
-        sampler = comfy.samplers.sampler_object(sampler_name)
-        out = SamplerCustomAdvanced.execute(Noise_RandomNoise(seed), guider, sampler, sigmas, latent).args[0]
 
-        cropped = BFSH3SidePanelCrop().crop(info, latent=out)[0]
-        video_lat, audio_lat = cropped["samples"].unbind()
-        images = _decode(vae, video_lat)
-        canvas = _decode(vae, out["samples"].unbind()[0]) if decode_canvas else preview
-        audio = None
-        if audio_vae is not None:
-            from comfy_extras.nodes_audio import vae_decode_audio
-            audio = vae_decode_audio(audio_vae, {"samples": audio_lat})
-        return (images, audio, canvas, text, cropped)
+class BFSShotH3Duet:
+    """One shot of the shot loop, rendered with MiniMax H3: the shot pinned in a panel (duet), the shot as an
+    aligned guide, or both. Planner -> this -> BFS Shot Join."""
+
+    MODES = ["duet (pin the shot, no LoRA needed)", "guide (aligned, for body-swap LoRAs)", "duet + guide"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        samplers, schedulers = _sampler_lists()
+        panel_req = BFSH3SidePanel.INPUT_TYPES()["required"]
+        return {
+            "required": {
+                "shot": ("BFS_SHOT",),
+                "model": ("MODEL",),
+                "clip": ("CLIP",),
+                "vae": ("VAE",),
+                "mode": (cls.MODES, {"default": cls.MODES[0], "tooltip":
+                    "duet: the shot's own clip is pinned beside the video and copied in sync (TSC's latent pin; "
+                    "write the prompt for a split screen, {layout} inserts the sentence). guide: the shot sits on "
+                    "the generated frames as a latent guide (use with a body-swap LoRA). duet + guide: both."}),
+                "use_ref_2": ("BOOLEAN", {"default": True}),
+                "position": panel_req["position"], "size": panel_req["size"], "fit": (FITS, {"default": "cover"}),
+                "gap": panel_req["gap"], "panel_noise": panel_req["panel_noise"],
+                "ref_image_size": (["match", "max"], {"default": "match"}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 200}),
+                "sampler_name": (samplers, {"default": "euler"}),
+                "scheduler": (schedulers, {"default": "beta"}),
+                "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
+                "decode_canvas": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {"audio_vae": ("VAE",)},
+        }
+
+    RETURN_TYPES = ("IMAGE", "AUDIO", "IMAGE", "STRING")
+    RETURN_NAMES = ("images", "audio", "canvas", "layout_text")
+    FUNCTION = "render"
+    CATEGORY = "BFS/shot loop"
+    DESCRIPTION = ("Renders one shot with MiniMax H3 (duet, aligned guide, or both) and returns its frames for "
+                   "BFS Shot Join. Runs once per shot of the Planner's list.")
+
+    def render(self, shot, model, clip, vae, mode, use_ref_2, position, size, fit, gap, panel_noise,
+               ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None):
+        refs = {}
+        if shot.get("ref") is not None:
+            refs["ref_image_1"] = shot["ref"]
+        if use_ref_2 and shot.get("ref2") is not None:
+            refs[f"ref_image_{len(refs) + 1}"] = shot["ref2"]
+        duet, guided = mode != self.MODES[1], mode != self.MODES[0]
+        return h3_render(model, clip, vae, audio_vae, shot["prompt"], refs, shot["width"], shot["height"],
+                         shot["gen_length"], steps, sampler_name, scheduler, seed + int(shot.get("index", 0)),
+                         panel=shot["frames"] if duet else None, guide=shot["frames"] if guided else None,
+                         position=position, size=size, fit=fit, gap=gap, panel_noise=panel_noise,
+                         ref_image_size=ref_image_size, decode_canvas=decode_canvas)[:4]
 
 
 NODE_CLASS_MAPPINGS = {
     "BFSH3Duet": BFSH3Duet,
+    "BFSShotH3Duet": BFSShotH3Duet,
     "BFSH3SidePanel": BFSH3SidePanel,
     "BFSH3SidePanelCrop": BFSH3SidePanelCrop,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BFSH3Duet": "BFS H3 Duet (pinned panel, all in one)",
+    "BFSShotH3Duet": "BFS Shot H3 Duet (render one shot)",
     "BFSH3SidePanel": "BFS H3 Side Panel (virtual reference panel)",
     "BFSH3SidePanelCrop": "BFS H3 Side Panel Crop",
 }

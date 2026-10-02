@@ -9,7 +9,8 @@ The panel is cut off before decoding, so it never reaches the output.
 
 | node | what it does |
 |---|---|
-| **BFS H3 Duet** | Everything in one node: native references + prompt, the pinned panel, an optional latent guide, sampling (euler / beta / CFG 1), decode and crop. Outputs the generated video, its audio, the whole canvas (to check the sync) and the layout sentence for the prompt. |
+| **BFS H3 Duet** | Everything in one node: native references + prompt, the pinned panel, an optional latent guide, sampling (euler / beta / CFG 1), decode and crop. Leave `panel` empty for a plain guided render. Outputs the generated video, its audio, the whole canvas (to check the sync) and the layout sentence for the prompt. |
+| **BFS Shot H3 Duet** | One shot of the shot loop (Planner -> this -> BFS Shot Join): *duet* pins the shot's own clip beside the video (no LoRA needed), *guide* puts the shot on the generated frames as a latent guide (for body-swap LoRAs), *duet + guide* does both. Write `{layout}` in the prompt to insert the split-screen sentence. |
 | **BFS H3 Side Panel** | Only the canvas: takes the conditioning and AV latent from Reference to Video, adds the pinned strip (and the guide), and returns them for your own sampler. Guides already added with Add Guide for MiniMax H3 are moved onto the canvas. |
 | **BFS H3 Side Panel Crop** | Removes the strip from the sampled latent (before VAE Decode) or from decoded images. |
 
