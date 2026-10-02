@@ -332,7 +332,7 @@ DEFAULT_PLAN = {
     "video": "", "fps": 24.0, "grid": DEFAULT_GRID, "mode": "shots", "max_s": 4.5, "min_s": 1.0,
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
-    "detector": "adaptive", "run": "auto",
+    "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
 }
 
 
@@ -370,6 +370,129 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["prompt"] = m.get("prompt") or ""
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
+    return segs
+
+
+# ---------------------------------------------------------------------------- content filters
+
+DEFAULT_FILTERS = {
+    "person": False, "min_person_area": 0.0, "max_persons": 0, "face": False,
+    "skip_dark": False, "dark_level": 0.06, "skip_static": False, "static_level": 0.004,
+    "min_frames": 0, "samples": 6,
+}
+_DET: dict[str, Any] = {}
+_STATS_CACHE: dict[tuple, dict] = {}
+
+
+def _yolo(kind: str):
+    """YOLO model for 'person' or 'face' from models/ultralytics, or None (OpenCV fallback)."""
+    if kind in _DET:
+        return _DET[kind]
+    model = None
+    try:
+        from ultralytics import YOLO
+        root = os.path.join(folder_paths.models_dir, "ultralytics")
+        cands = []
+        for sub in ("bbox", "segm", ""):
+            d = os.path.join(root, sub)
+            if os.path.isdir(d):
+                cands += [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.endswith(".pt") and kind in f.lower()]
+        if cands:
+            model = YOLO(cands[0])
+    except Exception:  # noqa: BLE001 - fall back to OpenCV
+        model = None
+    _DET[kind] = model
+    return model
+
+
+def _detect(frames: list[np.ndarray]) -> list[dict]:
+    """Per frame: person boxes (area fraction) and face count."""
+    import cv2
+    out = [{"persons": [], "faces": 0} for _ in frames]
+    pm, fm = _yolo("person"), _yolo("face")
+    if pm is not None:
+        for i, r in enumerate(pm(frames, verbose=False, conf=0.35, classes=[0])):
+            h, w = frames[i].shape[:2]
+            for b in r.boxes.xyxy.cpu().numpy() if r.boxes is not None else []:
+                out[i]["persons"].append(float((b[2] - b[0]) * (b[3] - b[1]) / (w * h)))
+    else:
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        for i, fr in enumerate(frames):
+            h, w = fr.shape[:2]
+            rects, _ = hog.detectMultiScale(cv2.cvtColor(fr, cv2.COLOR_RGB2GRAY), winStride=(8, 8))
+            out[i]["persons"] = [float(rw * rh / (w * h)) for (_, _, rw, rh) in rects]
+    if fm is not None:
+        for i, r in enumerate(fm(frames, verbose=False, conf=0.4)):
+            out[i]["faces"] = int(len(r.boxes)) if r.boxes is not None else 0
+    else:
+        casc = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml"))
+        for i, fr in enumerate(frames):
+            out[i]["faces"] = int(len(casc.detectMultiScale(cv2.cvtColor(fr, cv2.COLOR_RGB2GRAY), 1.1, 5)))
+    return out
+
+
+def shot_stats(path: str, analysis: dict, seg: dict, samples: int = 6) -> dict:
+    """Sampled content statistics for one shot (cached)."""
+    key = (path, os.path.getmtime(path), float(analysis["fps"]), seg["start"], seg["end"], samples)
+    if key in _STATS_CACHE:
+        return _STATS_CACHE[key]
+    src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
+    k = max(1, min(samples, seg["end"] - seg["start"]))
+    pick = np.linspace(seg["start"], seg["end"] - 1, k).round().astype(int)
+    w = 640
+    h = max(32, int(round(w * analysis["height"] / max(1, analysis["width"]))))
+    frames = _read_frames(path, src[pick], (w, h))
+    det = _detect(frames)
+    raw = analysis.get("raw") or []
+    motion = float(np.mean(raw[seg["start"] + 1:seg["end"]])) if seg["end"] - seg["start"] > 1 and raw else 0.0
+    st = {
+        "persons": int(max(len(d["persons"]) for d in det)),
+        "person_area": round(float(max([max(d["persons"]) for d in det if d["persons"]] or [0.0])), 4),
+        "person_frames": int(sum(1 for d in det if d["persons"])),
+        "faces": int(max(d["faces"] for d in det)),
+        "brightness": round(float(np.mean([f.mean() / 255.0 for f in frames])), 4),
+        "motion": round(motion, 4), "sampled": int(k),
+    }
+    _STATS_CACHE[key] = st
+    return st
+
+
+def skip_reason(stats: dict, length: int, f: dict) -> str:
+    """Why a shot should be skipped under these filters ('' = keep)."""
+    if f.get("min_frames") and length < int(f["min_frames"]):
+        return f"shorter than {int(f['min_frames'])} frames"
+    if f.get("skip_dark") and stats["brightness"] < float(f.get("dark_level", 0.06)):
+        return "dark / fade"
+    if f.get("skip_static") and stats["motion"] < float(f.get("static_level", 0.004)):
+        return "static"
+    if f.get("person") and stats["persons"] == 0:
+        return "no person"
+    if f.get("person") and float(f.get("min_person_area") or 0) > 0 and stats["person_area"] < float(f["min_person_area"]):
+        return f"person smaller than {float(f['min_person_area']) * 100:.0f}% of the frame"
+    if int(f.get("max_persons") or 0) > 0 and stats["persons"] > int(f["max_persons"]):
+        return f"more than {int(f['max_persons'])} people"
+    if f.get("face") and stats["faces"] == 0:
+        return "no face"
+    return ""
+
+
+def filters_active(f: dict) -> bool:
+    return any(f.get(k) for k in ("person", "face", "skip_dark", "skip_static")) or \
+        int(f.get("max_persons") or 0) > 0 or int(f.get("min_frames") or 0) > 0
+
+
+def apply_filters(plan: dict, analysis: dict, path: str, segs: list[dict]) -> list[dict]:
+    """Mark each shot with stats and an automatic skip reason; per-shot 'force' overrides it."""
+    f = dict(DEFAULT_FILTERS); f.update(plan.get("filters") or {})
+    meta = plan.get("segs") or []
+    need = filters_active(f)
+    for i, s in enumerate(segs):
+        force = (meta[i] or {}).get("force", "auto") if i < len(meta) and isinstance(meta[i], dict) else "auto"
+        s["force"] = force
+        s["stats"] = shot_stats(path, analysis, s, int(f.get("samples") or 6)) if need else None
+        s["skip_reason"] = skip_reason(s["stats"], s["end"] - s["start"], f) if need else ""
+        s["run"] = s["enabled"] and (force == "run" or (force != "skip" and not s["skip_reason"]))
     return segs
 
 
@@ -444,15 +567,17 @@ class BFSShotPlanner:
             },
         }
 
-    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING")
-    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary")
-    OUTPUT_IS_LIST = (True, False, False, False, False, False, False)
+    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE")
+    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline")
+    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False)
     OUTPUT_TOOLTIPS = (
         "One item per shot. Every node that receives this list runs once per shot; connect it to "
         "BFS Shot Unpack or BFS Shot H3 Conditioning, sample, decode, then BFS Shot Join.",
         "Number of shots that will run.", "Timeline frame rate.", "Generation width.",
         "Generation height.", "The whole soundtrack, trimmed to the planned duration.",
-        "Human-readable plan.")
+        "Human-readable plan.",
+        "Every shot in order, including the ones that do not run (disabled or filtered out). Connect it "
+        "to BFS Shot Join so skipped shots are filled with the original video (or dropped).")
     FUNCTION = "plan_shots"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Split a long video into model-sized shots (at camera cuts, fixed length, or by hand), "
@@ -473,10 +598,10 @@ class BFSShotPlanner:
         path = _input_path(p["video"])
         fps = float(p["fps"])
         a = analyze(path, fps)
-        segs = resolve_plan(p, a, path)
-        segs = [s for s in segs if s["enabled"]]
+        all_segs = apply_filters(p, a, path, resolve_plan(p, a, path))
+        segs = [s for s in all_segs if s["run"]]
         if not segs:
-            raise ValueError("BFS Shot Planner: no shots are enabled.")
+            raise ValueError("BFS Shot Planner: no shot is left to run (all disabled or filtered out).")
         W, H = generation_size(a["width"], a["height"], float(p["megapixels"]), int(p["multiple"]))
         src = _timeline(a["n_src"], a["fps_src"], fps)
         audio = _read_audio(path)
@@ -512,13 +637,22 @@ class BFSShotPlanner:
             })
         total = sum(s["end"] - s["start"] for s in segs)
         full_audio = _slice_audio(audio, segs[0]["start"] / fps, total / fps) if audio else None
+        full_total = sum(s["end"] - s["start"] for s in all_segs)
+        timeline = {"path": path, "fps": fps, "width": W, "height": H, "fill": p.get("skip_fill", "original"),
+                    "audio": _slice_audio(audio, all_segs[0]["start"] / fps, full_total / fps) if audio else None,
+                    "segs": [{"start": s["start"], "end": s["end"], "run": s["run"], "cut_before": s["cut_before"],
+                              "run_index": segs.index(s) if s["run"] else -1} for s in all_segs],
+                    "src": src.tolist(), "n": a["n"]}
+        skipped = [(i, s.get("skip_reason") or ("disabled" if not s["enabled"] else "skip")) for i, s in enumerate(all_segs) if not s["run"]]
         lines = [f"{len(segs)} shots, {total} frames ({total / fps:.2f}s) at {fps:g} fps, {W}x{H}"
                  + (f" | queue loop: running shot {shots[0]['index'] + 1}/{len(segs)}" if queue else "")]
+        for i, why in skipped:
+            lines.append(f"skip shot {i + 1} (frames {all_segs[i]['start']}-{all_segs[i]['end'] - 1}): {why}")
         for s in shots:
             lines.append(f"#{s['index'] + 1}: frames {s['start']}-{s['end'] - 1} ({s['length']} -> generate "
                          f"{s['gen_length']}){' cut' if s['cut_before'] else ''}"
                          f"{' ref' if s['ref'] is not None else ''}{' ref2' if s['ref2'] is not None else ''}")
-        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines))
+        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline)
 
 
 class BFSShotUnpack:
@@ -628,7 +762,10 @@ class BFSShotJoin:
                     "shot generated past its end. 0 = hard joins everywhere."}),
             },
             "optional": {"audio": ("AUDIO", {"tooltip": "Soundtrack to return with the video "
-                                                       "(e.g. the planner's audio output)."})},
+                                                       "(e.g. the planner's audio output)."}),
+                         "timeline": ("BFS_SHOT_TIMELINE", {"tooltip": "The planner's timeline. With it, shots that "
+                             "did not run are filled with the original video (or dropped, per the planner's setting) "
+                             "and the soundtrack follows."})},
         }
 
     INPUT_IS_LIST = True
@@ -638,12 +775,13 @@ class BFSShotJoin:
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
-    def join(self, images, shots, crossfade, audio=None):
+    def join(self, images, shots, crossfade, audio=None, timeline=None):
+        tl = timeline[0] if timeline else None
         if shots and shots[0].get("queue"):
-            return self._join_queue(images, shots, crossfade, audio)
-        return self._join_all(images, shots, crossfade, audio)
+            return self._join_queue(images, shots, crossfade, audio, tl)
+        return self._join_all(images, shots, crossfade, audio, tl)
 
-    def _join_queue(self, images, shots, crossfade, audio):
+    def _join_queue(self, images, shots, crossfade, audio, tl=None):
         from comfy_execution.graph_utils import ExecutionBlocker
         shot = shots[0]
         rid = shot["run_id"]
@@ -667,9 +805,11 @@ class BFSShotJoin:
         stored = [torch.load(os.path.join(d, f"shot_{i:04d}.pt")) for i in range(shot["count"])]
         imgs = [x["frames"].float() / 255.0 for x in stored]
         meta = [x["shot"] for x in stored]
-        return self._join_all(imgs, meta, crossfade, audio)
+        return self._join_all(imgs, meta, crossfade, audio, tl)
 
-    def _join_all(self, images, shots, crossfade, audio=None):
+    def _join_all(self, images, shots, crossfade, audio=None, tl=None):
+        if tl is not None and any(not s["run"] for s in tl["segs"]):
+            return self._join_timeline(images, shots, crossfade, audio, tl)
         xf = int(crossfade[0]) if crossfade else 0
         if len(images) != len(shots):
             raise ValueError(f"BFS Shot Join: got {len(images)} image batches for {len(shots)} shots. "
@@ -705,6 +845,60 @@ class BFSShotJoin:
                 wf = torch.nn.functional.pad(wf, (0, n - wf.shape[-1]))
             a = {"waveform": wf, "sample_rate": a["sample_rate"]}
         return (video, a, fps)
+
+
+def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
+    """Rebuild the whole timeline: generated shots where they ran, original video (or nothing) elsewhere."""
+    xf = int(crossfade[0]) if crossfade else 0
+    by_idx = {shots[j]["index"]: images[j] for j in range(len(shots))}
+    meta = {s["index"]: s for s in shots}
+    first = images[0]
+    H, W = first.shape[1:3]
+    fps = float(tl["fps"])
+    src = np.asarray(tl["src"])
+    out, kept = [], []
+    prev_tail = None
+    for seg in tl["segs"]:
+        L = seg["end"] - seg["start"]
+        if seg["run"]:
+            img = by_idx[seg["run_index"]]
+            if img.shape[1:3] != (H, W):
+                img = torch.nn.functional.interpolate(img.movedim(-1, 1), size=(H, W), mode="bilinear",
+                                                      align_corners=False).movedim(1, -1)
+            body = img[:L]
+            if body.shape[0] < L:
+                body = torch.cat([body, body[-1:].expand(L - body.shape[0], -1, -1, -1)], 0)
+            if xf > 0 and prev_tail is not None and not seg["cut_before"]:
+                n = min(xf, prev_tail.shape[0], body.shape[0])
+                if n > 0:
+                    w = torch.linspace(0, 1, n + 2)[1:-1].view(-1, 1, 1, 1)
+                    body = body.clone(); body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
+            out.append(body); kept.append((seg["start"], L))
+            prev_tail = img[L:]
+        else:
+            prev_tail = None
+            if tl.get("fill", "original") == "drop":
+                continue
+            frames = _read_frames(tl["path"], src[seg["start"]:seg["end"]], (W, H))
+            out.append(torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)); kept.append((seg["start"], L))
+    video = torch.cat(out, 0)
+    a = (audio[0] if audio else None) or tl.get("audio")
+    if a is not None:
+        sr = a["sample_rate"]; base = tl["segs"][0]["start"]
+        if tl.get("fill", "original") == "drop":
+            parts = [a["waveform"][..., int(round((st - base) / fps * sr)):int(round((st - base + L) / fps * sr))] for st, L in kept]
+            wf = torch.cat(parts, -1)
+        else:
+            wf = a["waveform"]
+        n = int(round(video.shape[0] / fps * sr))
+        wf = wf[..., :n]
+        if wf.shape[-1] < n:
+            wf = torch.nn.functional.pad(wf, (0, n - wf.shape[-1]))
+        a = {"waveform": wf, "sample_rate": sr}
+    return (video, a, fps)
+
+
+BFSShotJoin._join_timeline = _join_timeline_impl
 
 
 NODE_CLASS_MAPPINGS = {
@@ -764,6 +958,23 @@ try:
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": segs, "cuts": cuts, "width": W, "height": H, "detector": used,
                                   "max_len": snap_down(int(round(float(p["max_s"]) * float(p["fps"]))), p["grid"])})
+    @PromptServer.instance.routes.post("/bfs/shotloop/filters")
+    async def _bfs_shot_filters(request):
+        body = await request.json()
+        try:
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            f = dict(DEFAULT_FILTERS); f.update(p.get("filters") or {})
+            path = _input_path(p["video"])
+            a = analyze(path, float(p["fps"]))
+            segs = resolve_plan(p, a, path)
+            for s in segs:   # stats always, so the panel can show them before any filter is on
+                s["stats"] = shot_stats(path, a, s, int(f.get("samples") or 6))
+                s["skip_reason"] = skip_reason(s["stats"], s["end"] - s["start"], f)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response({"segs": [{"start": s["start"], "end": s["end"], "stats": s["stats"],
+                                            "skip_reason": s["skip_reason"]} for s in segs]})
+
     @PromptServer.instance.routes.post("/bfs/shotloop/progress")
     async def _bfs_shot_progress(request):
         body = await request.json()

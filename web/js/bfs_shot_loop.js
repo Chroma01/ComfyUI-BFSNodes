@@ -15,6 +15,9 @@ const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "",
   megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
+  skip_fill: "original",
+  filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
+             skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
 
 const snapUp = (n, grid) => {
@@ -128,11 +131,13 @@ function Panel(io) {
   const gq = ref("");
   const prog = reactive({ done: 0, count: 0 });
   const tlEl = ref(null);
+  const stats = ref([]);         // per-shot content stats from /bfs/shotloop/filters
 
   const load = () => {
     let p = {};
     try { p = JSON.parse(io.getPlan() || "{}"); } catch { p = {}; }
     Object.assign(plan, DEFAULTS, p);
+    plan.filters = { ...DEFAULTS.filters, ...(p.filters || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
   };
@@ -153,12 +158,21 @@ function Panel(io) {
       if (b[i + 1] <= b[i]) continue;
       const m = plan.segs[out.length] || {};
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
-                 cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "" });
+                 cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
+                 force: m.force || "auto" });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
   });
-  const active = computed(() => segs.value.filter(s => s.enabled));
+  const statFor = s => stats.value.find(x => x.start === s.start && x.end === s.end) || null;
+  const skipWhy = s => {
+    if (!s.enabled) return "disabled";
+    if (s.force === "run") return "";
+    if (s.force === "skip") return "skipped by hand";
+    return filtersOn.value ? (statFor(s)?.skip_reason || "") : "";
+  };
+  const filtersOn = computed(() => { const f = plan.filters; return !!(f.person || f.face || f.skip_dark || f.skip_static || f.max_persons > 0 || f.min_frames > 0); });
+  const active = computed(() => segs.value.filter(s => !skipWhy(s)));
   const pxPerFrame = computed(() => {
     const w = (tlEl.value?.clientWidth || 600) - 2;
     return Math.max(0.2, (w / Math.max(1, n.value)) * zoom.value);
@@ -200,6 +214,17 @@ function Panel(io) {
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
+  async function analyzeContent() {
+    if (!plan.video) return;
+    busy.value = "Detecting people and faces…"; error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/filters", { method: "POST", body: JSON.stringify({ plan: { ...plan } }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      stats.value = j.segs.map(x => ({ ...x.stats, start: x.start, end: x.end, skip_reason: x.skip_reason }));
+    } catch (e) { error.value = String(e.message || e); }
+    busy.value = "";
+  }
+  const setFilter = (k, v) => { plan.filters = { ...plan.filters, [k]: v }; save(); if (stats.value.length) analyzeContent(); };
   async function upload(file, cb) {
     const fd = new FormData(); fd.append("image", file); fd.append("type", "input"); fd.append("overwrite", "true");
     busy.value = `Uploading ${file.name}…`;
@@ -338,9 +363,9 @@ function Panel(io) {
             [h("polyline", { points: sparkPts, fill: "none", stroke: "#ff7a90", "stroke-width": 1, "vector-effect": "non-scaling-stroke" })]),
           h("div", { class: "segs", onDblclick: e => splitAt(frameAt(e).frame) }, [
             ...S.map((s, i) => h("div", {
-              class: ["seg", i === sel.value && "sel", !s.enabled && "off", s.len > maxLen.value && "long"],
+              class: ["seg", i === sel.value && "sel", !!skipWhy(s) && "off", s.len > maxLen.value && "long"],
               style: `left:${s.start * ppf}px;width:${Math.max(2, s.len * ppf - 1)}px;background:${hue(i)}`,
-              title: `#${i + 1} · frames ${s.start}-${s.end - 1} · ${s.len} → ${s.gen}`, onClick: () => { sel.value = i; },
+              title: `#${i + 1} · frames ${s.start}-${s.end - 1} · ${s.len} → ${s.gen}${skipWhy(s) ? " · skip: " + skipWhy(s) : ""}`, onClick: () => { sel.value = i; },
             }, s.len * ppf > 26 ? `${i + 1}` : "")),
             ...plan.bounds.filter(b => b < N).map((b, k) => h("div", { class: "hdl", style: `left:${b * ppf}px`, title: `boundary @ ${b}`, onPointerdown: e => drag(k, e) })),
           ]),
@@ -356,12 +381,42 @@ function Panel(io) {
       ]),
     ]) : null;
 
+    const F = plan.filters;
+    const chk = (k, label) => h("label", { class: "row", style: "gap:4px" }, [h("input", { type: "checkbox", checked: !!F[k], onChange: e => setFilter(k, e.target.checked) }), label]);
+    const fnum = (k, step, label, hint) => fld(label, h("input", { type: "number", step, min: 0, value: F[k], onChange: e => setFilter(k, parseFloat(e.target.value) || 0) }), hint);
+    const skippedN = S.filter(s => skipWhy(s)).length;
+    const filters = an.value ? h("details", { class: "card", open: filtersOn.value || stats.value.length > 0 }, [
+      h("summary", h("h5", ["Filters", filtersOn.value ? h("span", { class: "pill warn" }, `${skippedN} skipped`) : h("span", { class: "pill" }, "off"),
+        h("span", { class: "hint", style: "text-transform:none;letter-spacing:0" }, "skipped shots do not run; the join fills them with the original video or drops them")])),
+      h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
+        chk("person", "Needs a person"), chk("face", "Needs a face"), chk("skip_dark", "Skip dark / fades"), chk("skip_static", "Skip static shots"),
+      ]),
+      h("div", { class: "grid" }, [
+        fnum("min_person_area", 0.01, "Min person size (0-1 of frame)", "e.g. 0.03 skips wide shots"),
+        fnum("max_persons", 1, "Max people (0 = any)", "skip crowds"),
+        fnum("min_frames", 1, "Min frames (0 = off)"),
+        fnum("samples", 1, "Frames sampled / shot"),
+        fnum("dark_level", 0.01, "Dark below (0-1)"),
+        fnum("static_level", 0.001, "Static below"),
+        fld("Skipped shots in the output", sel_("skip_fill", [["original", "Keep original video"], ["drop", "Remove them"]])),
+      ]),
+      h("div", { class: "row", style: "margin-top:8px" }, [
+        h("button", { class: "pri", disabled: !!busy.value, onClick: analyzeContent }, "👤 Analyse people & faces"),
+        h("span", { class: "hint" }, stats.value.length ? `stats for ${stats.value.length} shots · YOLO person/face from models/ultralytics` : "runs the detectors on a few frames of every shot"),
+      ]),
+    ]) : null;
+
     // shot cards
     const cards = S.length ? h("div", { class: "card" }, [
       h("h5", "Shots"),
       h("div", { class: "shots" }, S.map((s, i) => h("div", { class: ["sc", i === sel.value && "sel"], onClick: () => { sel.value = i; } }, [
         h("div", { class: "bar", style: `background:${hue(i)}` }),
-        h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? h("span", { class: "pill" }, "cut") : null, !s.enabled ? h("span", { class: "pill warn" }, "off") : null]),
+        h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? h("span", { class: "pill" }, "cut") : null,
+          skipWhy(s) ? h("span", { class: "pill warn", title: skipWhy(s) }, "skip") : h("span", { class: "pill ok" }, "run"),
+          s.force !== "auto" ? h("span", { class: "pill" }, s.force) : null]),
+        statFor(s) ? h("div", { class: "t", style: "margin-top:2px" },
+          `👤 ${statFor(s).persons} · ${(statFor(s).person_area * 100).toFixed(1)}% · 🙂 ${statFor(s).faces} · ☀ ${(statFor(s).brightness * 100).toFixed(0)}%`) : null,
+        skipWhy(s) ? h("div", { class: "t", style: "color:#ffc46b" }, skipWhy(s)) : null,
         h("div", { class: "t" }, `${fmtT(s.start, fps)} → ${fmtT(s.end, fps)} · ${s.len}f → ${s.gen}f`),
         h("div", { class: "thumbs" }, [
           s.ref || plan.global_ref ? h("img", { class: "rt", src: viewUrl(s.ref || plan.global_ref), style: s.ref ? "" : "opacity:.45" }) : h("div", { class: "rt ph2" }, "ref"),
@@ -385,6 +440,9 @@ function Panel(io) {
         ]),
       ]),
       h("div", { class: "row", style: "margin-top:6px" }, [
+        h("select", { value: cur.force, style: "width:auto", title: "Override the content filters for this shot",
+          onChange: e => setMeta(sel.value, "force", e.target.value) },
+          [h("option", { value: "auto" }, "filters decide"), h("option", { value: "run" }, "always run"), h("option", { value: "skip" }, "always skip")]),
         h("button", { onClick: () => setMeta(sel.value, "enabled", !cur.enabled) }, cur.enabled ? "⏸ Disable" : "▶ Enable"),
         h("button", { onClick: () => splitAt(cur.start + Math.floor(cur.len / 2)) }, "✂ Split in half"),
         h("button", { disabled: sel.value >= S.length - 1, onClick: () => mergeNext(sel.value) }, "⇥ Merge with next"),
@@ -432,7 +490,7 @@ function Panel(io) {
       save(); gallery.value = null;
     }
 
-    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, cards, editor, globals, queue, modal]);
+    return h("div", { class: "bsl" }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, filters, cards, editor, globals, queue, modal]);
   };
 }
 

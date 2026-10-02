@@ -130,5 +130,51 @@ class JoinTest(unittest.TestCase):
         self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
 
 
+class FilterTest(unittest.TestCase):
+    STATS = {"persons": 1, "person_area": 0.2, "person_frames": 6, "faces": 1, "brightness": 0.4, "motion": 0.02, "sampled": 6}
+
+    def test_no_filter_keeps_everything(self):
+        self.assertEqual(SL.skip_reason(self.STATS, 50, dict(SL.DEFAULT_FILTERS)), "")
+        self.assertFalse(SL.filters_active(dict(SL.DEFAULT_FILTERS)))
+
+    def test_each_filter(self):
+        f = dict(SL.DEFAULT_FILTERS)
+        self.assertEqual(SL.skip_reason(dict(self.STATS, persons=0), 50, dict(f, person=True)), "no person")
+        self.assertIn("smaller", SL.skip_reason(dict(self.STATS, person_area=0.01), 50, dict(f, person=True, min_person_area=0.03)))
+        self.assertIn("more than", SL.skip_reason(dict(self.STATS, persons=5), 50, dict(f, max_persons=2)))
+        self.assertEqual(SL.skip_reason(dict(self.STATS, faces=0), 50, dict(f, face=True)), "no face")
+        self.assertEqual(SL.skip_reason(dict(self.STATS, brightness=0.02), 50, dict(f, skip_dark=True)), "dark / fade")
+        self.assertEqual(SL.skip_reason(dict(self.STATS, motion=0.0), 50, dict(f, skip_static=True)), "static")
+        self.assertIn("shorter", SL.skip_reason(self.STATS, 5, dict(f, min_frames=10)))
+
+
+class TimelineJoinTest(unittest.TestCase):
+    def _tl(self, fill):
+        return {"path": "", "fps": 24.0, "width": 8, "height": 8, "fill": fill, "audio": None, "n": 60,
+                "src": list(range(60)),
+                "segs": [{"start": 0, "end": 20, "run": True, "cut_before": False, "run_index": 0},
+                         {"start": 20, "end": 40, "run": False, "cut_before": True, "run_index": -1},
+                         {"start": 40, "end": 60, "run": True, "cut_before": True, "run_index": 1}]}
+
+    def test_drop_removes_skipped_shots(self):
+        shots = [_shot(0, 0, 20, gen=22), _shot(1, 40, 60, cut=True, gen=22)]
+        imgs = [torch.zeros(22, 8, 8, 3), torch.ones(22, 8, 8, 3)]
+        video = SL.BFSShotJoin()._join_all(imgs, shots, [0], None, self._tl("drop"))[0]
+        self.assertEqual(video.shape[0], 40)
+        self.assertEqual(float(video[25, 0, 0, 0]), 1.0)
+
+    def test_original_fill_reads_the_source_frames(self):
+        shots = [_shot(0, 0, 20, gen=22), _shot(1, 40, 60, cut=True, gen=22)]
+        imgs = [torch.zeros(22, 8, 8, 3), torch.ones(22, 8, 8, 3)]
+        orig = SL._read_frames
+        SL._read_frames = lambda path, idx, size: [__import__("numpy").full((8, 8, 3), 128, "uint8") for _ in idx]
+        try:
+            video = SL.BFSShotJoin()._join_all(imgs, shots, [0], None, self._tl("original"))[0]
+        finally:
+            SL._read_frames = orig
+        self.assertEqual(video.shape[0], 60)
+        self.assertAlmostEqual(float(video[30, 0, 0, 0]), 128 / 255, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()

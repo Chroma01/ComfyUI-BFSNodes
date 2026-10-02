@@ -59,6 +59,28 @@ camera cuts.
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
 107 frames for H3). *Max shots* and *Max total seconds* cap a long source.
 
+## Filters
+
+Skip shots that should not run, decided per shot from a few sampled frames:
+
+| filter | skips a shot when |
+|---|---|
+| Needs a person | no person is detected |
+| Min person size | the largest person covers less than that fraction of the frame (wide shots) |
+| Max people | more people than that (crowds) |
+| Needs a face | no face is detected |
+| Skip dark / fades | the mean brightness is below the level |
+| Skip static | there is almost no motion (title cards, freeze frames) |
+| Min frames | the shot is shorter than that |
+
+People and faces use YOLO from `models/ultralytics` (`person_yolov8m-seg.pt`, `face_yolov8m.pt`, the
+Impact Pack files) with OpenCV fallbacks. *Analyse people & faces* shows the numbers on every shot
+card. Each shot can override the filters (always run / always skip).
+
+Skipped shots do not run. Connect the planner's `timeline` output to BFS Shot Join and they are
+filled with the original video, keeping the full duration and soundtrack, or removed (with the
+matching audio) when *Skipped shots in the output* is set to remove them.
+
 ## References and prompts
 
 Every shot can have its own reference, second reference and prompt; shots without them use the
