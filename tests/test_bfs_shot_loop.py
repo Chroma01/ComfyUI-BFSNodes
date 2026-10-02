@@ -224,6 +224,32 @@ class ComparisonTest(unittest.TestCase):
         self.assertEqual(off.shape[0], 1)
 
 
+class ContinuityTest(unittest.TestCase):
+    def test_pick_frame_ignores_the_overlap(self):
+        frames = torch.arange(30, dtype=torch.float32).view(30, 1, 1, 1).expand(30, 2, 2, 3)
+        self.assertEqual(float(SL.pick_frame(frames, 20, "first")[0, 0, 0, 0]), 0.0)
+        self.assertEqual(float(SL.pick_frame(frames, 20, "middle")[0, 0, 0, 0]), 10.0)
+        self.assertEqual(float(SL.pick_frame(frames, 20, "last")[0, 0, 0, 0]), 19.0)
+
+    def test_chain_uses_the_previous_result_only_when_asked(self):
+        frames = torch.arange(30, dtype=torch.float32).view(30, 1, 1, 1).expand(30, 2, 2, 3)
+        SL.remember_result({"index": 0, "count": 2}, frames)
+        shot = {"index": 1, "count": 2, "chain": "reference", "chain_frame": "last", "prev_length": 20}
+        self.assertEqual(float(SL.chain_image(shot)[0, 0, 0, 0]), 19.0)
+        self.assertIsNone(SL.chain_image(dict(shot, chain="off")))
+        self.assertIsNone(SL.chain_image(dict(shot, index=0)))
+        self.assertIsNone(SL.chain_image(dict(shot, index=3, count=4)))   # not the shot right after
+        stored = torch.ones(1, 2, 2, 3)
+        self.assertIs(SL.chain_image(dict(shot, chain_image=stored)), stored)
+
+    def test_plan_carries_the_per_shot_setting(self):
+        a = {"fps": 24.0, "n": 100, "score": [0.0] * 100, "raw": [0.0] * 100}
+        plan = dict(SL.DEFAULT_PLAN, mode="fixed", max_s=2, bounds=[50],
+                    segs=[{}, {"chain": "first frame", "chain_frame": "middle"}])
+        segs = SL.resolve_plan(plan, a)
+        self.assertEqual((segs[0]["chain"], segs[1]["chain"], segs[1]["chain_frame"]), ("off", "first frame", "middle"))
+
+
 class RepackTest(unittest.TestCase):
     def test_replaces_only_connected_pieces_and_fits_the_guide(self):
         shot = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3),

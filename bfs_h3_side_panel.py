@@ -471,7 +471,7 @@ def build_prompt(task: str, instruction: str, n_pictures: int, n_videos: int) ->
 def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name, scheduler,
               seed, panel=None, guide=None, guide_frame_idx=0, position="left", size=1.0, fit="contain", gap=0,
               panel_noise=0.0, hold="all frames", ref_image_size="match", decode_canvas=False,
-              rope_mode="canvas", rope_gap=0.0):
+              rope_mode="canvas", rope_gap=0.0, first_frame=None):
     """Reference to Video -> optional pinned panel -> optional aligned guide -> sample -> crop -> decode.
 
     `refs` holds the Reference to Video inputs ({"ref_images": {...}, "ref_videos": {...}, ...}). Without a
@@ -487,6 +487,9 @@ def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, 
     positive, latent = MiniMaxH3ReferenceToVideo.execute(
         clip=clip, prompt=prompt, width=width, height=height, length=length, ref_image_size=ref_image_size,
         vae=vae, audio_vae=audio_vae, **refs).args[:2]
+    if first_frame is not None:   # anchored at frame 0; the panel step moves it onto the canvas
+        positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
+                                             image=first_frame[:1]).args[0]
     info, preview = None, None
     if panel is not None:
         positive, latent, info, preview, _ = BFSH3SidePanel().apply(
@@ -685,13 +688,23 @@ class BFSShotH3Duet:
         if use_ref_2 and shot.get("ref2") is not None:
             imgs[f"ref_image_{len(imgs) + 1}"] = shot["ref2"]
         duet, guided = mode != self.MODES[1], mode != self.MODES[0]
+        try:
+            from .bfs_shot_loop import chain_image, remember_result
+        except ImportError:
+            chain_image = remember_result = None
+        prev = chain_image(shot) if chain_image else None
+        if prev is not None and shot.get("chain") == "reference":
+            imgs[f"ref_image_{len(imgs) + 1}"] = prev
         text = _resolve_prompt(shot.get("prompt", ""), task, instruction, len(imgs), 0)
         out = h3_render(model, clip, vae, audio_vae, text, {"ref_images": imgs}, shot["width"], shot["height"],
                         shot["gen_length"], steps, sampler_name, scheduler, seed + int(shot.get("index", 0)),
                         panel=shot["frames"] if duet else None, guide=shot["frames"] if guided else None,
                         position=position, size=size, fit=fit, gap=gap, panel_noise=panel_noise,
                         ref_image_size=ref_image_size, decode_canvas=decode_canvas,
-                        rope_mode=rope_mode, rope_gap=rope_gap)
+                        rope_mode=rope_mode, rope_gap=rope_gap,
+                        first_frame=prev if prev is not None and shot.get("chain") == "first frame" else None)
+        if remember_result:
+            remember_result(shot, out[0])   # the next shot can continue from it (auto loop)
         return out[:4] + (out[5],)
 
 

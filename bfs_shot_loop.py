@@ -376,6 +376,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["ref"] = m.get("ref") or ""
         s["ref2"] = m.get("ref2") or ""
         s["prompt"] = m.get("prompt") or ""
+        s["chain"] = m.get("chain") or "off"
+        s["chain_frame"] = m.get("chain_frame") or "first"
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
         s["people"], s["main"] = [], -1
@@ -674,6 +676,41 @@ def person_change_points(cast: dict, start: int, end: int, min_run: int) -> list
     return pts
 
 
+# ---------------------------------------------------------------------------- continuity between shots
+
+CHAIN_MODES = ("off", "reference", "first frame")
+_LAST_RESULT: dict[str, Any] = {}   # auto loop: the last shot a render node produced (index, count, frames)
+
+
+def pick_frame(frames: torch.Tensor, length: int, which: str) -> torch.Tensor:
+    """One frame [1,H,W,3] of a shot's result: its first, middle or last real frame (not the overlap)."""
+    n = max(1, min(int(length), frames.shape[0]))
+    i = {"first": 0, "middle": n // 2}.get(which, n - 1)
+    return frames[i:i + 1, ..., :3].float()
+
+
+def remember_result(shot: dict, frames: torch.Tensor) -> None:
+    _LAST_RESULT.clear()
+    _LAST_RESULT.update(index=int(shot.get("index", 0)), count=int(shot.get("count", 0)), frames=frames.detach().cpu())
+
+
+def chain_image(shot: dict) -> torch.Tensor | None:
+    """The previous shot's result frame this shot continues from, if it asked for one and it exists."""
+    if shot.get("chain", "off") == "off" or int(shot.get("index", 0)) == 0:
+        return None
+    if shot.get("chain_image") is not None:
+        return shot["chain_image"]
+    if _LAST_RESULT.get("index") == int(shot["index"]) - 1 and _LAST_RESULT.get("count") == int(shot.get("count", 0)):
+        prev_len = shot.get("prev_length") or _LAST_RESULT["frames"].shape[0]
+        return pick_frame(_LAST_RESULT["frames"], prev_len, shot.get("chain_frame", "first"))
+    return None
+
+
+def _fit_to(img: torch.Tensor, w: int, h: int) -> torch.Tensor:
+    x = img[..., :3].movedim(-1, 1).float()
+    return torch.nn.functional.interpolate(x, size=(h, w), mode="bilinear", align_corners=False).movedim(1, -1)
+
+
 # ---------------------------------------------------------------------------- queue loop state
 
 def run_id_for(plan_json: str, path: str) -> str:
@@ -833,6 +870,13 @@ class BFSShotPlanner:
             ft = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
             ref = ref_for(s["ref"], g_ref)
             ref2 = ref_for(s["ref2"], g_ref2)
+            prev_len = (segs[i - 1]["end"] - segs[i - 1]["start"]) if i > 0 else 0
+            chain_img = None
+            if queue and i > 0 and s["chain"] != "off":
+                fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
+                if os.path.exists(fp):
+                    prev = torch.load(fp)["frames"].float() / 255.0
+                    chain_img = _fit_to(pick_frame(prev, prev_len, s["chain_frame"]), W, H)
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
@@ -840,6 +884,8 @@ class BFSShotPlanner:
                 "ref": ref, "ref2": ref2, "prompt": s["prompt"] or g_prompt or "",
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
+                "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
+                "prev_length": prev_len,
             })
         total = sum(s["end"] - s["start"] for s in segs)
         full_audio = _slice_audio(audio, segs[0]["start"] / fps, total / fps) if audio else None
@@ -868,9 +914,10 @@ class BFSShotUnpack:
     def INPUT_TYPES(cls):
         return {"required": {"shot": ("BFS_SHOT",)}}
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING", "INT", "IMAGE", "AUDIO", "INT", "INT", "INT", "BFS_SHOT")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING", "INT", "IMAGE", "AUDIO", "INT", "INT", "INT", "BFS_SHOT",
+                    "IMAGE")
     RETURN_NAMES = ("guide_frames", "ref_image", "ref_image_2", "prompt", "length", "first_frame",
-                    "audio", "width", "height", "index", "shot")
+                    "audio", "width", "height", "index", "shot", "previous_result")
     OUTPUT_TOOLTIPS = (
         "The shot's guide frames, already at a length the model accepts.",
         "This shot's reference (a grey placeholder if none was set).",
@@ -878,7 +925,9 @@ class BFSShotUnpack:
         "This shot's prompt.", "Frames to generate (the grid-valid length).",
         "First guide frame of the shot.", "Soundtrack of the shot (silence if the video has none).",
         "Generation width.", "Generation height.", "Shot index (0-based).",
-        "The same shot, unchanged: connect it to BFS Shot Repack after editing the pieces.")
+        "The same shot, unchanged: connect it to BFS Shot Repack after editing the pieces.",
+        "The previous shot's result frame this shot continues from (Continuity in the planner; queue loop), "
+        "or a grey image.")
     FUNCTION = "unpack"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Split one shot into its guide frames, references, prompt and length."
@@ -888,7 +937,8 @@ class BFSShotUnpack:
                                   "sample_rate": 44100}
         return (shot["frames"], shot["ref"] if shot["ref"] is not None else _grey(),
                 shot["ref2"] if shot["ref2"] is not None else _grey(), shot["prompt"], shot["gen_length"],
-                shot["frames"][:1], audio, shot["width"], shot["height"], shot["index"], shot)
+                shot["frames"][:1], audio, shot["width"], shot["height"], shot["index"], shot,
+                chain_image(shot) if chain_image(shot) is not None else _grey())
 
 
 class BFSShotRepack:
@@ -980,6 +1030,9 @@ class BFSShotH3Conditioning:
             refs["ref_image_0"] = shot["ref"]
         if use_ref_2 and shot["ref2"] is not None:
             refs[f"ref_image_{len(refs)}"] = shot["ref2"]
+        prev = chain_image(shot)
+        if prev is not None and shot.get("chain") == "reference":
+            refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
         audio = shot["audio"] if (with_audio and audio_vae is not None) else None
         native = guide_mode in (self.GUIDE_MODES[1], self.GUIDE_MODES[2])
         aligned = guide_mode in (self.GUIDE_MODES[0], self.GUIDE_MODES[2])
@@ -998,6 +1051,10 @@ class BFSShotH3Conditioning:
         if first_frame != "none":
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  image=shot["frames"][:1]).args[0]
+        prev = chain_image(shot)
+        if prev is not None and shot.get("chain") == "first frame":
+            positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
+                                                 image=prev).args[0]
         return (positive, latent)
 
 

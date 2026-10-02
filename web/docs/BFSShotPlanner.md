@@ -123,6 +123,19 @@ defaults.
 The planner also outputs `ref_image` and `ref_image_2`: the references the shots actually use,
 without repeats, so a plan where every shot shares one reference returns a single image.
 
+## Continuity between shots
+
+Each shot (after the first) can continue from the **previous shot's generated result**: in the shot editor,
+*Continuity* = *previous shot as reference* adds a frame of it as one more `<Picture n>` after the shot's own
+references (good across camera cuts, keeps the person consistent), and *previous shot as first frame* anchors it
+at frame 0 of the shot (for continuous action without a cut). Pick which frame: the previous result's first,
+middle or last. *Continuity → all* applies the setting to every shot after the first.
+
+It needs the previous result to exist: it works in the **queue loop** (the planner reads the stored result) and in
+the **auto loop with BFS Shot H3 Duet** (it renders shot by shot and keeps the last result). BFS Shot Unpack also
+outputs it as `previous_result`. This is different from H3 Conditioning's *first_frame*, which anchors the shot's
+own frame from the source video.
+
 ## MiniMax H3 with an aligned guide (example)
 
 ```

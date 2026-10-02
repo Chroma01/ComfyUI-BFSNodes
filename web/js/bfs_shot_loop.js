@@ -185,7 +185,7 @@ function Panel(io) {
       const m = plan.segs[out.length] || {};
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
-                 force: m.force || "auto" });
+                 force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first" });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -252,7 +252,8 @@ function Panel(io) {
         .map(s => [`${s.start}-${s.end}`, { people: s.people, main: s.main }]));
       if (apply) {
         plan.bounds = j.segs.slice(1).map(s => s.start);
-        const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "" }));
+        const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
+          chain: keep[i]?.chain || "off", chain_frame: keep[i]?.chain_frame || "first" }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -587,7 +588,8 @@ function Panel(io) {
         h("div", { class: "bar", style: `background:${hue(i)}` }),
         h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? h("span", { class: "pill" }, "cut") : null,
           skipWhy(s) ? h("span", { class: "pill warn", title: skipWhy(s) }, "skip") : h("span", { class: "pill ok" }, "run"),
-          s.force !== "auto" ? h("span", { class: "pill" }, s.force) : null]),
+          s.force !== "auto" ? h("span", { class: "pill" }, s.force) : null,
+          i > 0 && s.chain !== "off" ? h("span", { class: "pill", title: `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}` }, "⛓") : null]),
         whoIn(s) ? h("div", { class: "who" }, whoIn(s).people.length ? whoIn(s).people.map(id => h("img", {
           src: personOf(id)?.thumb || "", title: `Person ${id}${id === whoIn(s).main ? " (main)" : ""}${linked(id) ? " · linked" : ""}`,
           class: [id === whoIn(s).main && "main", linked(id) && "lk"] })) : [h("span", { class: "t" }, "no faces")]) : null,
@@ -654,6 +656,22 @@ function Panel(io) {
         h("button", { disabled: sel.value >= S.length - 1, onClick: () => mergeNext(sel.value) }, "⇥ Merge with next"),
         h("button", { onClick: () => applyAll("prompt") }, "Prompt → all"),
         h("button", { class: "dng", onClick: () => { ["ref", "ref2", "prompt"].forEach(k => { meta(sel.value)[k] = ""; }); save(); } }, "Use global"),
+      ]),
+      h("div", { class: "row", style: "margin-top:6px" }, [
+        h("span", { class: "hint", title: "Uses a frame of the PREVIOUS shot's generated result. Works in the queue loop, and in the auto loop with BFS Shot H3 Duet (it renders shot by shot)." }, "Continuity:"),
+        h("select", { value: cur.chain, style: "width:auto", disabled: sel.value === 0,
+          title: "reference: the previous result's frame becomes one more <Picture n> after this shot's own references. first frame: it is anchored at frame 0 of this shot.",
+          onChange: e => setMeta(sel.value, "chain", e.target.value) },
+          [h("option", { value: "off" }, "off"), h("option", { value: "reference" }, "previous shot as reference"),
+           h("option", { value: "first frame" }, "previous shot as first frame")]),
+        h("select", { value: cur.chainFrame, style: "width:auto", disabled: sel.value === 0 || cur.chain === "off",
+          title: "Which frame of the previous shot's result", onChange: e => setMeta(sel.value, "chain_frame", e.target.value) },
+          [h("option", { value: "first" }, "its first frame"), h("option", { value: "middle" }, "its middle frame"), h("option", { value: "last" }, "its last frame")]),
+        h("button", { title: "Use this continuity setting for every shot after the first", onClick: () => {
+          const c = meta(sel.value).chain || "off", f = meta(sel.value).chain_frame || "first";
+          segs.value.forEach((_, i) => { if (i > 0) { meta(i).chain = c; meta(i).chain_frame = f; } }); save();
+        } }, "Continuity → all"),
+        sel.value === 0 ? h("span", { class: "hint" }, "the first shot uses only its references") : null,
       ]),
     ]) : null;
 
