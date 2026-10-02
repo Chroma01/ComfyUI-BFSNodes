@@ -32,11 +32,15 @@ The panel is cut off before decoding, so it never reaches the output.
 | panel_noise | 0 pins the panel exactly; 0.05-0.15 loosens it when the result copies too much of it |
 | hold | pin the panel for the whole clip, or only its first latent frame |
 | guide | optional aligned latent guide in the video area (what the body-swap LoRAs use) |
+| rope_mode | *canvas*: panel and video share one wide grid (TSC). *shifted*: the video keeps the RoPE positions of a render without the panel, and the panel sits past its edge |
+| rope_gap | *shifted* only: empty RoPE steps (2x2 patches) between video and panel; the panel moves away in position without any pixels in between |
 
 ## Notes from tests
 
 - Source clip pinned, no LoRA, no guide (TSC's setup): the new person follows the clip's gestures,
   timing and cuts, in the same room, and on-screen captions disappear.
 - With a body-swap LoRA and a latent guide, the guide alone kept the room better than guide + panel:
-  the panel pulled the background toward the reference picture's backdrop. Use the panel without a
+  the panel pulled the background toward the reference picture's backdrop. The shifted RoPE (gap 0 or 8)
+  did not change that, so it comes from the pinned panel itself, not from the canvas geometry.
+- Duet with the shifted RoPE, gap 0 and gap 8: same quality and sync as the canvas layout. Use the panel without a
   guide, or the guide without a panel, until a LoRA is trained for both.

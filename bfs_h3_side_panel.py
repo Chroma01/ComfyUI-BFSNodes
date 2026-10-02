@@ -163,6 +163,70 @@ def layout_text(info: dict) -> str:
     return text
 
 
+ROPE_MODES = ["canvas", "shifted"]
+
+
+def panel_frame_positions(info: dict, gap_patches: float = 0.0) -> torch.Tensor:
+    """(h, w) RoPE coordinates of one canvas frame's 2x2-patch rows for the 'shifted' layout.
+
+    The video area gets exactly the coordinates of a render without the panel (normalised to the video's
+    own area), and the panel continues the same grid past the video's edge, `gap_patches` steps further out.
+    """
+    h, w = info["h"], info["w"]
+    sqrt_a = (h * w) ** 0.5
+    step = 64.0 / sqrt_a                               # one 2x2 patch, as in H3's area-normalised grid
+    ys = (torch.arange(h // 2, dtype=torch.float64) * step + (1.0 - h / sqrt_a) / 2.0 * 32.0)
+    xs = (torch.arange(w // 2, dtype=torch.float64) * step + (1.0 - w / sqrt_a) / 2.0 * 32.0)
+    sh, sw, pos = info["strip_h"] // 2, info["strip_w"] // 2, info["position"]
+    g = gap_patches * step
+    if pos == "left":
+        xs = torch.cat([xs[0] - g - step * torch.arange(sw, 0, -1, dtype=torch.float64), xs])
+    elif pos == "right":
+        xs = torch.cat([xs, xs[-1] + g + step * torch.arange(1, sw + 1, dtype=torch.float64)])
+    elif pos == "top":
+        ys = torch.cat([ys[0] - g - step * torch.arange(sh, 0, -1, dtype=torch.float64), ys])
+    else:
+        ys = torch.cat([ys, ys[-1] + g + step * torch.arange(1, sh + 1, dtype=torch.float64)])
+    hh, ww = torch.meshgrid(ys, xs, indexing="ij")
+    return torch.stack([hh.reshape(-1), ww.reshape(-1)], dim=-1)
+
+
+def shift_layout(layout, info: dict, gap_patches: float):
+    """Copy of an H3 PackedLayout with the canvas rows (target video and guides) on the shifted grid."""
+    import copy
+    frame = panel_frame_positions(info, gap_patches)
+    out = copy.copy(layout)
+    positions = layout.position_ids.clone()
+    rows = frame.shape[0]
+    for a, b, kind in layout.segments:
+        if kind in ("video", "cond") and (b - a) % rows == 0:
+            positions[a:b, 1:] = frame.repeat((b - a) // rows, 1)
+    out.position_ids = positions
+    return out
+
+
+def patch_model_rope(model, info: dict, gap_patches: float):
+    """Clone of the model whose H3 layout puts the panel on the shifted grid (see shift_layout)."""
+    patched = model.clone()
+    previous = patched.model_options.get("model_function_wrapper")
+    cache = [None, None]
+
+    def wrapper(model_function, args):
+        conds = args.get("c", {})
+        payload = conds.get("minimax_payload")
+        native = (payload or {}).get("layout")
+        if native is not None:
+            if cache[0] is not native:
+                cache[:] = [native, shift_layout(native, info, gap_patches)]
+            args = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=cache[1])))
+        if previous is not None:
+            return previous(model_function, args)
+        return model_function(args["input"], args["timestep"], **args["c"])
+
+    patched.set_model_unet_function_wrapper(wrapper)
+    return patched
+
+
 def _encode(vae, frames: torch.Tensor) -> torch.Tensor:
     return vae.encode(frames[..., :3])
 
@@ -300,7 +364,8 @@ class BFSH3SidePanelCrop:
 
 def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name, scheduler,
               seed, panel=None, guide=None, guide_frame_idx=0, position="left", size=1.0, fit="contain", gap=0,
-              panel_noise=0.0, hold="all frames", ref_image_size="match", decode_canvas=False):
+              panel_noise=0.0, hold="all frames", ref_image_size="match", decode_canvas=False,
+              rope_mode="canvas", rope_gap=0.0):
     """Reference to Video -> optional pinned panel -> optional aligned guide -> sample -> crop -> decode.
     Without a panel this is plain H3 ref2va with an aligned guide. `{layout}` in the prompt becomes the
     layout sentence. Returns (images, audio, canvas, layout_text, cropped latent)."""
@@ -321,6 +386,8 @@ def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, 
         positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=guide_frame_idx,
                                              vae=vae, image=guide).args[0]
 
+    if info is not None and rope_mode == "shifted":
+        model = patch_model_rope(model, info, rope_gap)
     guider = Guider_Basic(model)
     guider.set_conds(positive)
     sigmas = comfy.samplers.calculate_sigmas(model.get_model_object("model_sampling"), scheduler, steps).cpu()
@@ -385,6 +452,8 @@ class BFSH3Duet:
                 "ref_image_3": ("IMAGE", {"tooltip": "<Picture 3>"}),
                 "guide": ("IMAGE", {"tooltip": "Optional aligned latent guide in the video area (what the body-swap LoRAs use)."}),
                 "guide_frame_idx": ("INT", {"default": 0, "min": -9999, "max": 9999}),
+                "rope_mode": (ROPE_MODES, {"default": "canvas", "tooltip": "canvas: the panel and the video share one wide grid (TSC). shifted: the video keeps the RoPE positions of a render without the panel and the panel sits past its edge, rope_gap patches further out."}),
+                "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0, "tooltip": "shifted only: empty RoPE steps (2x2 patches) between the video and the panel."}),
             },
         }
 
@@ -397,7 +466,8 @@ class BFSH3Duet:
 
     def run(self, model, clip, vae, prompt, width, height, length, position, size, fit, gap, panel_noise, hold,
             ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, panel=None, audio_vae=None,
-            ref_image_1=None, ref_image_2=None, ref_image_3=None, guide=None, guide_frame_idx=0):
+            ref_image_1=None, ref_image_2=None, ref_image_3=None, guide=None, guide_frame_idx=0,
+            rope_mode="canvas", rope_gap=0.0):
         if panel is None and guide is None:
             raise ValueError("BFS H3 Duet needs a panel, a guide, or both")
         if length <= 0:
@@ -406,7 +476,7 @@ class BFSH3Duet:
         refs = {f"ref_image_{i}": r for i, r in enumerate((ref_image_1, ref_image_2, ref_image_3), 1) if r is not None}
         return h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name,
                          scheduler, seed, panel, guide, guide_frame_idx, position, size, fit, gap, panel_noise, hold,
-                         ref_image_size, decode_canvas)
+                         ref_image_size, decode_canvas, rope_mode, rope_gap)
 
 
 class BFSShotH3Duet:
@@ -439,7 +509,10 @@ class BFSShotH3Duet:
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
                 "decode_canvas": ("BOOLEAN", {"default": False}),
             },
-            "optional": {"audio_vae": ("VAE",)},
+            "optional": {"audio_vae": ("VAE",),
+                "rope_mode": (ROPE_MODES, {"default": "canvas", "tooltip": "canvas: the panel and the video share one wide grid (TSC). shifted: the video keeps the RoPE positions of a render without the panel and the panel sits past its edge, rope_gap patches further out."}),
+                "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0, "tooltip": "shifted only: empty RoPE steps (2x2 patches) between the video and the panel."}),
+            },
         }
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "IMAGE", "STRING")
@@ -450,7 +523,8 @@ class BFSShotH3Duet:
                    "BFS Shot Join. Runs once per shot of the Planner's list.")
 
     def render(self, shot, model, clip, vae, mode, use_ref_2, position, size, fit, gap, panel_noise,
-               ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None):
+               ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None,
+               rope_mode="canvas", rope_gap=0.0):
         refs = {}
         if shot.get("ref") is not None:
             refs["ref_image_1"] = shot["ref"]
@@ -461,7 +535,8 @@ class BFSShotH3Duet:
                          shot["gen_length"], steps, sampler_name, scheduler, seed + int(shot.get("index", 0)),
                          panel=shot["frames"] if duet else None, guide=shot["frames"] if guided else None,
                          position=position, size=size, fit=fit, gap=gap, panel_noise=panel_noise,
-                         ref_image_size=ref_image_size, decode_canvas=decode_canvas)[:4]
+                         ref_image_size=ref_image_size, decode_canvas=decode_canvas,
+                         rope_mode=rope_mode, rope_gap=rope_gap)[:4]
 
 
 NODE_CLASS_MAPPINGS = {
