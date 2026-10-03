@@ -324,5 +324,66 @@ class RepackTest(unittest.TestCase):
         self.assertEqual(out["length"], 20)
 
 
+class ConditioningWriterTest(unittest.TestCase):
+    """The optional prompt writer of BFS Shot H3 Conditioning (template path, no models)."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import bfs_h3_side_panel as SP
+        self.SP, self.seen = SP, {}
+        seen = self.seen
+
+        class R2V:
+            @staticmethod
+            def execute(**kw):
+                seen["prompt"] = kw["prompt"]
+                return types.SimpleNamespace(args=("pos", "lat"))
+
+        mod = types.ModuleType("comfy_extras.nodes_minimax_h3")
+        mod.MiniMaxH3ReferenceToVideo, mod.MiniMaxH3AddGuide = R2V, R2V
+        self._old = {k: sys.modules.get(k) for k in ("comfy_extras", "comfy_extras.nodes_minimax_h3")}
+        sys.modules["comfy_extras"] = types.ModuleType("comfy_extras")
+        sys.modules["comfy_extras.nodes_minimax_h3"] = mod
+        self._apply = SP.BFSH3SidePanel.apply
+        SP.BFSH3SidePanel.apply = lambda self, pos, lat, *a, **k: (pos, lat, {"position": "left"}, None, None)
+        self._patch = SP.patch_model_rope
+        SP.patch_model_rope = lambda m, info, gap: "patched"
+
+    def tearDown(self):
+        self.SP.BFSH3SidePanel.apply, self.SP.patch_model_rope = self._apply, self._patch
+        for k, v in self._old.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    def _shot(self):
+        return dict(prompt="my own {layout} prompt", width=448, height=800, gen_length=22,
+                    frames=torch.zeros(22, 8, 8, 3), ref=torch.zeros(1, 4, 4, 3), ref2=None, audio=None)
+
+    def _run(self, **kw):
+        c = SL.BFSShotH3Conditioning()
+        return c.condition(self._shot(), "clip", "vae", "none", True, "none", "match", **kw)
+
+    def test_planner_prompt_is_default_and_layout_filled(self):
+        out = self._run()
+        self.assertEqual(out[3], "my own prompt")
+        out = self._run(duet="canvas")
+        self.assertIn("LEFT half is the kept footage", out[3])
+        self.assertEqual(self.seen["prompt"], out[3])
+
+    def test_task_template_follows_the_duet_mode(self):
+        out = self._run(duet="canvas", task="character swap")
+        self.assertIn("split screen", out[3])
+        self.assertIn("<Picture 1>", out[3])
+        out = self._run(duet="shifted RoPE", model="m", task="character swap")
+        self.assertNotIn("split screen", out[3])
+        self.assertEqual(out[2], "patched")
+
+    def test_task_needs_duet(self):
+        with self.assertRaises(ValueError):
+            self._run(task="style", instruction="anime")
+
+
 if __name__ == "__main__":
     unittest.main()

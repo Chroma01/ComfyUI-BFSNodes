@@ -101,5 +101,26 @@ class SidePanelTest(unittest.TestCase):
         self.assertEqual(tuple(pos[0][1]["minimax_keyframes"][0]["latent"].shape[-2:]), (64 + 34, 36))
 
 
+class KeepMaskTest(unittest.TestCase):
+    def test_latent_mask_follows_the_h3_frame_grid(self):
+        m = torch.zeros(22, 64, 64)
+        m[5:9, 10:20, 10:20] = 1                    # frames 5-8 = latent step 2 (1 + 4 frames before it)
+        lm = SP.latent_mask(m, 7, 4, 4, grow=0)
+        self.assertEqual(tuple(lm.shape), (1, 1, 7, 4, 4))
+        self.assertEqual(float(lm[0, 0, 2].max()), 1.0)
+        self.assertEqual(float(lm[0, 0, 1].max()), 0.0)
+
+    def test_apply_with_keep_mask_regenerates_only_the_mask(self):
+        lat = _latent()
+        panel = torch.full((22, 512, 512, 3), 0.9)
+        km = torch.zeros(22, 1024, 576); km[:, 300:700, 200:400] = 1
+        out = SP.BFSH3SidePanel().apply([[torch.zeros(1), {}]], lat, FakeVAE(), panel, "left", 1.0, "contain", 0,
+                                        "all frames", 0.0, None, 0, keep_video=torch.full((22, 1024, 576, 3), 0.3), keep_mask=km)[1]
+        m = out["noise_mask"].tensors[0]
+        self.assertEqual(float(m[0, 0, 3, 0, 40]), 0.0)          # video area outside the mask: kept
+        self.assertEqual(float(m[0, 0, 3, 30, 36 + 18]), 1.0)    # inside the mask: generated
+        self.assertEqual(float(m[0, 0, 3, 30, 5]), 0.0)          # panel: pinned
+
+
 if __name__ == "__main__":
     unittest.main()

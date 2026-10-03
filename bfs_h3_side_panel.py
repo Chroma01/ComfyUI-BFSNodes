@@ -295,6 +295,23 @@ def patch_model_rope(model, info: dict, gap_patches: float):
     return patched
 
 
+def latent_mask(mask: torch.Tensor, latent_t: int, h: int, w: int, grow: int = 1) -> torch.Tensor:
+    """Pixel mask frames [F,H,W] (1 = regenerate) -> [1,1,T,h,w] on H3's latent grid: a latent cell regenerates when
+    any of its pixels or frames does (frames per latent step: 1, 4, 4, 4, 4...)."""
+    m = mask.float()
+    if m.ndim == 4:
+        m = m[..., 0]
+    m = torch.nn.functional.adaptive_max_pool2d(m[:, None], (h, w))[:, 0]
+    if grow > 0:
+        m = torch.nn.functional.max_pool2d(m[:, None], 2 * grow + 1, 1, grow)[:, 0]
+    out, f = [], 0
+    for k in range(latent_t):
+        n = FRAME_PER_TOKEN[k % 5]
+        seg = m[min(f, m.shape[0] - 1):min(f + n, m.shape[0])] if f < m.shape[0] else m[-1:]
+        out.append(seg.amax(0)); f += n
+    return (torch.stack(out)[None, None] > 0.5).float()
+
+
 def _encode(vae, frames: torch.Tensor) -> torch.Tensor:
     return vae.encode(frames[..., :3])
 
@@ -338,7 +355,8 @@ class BFSH3SidePanel:
                    "duet) and BFS H3 Side Panel Crop removes it before decoding. Works with or without an aligned guide.\n\n"
                    + PANEL_PROMPT_HINT)
 
-    def apply(self, positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise=0.0, guide=None, guide_frame_idx=0):
+    def apply(self, positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise=0.0, guide=None, guide_frame_idx=0,
+              keep_video=None, keep_mask=None):
         samples = latent["samples"]
         if not getattr(samples, "is_nested", False) or samples.tensors[0].ndim != 5:
             raise ValueError("BFS H3 Side Panel expects a MiniMax H3 AV latent")
@@ -356,10 +374,15 @@ class BFSH3SidePanel:
         strip_lat = _encode(vae, strip_px).to(video)
         if strip_lat.shape[2] != T:
             raise ValueError(f"panel latent has {strip_lat.shape[2]} frames, the video {T}")
-        canvas = join_latent(video, strip_lat, position)
-
         old_mask = latent.get("noise_mask")
         target_mask = old_mask.tensors[0] if getattr(old_mask, "is_nested", False) else old_mask
+        if keep_mask is not None:
+            # inpainting inside the duet: the video area starts from keep_video and only the masked region is regenerated
+            src = keep_video if keep_video is not None else panel
+            idx = [min(i, src.shape[0] - 1) for i in range(F)]
+            video = _encode(vae, _resize(src[idx], W, H, "cover")).to(video)
+            target_mask = latent_mask(keep_mask, T, h, w)
+        canvas = join_latent(video, strip_lat, position)
         vmask = panel_mask(info, T, hold, target_mask, panel_noise)
         amask = (old_mask.tensors[1] if getattr(old_mask, "is_nested", False) else torch.ones_like(audio))
         out_latent = dict(latent)
@@ -431,8 +454,9 @@ class BFSH3SidePanelCrop:
         return (out_latent, out_images)
 
 
-def build_prompt(task: str, instruction: str, n_pictures: int, n_videos: int) -> str:
-    """A six-section REF2VA prompt for a duet task. `{layout}` stays in it and is filled at render time."""
+def build_prompt(task: str, instruction: str, n_pictures: int, n_videos: int, rope_mode: str = "canvas") -> str:
+    """A six-section REF2VA prompt for a duet task. `{layout}` stays in it and is filled at render time.
+    shifted: no split-screen wording (it makes the model split the video itself)."""
     inst = instruction.strip().rstrip(".")
     pics = [f"<Picture {i}>" for i in range(1, n_pictures + 1)]
     pics_txt = " and ".join(pics) if len(pics) <= 2 else ", ".join(pics[:-1]) + " and " + pics[-1]
@@ -469,7 +493,12 @@ def build_prompt(task: str, instruction: str, n_pictures: int, n_videos: int) ->
         "overall_soundscape:\nThe sounds of the kept footage, in sync.",
         "non_diegetic_music:\nNone.",
     ]
-    return "\n\n".join(sections)
+    text = "\n\n".join(sections)
+    if rope_mode == "shifted":
+        text = (text.replace("The target video is a split screen: the kept footage beside ", "The target video shows ")
+                .replace("who moves in sync with it", "who moves in sync with the kept footage")
+                .replace("the motion reference of the split screen", "the motion reference"))
+    return text
 
 
 def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name, scheduler,
@@ -687,6 +716,11 @@ if _io is not None:
                     _io.Model.Input("model", optional=True, tooltip="Needed for rope_mode = shifted."),
                     _io.Vae.Input("audio_vae", optional=True),
                     _io.Image.Input("guide", optional=True, tooltip="Optional aligned latent guide in the video area."),
+                    _io.Mask.Input("keep_mask", optional=True, tooltip=
+                        "Inpainting inside the duet: 1 = regenerate (e.g. the person, dilated), 0 = keep. The video area "
+                        "starts from keep_video (or the panel clip) and only the masked region is generated, so the "
+                        "background and its light stay pixel-exact."),
+                    _io.Image.Input("keep_video", optional=True, tooltip="The video kept outside the mask (default: the panel clip)."),
                     _io.Autogrow.Input("ref_images", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Image.Input("ref_image", tooltip="<Picture n>, in order"), prefix="ref_image_", min=0, max=9)),
                 ],
@@ -698,7 +732,7 @@ if _io is not None:
         @classmethod
         def execute(cls, clip, vae, panel, task, instruction, prompt, width, height, length, position, size, panel_noise,
                     rope_mode, fit, gap, hold, rope_gap, ref_image_size, vlm_max_tokens, vlm=None, model=None,
-                    audio_vae=None, guide=None, ref_images=None):
+                    audio_vae=None, guide=None, ref_images=None, keep_mask=None, keep_video=None):
             from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
             refs = [v for v in (ref_images or {}).values() if v is not None]
             if length <= 0:
@@ -714,14 +748,15 @@ if _io is not None:
                     text = write_duet_prompt(vlm, [panel[i:i + 1] for i in idx], refs, task, instruction, int(vlm_max_tokens),
                                              rope_mode)
             if not text:
-                text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0)
+                text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
             info = make_info(width, height, position, size, gap * PATCH_PX)
             text = text.replace("{layout}", layout_text(info, rope_mode))
             positive, latent = MiniMaxH3ReferenceToVideo.execute(
                 clip=clip, prompt=text, width=width, height=height, length=length, ref_image_size=ref_image_size, vae=vae,
                 audio_vae=audio_vae, ref_images={f"ref_image_{i}": r for i, r in enumerate(refs)} or None).args[:2]
             positive, latent, info, preview, _ = BFSH3SidePanel().apply(
-                positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise, guide, 0)
+                positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise, guide, 0,
+                keep_video=keep_video, keep_mask=keep_mask)
             if rope_mode == "shifted":
                 if model is None:
                     raise ValueError("rope_mode 'shifted' needs the model input (use the node's model output in the sampler)")

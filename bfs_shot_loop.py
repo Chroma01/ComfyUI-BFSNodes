@@ -1747,11 +1747,22 @@ class BFSShotH3Conditioning:
                                        "tooltip": "shifted RoPE only: empty RoPE steps (2x2 patches) between video and panel. Keep it small "
                                                   "against the video width (0-2 at low resolution): a gap close to the "
                                                   "video's width makes the model draw its own split screen."}),
+                "task": (["planner prompt"] + WRITER_TASKS, {"default": "planner prompt", "tooltip":
+                    "Optional prompt writer for the duet. 'planner prompt' (default) uses the shot's prompt from the "
+                    "planner as it is. A task writes the prompt of every shot in the duet format instead: with a VLM "
+                    "connected it looks at the shot and its references and writes it; without one, a template for the "
+                    "task. Needs duet on (canvas or shifted RoPE). See the written text on the prompt output."}),
+                "instruction": ("STRING", {"default": "", "multiline": True, "tooltip":
+                    "What changes, in seen words, for the task: 'a 1990s anime cel style', 'a sunny beach at sunset', "
+                    "'an elderly woman with short grey hair'. Empty is fine for character swap (the person comes from "
+                    "the references)."}),
+                "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder) that writes the "
+                                            "prompt when a task is chosen. Without it the task's template is used."}),
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "MODEL")
-    RETURN_NAMES = ("positive", "latent", "model")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "MODEL", "STRING")
+    RETURN_NAMES = ("positive", "latent", "model", "prompt")
     FUNCTION = "condition"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Build MiniMax H3 conditioning for one shot with the native nodes: Reference to Video "
@@ -1759,8 +1770,12 @@ class BFSShotH3Conditioning:
 
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
-                  panel_noise=0.0, rope_gap=0.0):
+                  panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
+        try:
+            from .bfs_h3_side_panel import build_prompt, layout_text, make_info
+        except ImportError:
+            from bfs_h3_side_panel import build_prompt, layout_text, make_info
         refs = {}
         if shot["ref"] is not None:
             refs["ref_image_0"] = shot["ref"]
@@ -1772,7 +1787,26 @@ class BFSShotH3Conditioning:
         audio = shot["audio"] if (with_audio and audio_vae is not None) else None
         native = guide_mode in (self.GUIDE_MODES[1], self.GUIDE_MODES[2])
         aligned = guide_mode in (self.GUIDE_MODES[0], self.GUIDE_MODES[2])
-        kwargs = dict(clip=clip, prompt=shot["prompt"], width=shot["width"], height=shot["height"],
+        on_canvas = duet != "off"
+        rope_mode = "shifted" if duet == "shifted RoPE" else "canvas"
+        text = shot["prompt"] or ""
+        if task and task != "planner prompt":
+            if not on_canvas:
+                raise ValueError("the prompt writer (task) writes duet prompts: set duet to canvas or shifted RoPE, "
+                                 "or set task to 'planner prompt'")
+            if vlm is not None:
+                fr = shot["frames"]
+                idx = sorted(set(np.linspace(0, fr.shape[0] - 1, min(4, fr.shape[0])).round().astype(int).tolist()))
+                text = write_duet_prompt(vlm, [fr[i:i + 1] for i in idx], list(refs.values()), task, instruction,
+                                         1024, rope_mode)
+                _node_boundary()
+            else:
+                text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
+        if "{layout}" in text:
+            fill = layout_text(make_info(shot["width"], shot["height"], panel_position, panel_size, 0), rope_mode) \
+                if on_canvas else ""
+            text = text.replace("{layout}", fill).replace("  ", " ")
+        kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],
                       length=shot["gen_length"], ref_image_size=ref_image_size, vae=vae,
                       audio_vae=audio_vae, ref_images=refs or None)
         if native:
@@ -1780,7 +1814,6 @@ class BFSShotH3Conditioning:
             if audio is not None:
                 kwargs["ref_video_audios"] = {"ref_video_audio_1": audio}
         positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
-        on_canvas = duet != "off"
         if aligned and (not on_canvas or audio is not None):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  audio_vae=audio_vae if audio is not None else None,
@@ -1808,7 +1841,7 @@ class BFSShotH3Conditioning:
                 if model is None:
                     raise ValueError("duet 'shifted RoPE' needs the model input (and its model output in the sampler)")
                 model = patch_model_rope(model, info, rope_gap)
-        return (positive, latent, model)
+        return (positive, latent, model, text)
 
 
 class BFSShotJoin:
