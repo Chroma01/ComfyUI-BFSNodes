@@ -95,10 +95,25 @@ def _timeline(n_src: int, fps_src: float, fps: float) -> np.ndarray:
     return np.clip(idx, 0, n_src - 1)
 
 
-def _read_frames(path: str, src_indices: np.ndarray, size: tuple[int, int] | None) -> list[np.ndarray]:
+_STATUS_T = [0.0]
+
+
+def _status(stage: str, done: int = 0, total: int = 0, force: bool = False) -> None:
+    """Progress for the planner panel's loading bar (throttled)."""
+    import time
+    now = time.time()
+    if not force and now - _STATUS_T[0] < 0.25 and done < total:
+        return
+    _STATUS_T[0] = now
+    _notify("bfs-shotloop-status", {"stage": stage, "done": int(done), "total": int(total)})
+
+
+def _read_frames(path: str, src_indices: np.ndarray, size: tuple[int, int] | None,
+                 stage: str | None = None) -> list[np.ndarray]:
     """Decode the requested source frames (sorted, may repeat) as RGB uint8, sequentially."""
     import cv2
     want = sorted(set(int(i) for i in src_indices))
+    top = want[-1] + 1 if want else 0
     got: dict[int, np.ndarray] = {}
     cap = cv2.VideoCapture(path)
     i, k = 0, 0
@@ -107,6 +122,8 @@ def _read_frames(path: str, src_indices: np.ndarray, size: tuple[int, int] | Non
         ok = cap.grab()
         if not ok:
             break
+        if stage and i % 24 == 0:
+            _status(stage, i, top)
         if i == want[k]:
             ok, fr = cap.retrieve()
             if ok:
@@ -198,10 +215,11 @@ def analyze(path: str, fps: float, thumbs: int = 120, thumb_h: int = 72) -> dict
     info = _probe(path)
     src = _timeline(info["n_src"], info["fps_src"], fps)
     n = len(src)
-    small = []
-    for fr in _read_frames(path, src, None):
-        g = cv2.resize(fr, (64, 36), interpolation=cv2.INTER_AREA)
-        small.append(g)
+    _status("Reading the video", 0, info["n_src"], force=True)
+    # small frames straight from the decoder: the full-size frames of a long video do not fit in memory
+    sw = 64
+    sh = max(8, int(round(sw * info["height"] / max(1, info["width"]))))   # keep the aspect: nothing cropped
+    small = _read_frames(path, src, (sw, sh), stage="Reading the video")
     hsv = [cv2.calcHist([cv2.cvtColor(s, cv2.COLOR_RGB2HSV)], [0, 1], None, [16, 8], [0, 180, 0, 256]) for s in small]
     hsv = [cv2.normalize(h, h).flatten() for h in hsv]
     raw = np.zeros(n, np.float32)
@@ -220,7 +238,7 @@ def analyze(path: str, fps: float, thumbs: int = 120, thumb_h: int = 72) -> dict
     k = max(1, n // max(1, thumbs))
     th = []
     tw = max(16, int(round(thumb_h * info["width"] / max(1, info["height"]))))
-    frames_for_thumbs = _read_frames(path, src[::k], (tw, thumb_h))
+    frames_for_thumbs = _read_frames(path, src[::k], (tw, thumb_h), stage="Making thumbnails")
     for j, fr in enumerate(frames_for_thumbs):
         ok, buf = cv2.imencode(".jpg", cv2.cvtColor(fr, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 70])
         th.append({"f": int(j * k), "src": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()})
@@ -244,6 +262,7 @@ def scenedetect_cut_times(path: str, detector: str, sensitivity: float) -> list[
     key = (path, os.path.getmtime(path), detector, round(sensitivity, 3))
     if key in _PSD_CACHE:
         return _PSD_CACHE[key]
+    _status("Detecting camera cuts (PySceneDetect)", force=True)
     video = open_video(path)
     min_len = max(3, int(round(video.frame_rate * 0.25)))
     sm = SceneManager()
@@ -586,11 +605,12 @@ def analyze_cast(path: str, analysis: dict, step_s: float = 0.5, threshold: floa
     src = _timeline(analysis["n_src"], analysis["fps_src"], fps)
     w = 960
     h = max(32, int(round(w * analysis["height"] / max(1, analysis["width"]))))
-    frames = _read_frames(path, src[frames_idx], (w, h))
+    frames = _read_frames(path, src[frames_idx], (w, h), stage="Reading frames for faces")
     dets = []   # (sample index, embedding, area fraction, crop)
     from insightface.app.common import Face
     rec = app.models["recognition"]
     for si, fr in enumerate(frames):
+        _status("Finding faces", si, len(frames))
         bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
         boxes, kpss = app.det_model.detect(bgr, max_num=0, metric="default")
         # only the most probable faces of the frame get recognised, so a crowd stays cheap and out of the cast
@@ -798,8 +818,9 @@ def shot_mask(path: str, analysis: dict, start: int, length: int, spec: dict) ->
         sw, sh = analysis["width"], analysis["height"]
         s = 640 / max(sw, sh)
         w, h = max(32, int(sw * s) // 2 * 2), max(32, int(sh * s) // 2 * 2)
-        frames = _read_frames(path, src[idx], (w, h))
+        frames = _read_frames(path, src[idx], (w, h), stage="Reading the shot")
         imgs = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
+        _status(f"Segmenting {len(frames)} frames with SAM 3", force=True)
         _MASK_CACHE[key] = {"masks": (segment_frames(imgs, spec) > 0.5).to(torch.uint8), "size": (w, h)}
         _node_boundary()
     out = dict(_MASK_CACHE[key])
@@ -911,6 +932,13 @@ Answer with one JSON object only, no code fence:
 "reason": "a few words"}}{extra}"""
 
 
+async def _off_loop(fn):
+    """Run slow work in a thread so the server keeps answering (and the panel gets progress events)."""
+    import asyncio
+    _outside_prompt()
+    return await asyncio.get_running_loop().run_in_executor(None, fn)
+
+
 def _outside_prompt() -> None:
     """Models run from a panel button (no prompt running): ComfyUI's progress hook reads the server's last prompt
     and node ids, which do not exist until a first prompt has run."""
@@ -959,6 +987,7 @@ def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -
     if key in _VLM_CACHE:
         return _VLM_CACHE[key]
     from comfy_extras.nodes_textgen import TextGenerate
+    _status("Asking the VLM about the shot", force=True)
     n = max(1, min(8, int(cfg["frames"])))
     src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
     picks = np.clip(np.linspace(start, end - 1, n).round().astype(int), 0, analysis["n"] - 1)
@@ -1816,7 +1845,7 @@ try:
         name = request.query.get("video", "")
         fps = float(request.query.get("fps", "24") or 24)
         try:
-            a = analyze(_input_path(name), fps)
+            a = await _off_loop(lambda: analyze(_input_path(name), fps))
         except Exception as exc:  # noqa: BLE001 - the panel shows the reason
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response(a)
@@ -1826,15 +1855,19 @@ try:
         body = await request.json()
         try:
             p = _load_plan(json.dumps(body.get("plan", {})))
-            a = analyze(_input_path(p["video"]), float(p["fps"]))
-            path = _input_path(p["video"])
-            if p.get("cast") or p.get("cast_split"):
-                try:
-                    analyze_cast(path, a)
-                except Exception:  # noqa: BLE001 - plan without people
-                    pass
-            segs = resolve_plan(p, a, path)
-            cuts, used = find_cuts(path, a, p.get("detector", "adaptive"), float(p["sensitivity"]))
+
+            def work():
+                a = analyze(_input_path(p["video"]), float(p["fps"]))
+                path = _input_path(p["video"])
+                if p.get("cast") or p.get("cast_split"):
+                    try:
+                        analyze_cast(path, a)
+                    except Exception:  # noqa: BLE001 - plan without people
+                        pass
+                segs = resolve_plan(p, a, path)
+                cuts, used = find_cuts(path, a, p.get("detector", "adaptive"), float(p["sensitivity"]))
+                return a, segs, cuts, used
+            a, segs, cuts, used = await _off_loop(work)
             W, H = generation_size(a["width"], a["height"], float(p["megapixels"]), int(p["multiple"]))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
@@ -1847,11 +1880,16 @@ try:
             p = _load_plan(json.dumps(body.get("plan", {})))
             f = dict(DEFAULT_FILTERS); f.update(p.get("filters") or {})
             path = _input_path(p["video"])
-            a = analyze(path, float(p["fps"]))
-            segs = resolve_plan(p, a, path)
-            for s in segs:   # stats always, so the panel can show them before any filter is on
-                s["stats"] = shot_stats(path, a, s, int(f.get("samples") or 6))
-                s["skip_reason"] = skip_reason(s["stats"], s["end"] - s["start"], f)
+
+            def work():
+                a = analyze(path, float(p["fps"]))
+                segs = resolve_plan(p, a, path)
+                for i, s in enumerate(segs):   # stats always, so the panel can show them before any filter is on
+                    _status("Detecting people and faces", i, len(segs))
+                    s["stats"] = shot_stats(path, a, s, int(f.get("samples") or 6))
+                    s["skip_reason"] = skip_reason(s["stats"], s["end"] - s["start"], f)
+                return segs
+            segs = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": [{"start": s["start"], "end": s["end"], "stats": s["stats"],
@@ -1922,8 +1960,7 @@ try:
         try:
             p = _load_plan(json.dumps(body.get("plan", {})))
             path = _input_path(p["video"])
-            a = analyze(path, float(p["fps"]))
-            c = analyze_cast(path, a)
+            c = await _off_loop(lambda: analyze_cast(path, analyze(path, float(p["fps"]))))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"people": c["people"], "step": c["step"], "samples": len(c["samples"])})

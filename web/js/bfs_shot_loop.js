@@ -8,7 +8,7 @@
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, h, Teleport } from "./vendor/vue.esm-browser.prod.mjs";
+import { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount, h, Teleport } from "./vendor/vue.esm-browser.prod.mjs";
 
 const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 const DEFAULTS = {
@@ -49,6 +49,14 @@ function styles() {
   el.id = "bfs-shotloop-css";
   el.textContent = `
 .bsl:focus{outline:none}
+.bsl .busybar{position:sticky;top:0;z-index:5;margin:6px 0;padding:6px 8px;border-radius:8px;background:#22222b;border:1px solid #3d3d4a}
+.bsl .busybar .brow{display:flex;gap:6px;align-items:center}
+.bsl .busybar .spin{width:12px;height:12px;border-radius:50%;border:2px solid #5b8cff;border-top-color:transparent;animation:bslspin .8s linear infinite;flex:none}
+.bsl .busybar .bprog{height:4px;background:#33333d;border-radius:3px;margin-top:5px;overflow:hidden;position:relative}
+.bsl .busybar .bprog>div{height:100%;background:#5b8cff;transition:width .2s}
+.bsl .busybar .bprog.ind>div{position:absolute;width:30%;animation:bslind 1.2s ease-in-out infinite}
+@keyframes bslspin{to{transform:rotate(360deg)}}
+@keyframes bslind{0%{left:-30%}100%{left:100%}}
 .bsl .vsug{margin-top:6px;padding:6px 8px;border:1px dashed #4a4a58;border-radius:6px;display:flex;flex-direction:column;gap:3px}
 .bsl .vsug button{margin-left:6px;padding:1px 6px}
 .bsl .mstrip{display:flex;gap:4px;margin-top:6px;align-items:center;flex-wrap:wrap}
@@ -166,6 +174,11 @@ function Panel(io) {
   const detectorUsed = ref("");
   const size = reactive({ w: 0, h: 0 });
   const busy = ref(""); const error = ref("");
+  // loading bar: what the server reports (stage, done/total) and how long it has been busy
+  const status = reactive({ stage: "", done: 0, total: 0 });
+  const busySince = ref(0); const now = ref(Date.now());
+  const upPct = ref(-1);
+  watch(busy, v => { if (v) { busySince.value = Date.now(); Object.assign(status, { stage: "", done: 0, total: 0 }); } else { busySince.value = 0; upPct.value = -1; } });
   const sel = ref(0); const zoom = ref(1);
   const hover = ref(null);       // {frame, x}
   const prog = reactive({ done: 0, count: 0 });
@@ -313,7 +326,7 @@ function Panel(io) {
   async function previewMask(i, spec, intoModal = false) {
     const s = segs.value[i]; if (!s) return;
     const label = "Segmenting with SAM 3… (the first time downloads/loads the model)";
-    if (intoModal) modal.busy = label; else busy.value = label;
+    if (intoModal) { modal.busy = label; busySince.value = Date.now(); Object.assign(status, { stage: "", done: 0, total: 0 }); } else busy.value = label;
     error.value = "";
     try {
       const r = await api.fetchApi("/bfs/shotloop/mask", { method: "POST", body: JSON.stringify({ plan: { ...plan }, index: i, mask: spec || null }) });
@@ -361,12 +374,22 @@ function Panel(io) {
   };
   const setCastOpt = (k, v) => { plan[k] = v; save(); if (k === "cast_split") autoSplit(true); };
   const setFilter = (k, v) => { plan.filters = { ...plan.filters, [k]: v }; save(); if (stats.value.length) analyzeContent(); };
+  // XHR instead of fetch: big videos show how much has been sent
+  const postWithProgress = (url, body, onPct) => new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", api.apiURL(url));
+    if (api.user) x.setRequestHeader("Comfy-User", api.user);
+    x.upload.onprogress = e => { if (e.lengthComputable) onPct(e.loaded / e.total); };
+    x.onload = () => (x.status >= 200 && x.status < 300) ? resolve(JSON.parse(x.responseText || "{}")) : reject(new Error(`HTTP ${x.status}`));
+    x.onerror = () => reject(new Error("network error"));
+    x.send(body);
+  });
   async function upload(file, cb) {
     const fd = new FormData(); fd.append("image", file); fd.append("type", "input"); fd.append("overwrite", "true");
-    busy.value = `Uploading ${file.name}…`;
+    const mb = (file.size / 1e6).toFixed(1);
+    busy.value = `Uploading ${file.name} (${mb} MB)…`; upPct.value = 0;
     try {
-      const r = await api.fetchApi("/upload/image", { method: "POST", body: fd });
-      const j = await r.json();
+      const j = await postWithProgress("/upload/image", fd, f => { upPct.value = f; });
       await refreshFiles();
       cb(j.subfolder ? `${j.subfolder}/${j.name}` : j.name);
     } catch (e) { error.value = `Upload failed: ${e}`; }
@@ -470,14 +493,18 @@ function Panel(io) {
 
   // ---- queue loop events
   const onProg = e => { prog.done = e.detail.done; prog.count = e.detail.count; };
+  const onStatus = e => { if (busy.value || modal.busy) Object.assign(status, e.detail || {}); };
+  let clock = 0;
   const onVlm = e => { if (e.detail?.video === plan.video) mergeSug(e.detail.segs); };
   const onNext = e => { onProg(e); if (plan.run === "queue" && plan.auto_continue) setTimeout(() => app.queuePrompt(0, 1), 300); };
   onMounted(() => {
     load(); refreshFiles(); analyze(); progress(); raf = requestAnimationFrame(loop);
     api.addEventListener("bfs-shotloop-progress", onProg); api.addEventListener("bfs-shotloop-next", onNext);
     api.addEventListener("bfs-shotloop-vlm", onVlm);
+    api.addEventListener("bfs-shotloop-status", onStatus);
+    clock = setInterval(() => { if (busy.value || modal.busy) now.value = Date.now(); }, 500);
   });
-  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); api.removeEventListener("bfs-shotloop-vlm", onVlm); });
+  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); api.removeEventListener("bfs-shotloop-vlm", onVlm); api.removeEventListener("bfs-shotloop-status", onStatus); clearInterval(clock); });
   io.expose({ reload: () => { load(); analyze(); progress(); } });
 
   // ---- view helpers
@@ -518,6 +545,16 @@ function Panel(io) {
     const tooLong = S.filter(s => s.len > maxLen.value).length;
     const totalGen = active.value.reduce((a, s) => a + s.gen, 0);
 
+    const busyBar = (msg) => {
+      const secs = busySince.value ? Math.max(0, Math.round((now.value - busySince.value) / 1000)) : 0;
+      const pct = upPct.value >= 0 ? upPct.value : (status.total > 0 ? Math.min(1, status.done / status.total) : -1);
+      const stage = status.stage && !msg.startsWith(status.stage) ? status.stage : "";
+      return h("div", { class: "busybar" }, [
+        h("div", { class: "brow" }, [h("span", { class: "spin" }), h("b", msg), stage ? h("span", { class: "hint" }, `· ${stage}`) : null,
+          h("span", { class: "grow" }), pct >= 0 ? h("span", `${Math.round(pct * 100)}%`) : null, h("span", { class: "hint" }, `${secs}s`)]),
+        h("div", { class: ["bprog", pct < 0 && "ind"] }, [h("div", { style: pct >= 0 ? `width:${(pct * 100).toFixed(1)}%` : "" })]),
+      ]);
+    };
     const header = h("div", { class: "hdr" }, [
       h("span", { class: "ttl" }, "🎬 Shot Planner"),
       busy.value ? h("span", { class: "pill warn" }, busy.value) : (an.value ? h("span", { class: "pill ok" }, `${active.value.length} shots · ${(N / fps).toFixed(1)}s`) : null),
@@ -888,7 +925,7 @@ function Panel(io) {
           h("button", { class: "pri", disabled: !!modal.busy || !(modal.points.length || modal.text),
             onClick: () => previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text }, true) }, "👁 Segment"),
         ]),
-        modal.busy ? h("div", { class: "hint", style: "margin-top:4px" }, modal.busy) : null,
+        modal.busy ? busyBar(modal.busy) : null,
         modal.prev ? h("div", { class: "mstrip" }, [...modal.prev.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
           h("span", { class: "hint" }, modal.prev.empty ? "nothing found" : `covers ${(modal.prev.coverage * 100).toFixed(1)}%`)]) : null,
         h("div", { class: "row", style: "margin-top:8px;justify-content:flex-end" }, [
@@ -898,7 +935,7 @@ function Panel(io) {
       ]),
     ]))) : null;
 
-    return h("div", { class: "bsl", tabindex: 0, onKeydown: onKey }, [header, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, masks, vlmCard, cards, editor, globals, queue, pointsModal]);
+    return h("div", { class: "bsl", tabindex: 0, onKeydown: onKey }, [header, busy.value ? busyBar(busy.value) : null, error.value ? h("div", { class: "err" }, error.value) : null, source, settings, timeline, player, filters, cast, masks, vlmCard, cards, editor, globals, queue, pointsModal]);
   };
 }
 
