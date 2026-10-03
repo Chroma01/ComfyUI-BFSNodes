@@ -911,6 +911,19 @@ Answer with one JSON object only, no code fence:
 "reason": "a few words"}}{extra}"""
 
 
+def _outside_prompt() -> None:
+    """Models run from a panel button (no prompt running): ComfyUI's progress hook reads the server's last prompt
+    and node ids, which do not exist until a first prompt has run."""
+    try:
+        from server import PromptServer
+        srv = PromptServer.instance
+        for attr in ("last_prompt_id", "last_node_id"):
+            if not hasattr(srv, attr):
+                setattr(srv, attr, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _node_boundary() -> None:
     """What ComfyUI does between two nodes: drop the per-thread CUDA malloc graph and prefetch queues. Needed when
     one node runs a model several times (a second text generation in the same node otherwise hits a device assert)."""
@@ -1842,6 +1855,7 @@ try:
             seg = segs[int(body.get("index", 0))]
             spec = mask_spec(body.get("mask") or seg.get("mask"), p.get("mask_cfg"))
             import asyncio   # SAM 3 takes seconds: keep the server responsive
+            _outside_prompt()
             out = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: mask_preview(path, a, seg["start"], seg["end"] - seg["start"], spec, int(body.get("count", 6))))
         except Exception as exc:  # noqa: BLE001
@@ -1864,6 +1878,7 @@ try:
             pick = [segs[i] for i in want] if want else segs
             cfg = vlm_cfg(p.get("vlm_cfg"))
             import asyncio
+            _outside_prompt()
             out = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: [dict(vlm_shot(clip, path, a, s["start"], s["end"], cfg), start=s["start"], end=s["end"])
                                for s in pick])
