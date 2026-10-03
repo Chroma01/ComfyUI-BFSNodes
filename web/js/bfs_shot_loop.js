@@ -25,7 +25,7 @@ const DEFAULTS = {
 const MASK_DEFAULTS = { threshold: 0.5, max_objects: 4, invert: false, fill_holes: true, temporal_expand: 2, blockify: 0,
                         padding: 0.15, expand: 16, feather: 12, paste: "mask" };
 
-const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 320, auto_segment: true, auto_shot: true, instruction: "",
+const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 1024, auto_segment: true, auto_shot: true, instruction: "",
                        describe_preset: "full body", describe_custom: "" };
 
 // hover help for every setting (the 📖 Guide button opens the full documentation)
@@ -806,7 +806,7 @@ function Panel(io) {
       ]),
       h("div", { class: "grid" }, [
         fld("Frames per shot", h("input", { type: "number", min: 1, max: 8, step: 1, value: VC.frames, onChange: e => setVlmCfg("frames", parseInt(e.target.value) || 3) })),
-        fld("Max tokens", h("input", { type: "number", min: 64, max: 2048, step: 32, value: VC.max_tokens, onChange: e => setVlmCfg("max_tokens", parseInt(e.target.value) || 320) })),
+        fld("Max tokens", h("input", { type: "number", min: 64, max: 2048, step: 32, value: VC.max_tokens, onChange: e => setVlmCfg("max_tokens", parseInt(e.target.value) || 1024) })),
       ]),
       h("textarea", { style: "margin-top:6px;min-height:44px", placeholder: "Extra instruction for the VLM (optional), e.g. 'segment the woman, not the man'",
         value: VC.instruction || "", onChange: e => setVlmCfg("instruction", e.target.value) }),

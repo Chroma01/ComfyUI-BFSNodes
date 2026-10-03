@@ -978,7 +978,7 @@ def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict,
 
 # ---------------------------------------------------------------------------- VLM suggestions (optional)
 
-DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 320, "auto_segment": True, "auto_shot": True,
+DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
                "instruction": "", "describe_preset": "full body", "describe_custom": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
@@ -1096,22 +1096,24 @@ DESCRIBE_PRESETS = {
                   "face shape and distinctive facial features (eyes, eyebrows, nose, lips, facial hair, wrinkles, "
                   "freckles), hair colour, length, texture and style (hairline, parting, bald areas), body build and "
                   "proportions, then the clothing piece by piece with colours and materials, shoes and accessories. "
-                  "Concrete words only: no negations, no names, no opinions, no camera or background."),
+                  "Describe only physical traits and clothing: never the pose, gesture, action, expression, "
+                  "camera, framing or background. Concrete words only: no negations, no names, no opinions."),
     "head / face": ("Describe the head and face of the person in these reference pictures for a video-generation "
                     "prompt: one paragraph of 3 to 4 sentences in English. Only what is visible: apparent gender and "
                     "age, skin tone and texture, head and face shape, eyes, eyebrows, nose, lips, jawline, ears, "
                     "facial hair, wrinkles, freckles or marks, glasses, and the hair: colour, length, texture, style, "
-                    "hairline. Concrete words only: no negations, no names, no opinions."),
+                    "hairline. Describe only physical traits: never the pose, head angle, gaze, expression, action, "
+                    "camera or background. Concrete words only: no negations, no names, no opinions."),
     "face attributes": ("Describe this face in a short comma-separated attribute list, in exactly this style: \"Male, oval "
                         "face shape, average-sized head with strong jawline, light brown skin, dark eyes, black tousled "
                         "hair, silver hoop earring.\" Cover, in order: gender, head/face shape and proportions (e.g. "
                         "oval/round/square/heart-shaped, narrow/wide, jaw structure, whether the head reads as "
                         "small/average/large relative to the shoulders), skin tone, eye color, hair color and style, and any "
-                        "distinctive features (facial hair, jewelry, makeup, glasses, etc.). Only output the description, "
-                        "nothing else."),
+                        "distinctive features (facial hair, jewelry, makeup, glasses, etc.). Physical traits only, never "
+                        "the pose, expression or background. Only output the description, nothing else."),
     "outfit": ("Describe only what the person in these reference pictures wears, piece by piece, for a "
                "video-generation prompt: garments, colours, materials, fit, shoes and accessories, in 2 or 3 "
-               "sentences in English. No negations, no names."),
+               "sentences in English. Never the pose, action or background. No negations, no names."),
 }
 _DESCRIBE_CACHE: dict[tuple, str] = {}
 
