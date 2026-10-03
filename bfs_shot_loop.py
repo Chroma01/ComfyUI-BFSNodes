@@ -1273,18 +1273,22 @@ def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, ma
         return _DESCRIBE_CACHE[key]
     _status("Writing the prompt with the VLM", force=True)
     swap = task == "character swap" and bool(refs)
-    q = (f"The first {len(fr)} images are frames (in time order) of one camera shot. "
-         + (f"The last {len(refs)} image(s) show a reference person. " if refs else "")
-         + "Answer with one JSON object only, no code fence:\n{"
-         + ('"look": "the reference person only: apparent gender and age, face, hair colour, length and style, skin, and '
-            'the clothing piece by piece with colours, in one sentence of concrete seen words", ' if swap else "")
-         + '"medium": "what the shot is, e.g. handheld vertical smartphone footage under soft window light", '
-         + '"shot": "the camera distance, angle and movement, then what the person in the frames does, in time order, '
-           'one short sentence per real action; call them the person and never describe their face, hair or clothes", '
+    # two separate questions: mixing the clip's frames and the reference photos in one batch makes the VLM
+    # describe the reference photo (studio, standing still) as if it were the video
+    look = ""
+    if swap:
+        look = vlm_describe(clip, refs, "Describe the person in these reference pictures in ONE sentence of concrete seen "
+                            "words: apparent gender and age, face, hair colour, length and style, skin, and the clothing "
+                            "piece by piece with colours. Physical traits and clothing only: never the pose, expression, "
+                            "camera or background.", max_tokens).strip().rstrip(".")
+    q = (f"These {len(fr)} images are frames, in time order, of one camera shot of a video. "
+         "Answer with one JSON object only, no code fence:\n{"
+         + '"medium": "what the video is, e.g. handheld vertical smartphone footage under soft window light", '
+         + '"shot": "the camera distance, angle and movement, then what the person does, in time order, one short '
+           'sentence per real action; call them the person and never describe their face, hair or clothes", '
          + '"sounds": "the sounds of the scene in a few words"}')
-    text = vlm_generate(clip, q, _letterbox_batch(fr + refs), max_tokens)
+    text = vlm_generate(clip, q, _letterbox_batch(fr), max_tokens)
     d = _parse_json(text)
-    look = str(d.get("look") or "").strip().rstrip(".")
     medium = str(d.get("medium") or "real camera footage").strip().rstrip(".")
     shot = str(d.get("shot") or "").strip()
     sounds = str(d.get("sounds") or "the sounds of the kept footage").strip().rstrip(".")
