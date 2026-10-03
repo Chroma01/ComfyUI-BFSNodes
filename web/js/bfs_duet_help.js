@@ -1,5 +1,6 @@
 // "❓ How to use" for the H3 duet nodes: a window with drawn examples of every setting.
 import { app } from "../../scripts/app.js";
+import { showGuide } from "./bfs_md_view.js";
 
 const NODES = ["BFSH3Duet", "BFSShotH3Duet", "BFSH3SidePanel"];
 
@@ -150,9 +151,10 @@ function open(type) {
   const back = document.createElement("div"); back.className = "bdh-back";
   const guide = new URL("./docs/BFSH3Duet.md", import.meta.url).href;
   back.innerHTML = `<div class="bdh"><button class="bdh-close">close</button>${html(type)}
-    <p style="margin-top:14px"><a href="${guide}" target="_blank" style="color:#8fb3ff">Full guide (credits, all settings, a complete example prompt) ↗</a></p></div>`;
+    <p style="margin-top:14px"><a href="#" class="bdh-guide" style="color:#8fb3ff">Full guide (credits, all settings, a complete example prompt)</a></p></div>`;
   back.addEventListener("pointerdown", e => { if (e.target === back) back.remove(); });
   back.querySelector(".bdh-close").addEventListener("click", () => back.remove());
+  back.querySelector(".bdh-guide").addEventListener("click", e => { e.preventDefault(); back.remove(); showGuide(guide); });
   document.body.appendChild(back);
 }
 

@@ -8,6 +8,7 @@
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { showGuide } from "./bfs_md_view.js";
 import { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount, h, Teleport } from "./vendor/vue.esm-browser.prod.mjs";
 
 const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
@@ -618,7 +619,7 @@ function Panel(io) {
       busy.value ? h("span", { class: "pill warn" }, busy.value) : (an.value ? h("span", { class: "pill ok" }, `${active.value.length} shots · ${(N / fps).toFixed(1)}s`) : null),
       h("span", { class: "grow" }),
       plan.run === "queue" ? h("span", { class: "pill" }, "queue loop") : h("span", { class: "pill" }, "auto loop"),
-      h("button", { title: "Open the full guide (every setting explained, with examples)", onClick: () => window.open(guideUrl, "_blank") }, "📖 Guide"),
+      h("button", { title: "Open the full guide (every setting explained, with examples)", onClick: () => showGuide(guideUrl) }, "📖 Guide"),
     ]);
 
     const source = h("div", { class: "card" }, [
