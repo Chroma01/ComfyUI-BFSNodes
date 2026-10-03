@@ -1460,7 +1460,10 @@ class BFSShotJoin:
                          "comparison": ("BOOLEAN", {"default": False, "tooltip": "Also output a side-by-side video: "
                              "original shot | references | result, with the shot's info on top and its prompt below."}),
                          "label": ("STRING", {"default": "", "multiline": False, "tooltip": "Extra text for the "
-                             "comparison's top bar, e.g. the model, LoRA, steps and seed."})},
+                             "comparison's top bar, e.g. the model, LoRA, steps and seed."}),
+                         "comparison_height": ("INT", {"default": 360, "min": 0, "max": 4096, "step": 16, "tooltip":
+                             "Height of each column in the comparison (0 = full size). Smaller is much lighter "
+                             "for long videos."})},
         }
 
     INPUT_IS_LIST = True
@@ -1470,9 +1473,12 @@ class BFSShotJoin:
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
-    def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None):
+    def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
+             comparison_height=None):
         tl = timeline[0] if timeline else None
         want = bool(comparison[0]) if comparison else False
+        self._comp_h = int(comparison_height[0]) if comparison_height else 360
+        self._want = want
         lab = (label[0] if label else "") or ""
         self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
         images = [crop_panel(img, sh) for img, sh in zip(images, shots)]
@@ -1485,7 +1491,7 @@ class BFSShotJoin:
         if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
             return out + (out[0],)
         video = out[0]
-        comp = comparison_video(video, self._parts, lab) if want else video[:1]
+        comp = comparison_video(video, self._parts, lab, self._comp_h) if want else video[:1]
         return tuple(out) + (comp,)
 
     def _join_queue(self, images, shots, crossfade, audio, tl=None):
@@ -1494,10 +1500,16 @@ class BFSShotJoin:
         rid = shot["run_id"]
         d = run_dir(rid)
         img = images[0]
-        torch.save({"frames": (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(),
-                    "shot": {k: v for k, v in shot.items() if k in ("index", "count", "start", "end", "length",
-                                                                   "gen_length", "fps", "cut_before", "prompt",
-                                                                   "ref", "ref2", "frames", "full_frames")}},
+        meta = {k: v for k, v in shot.items() if k in ("index", "count", "start", "end", "length", "gen_length",
+                                                         "fps", "cut_before", "prompt", "ref", "ref2")}
+        if getattr(self, "_want", False):   # originals only for the comparison: small and uint8
+            src = shot.get("full_frames") if shot.get("full_frames") is not None else shot.get("frames")
+            if src is not None:
+                h = getattr(self, "_comp_h", 360) or src.shape[1]
+                sc = min(1.0, h / src.shape[1])
+                small = _scale_batch(src, max(16, int(src.shape[1] * sc)), max(16, int(src.shape[2] * sc)))
+                meta["frames"] = (small * 255).round().to(torch.uint8)
+        torch.save({"frames": (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(), "shot": meta},
                    os.path.join(d, f"shot_{shot['index']:04d}.pt"))
         st = run_state(rid)
         if shot["index"] not in st["done"]:
@@ -1688,16 +1700,29 @@ def _fit_box(img: torch.Tensor | None, w: int, h: int) -> torch.Tensor:
     return out
 
 
-def comparison_video(video: torch.Tensor, parts: list, label: str = "") -> torch.Tensor:
-    """original | references | result for every output frame, with shot info on top and the prompt below."""
-    H, W = video.shape[1:3]
-    rw = max(32, W // 2)
+def _scale_batch(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    """[N,H,W,C] -> [N,h,w,3] float on the CPU (area filter when shrinking)."""
+    x = x[..., :3].float().cpu()
+    if tuple(x.shape[1:3]) == (h, w):
+        return x
+    mode = "area" if x.shape[1] >= h else "bilinear"
+    y = torch.nn.functional.interpolate(x.movedim(-1, 1), size=(h, w), mode=mode,
+                                        **({} if mode == "area" else {"align_corners": False}))
+    return y.movedim(1, -1).clamp(0, 1)
+
+
+def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: int = 480) -> torch.Tensor:
+    """original | references | result for every output frame, with shot info on top and the prompt below.
+    Built at `height` px per column (0 = full size) so long videos stay light."""
+    vH, vW = video.shape[1:3]
+    s = min(1.0, height / vH) if height and height > 0 else 1.0
+    H, W = max(16, int(vH * s) // 2 * 2), max(16, int(vW * s) // 2 * 2)
+    rw = max(32, W // 2 // 2 * 2)
     total_w = W * 2 + rw
     size = max(12, total_w // 70)
-    n = sum(L for _, L, _ in parts) or video.shape[0]
-    count = sum(1 for s, _, _ in parts if s and not s.get("skipped"))
+    count = sum(1 for sh, _, _ in parts if sh and not sh.get("skipped"))
     cols = _column_labels([("original", W), ("references", rw), ("result", W)], size)
-    frames, pos, k = [], 0, 0
+    pieces, pos, k = [], 0, 0
     for shot, L, orig in parts:
         shot = shot or {}
         fps = float(shot.get("fps") or 24.0)
@@ -1722,25 +1747,30 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "") -> torch
                                                                     if H - rh * len(refs) else []), 0)
         else:
             col = _fit_box(None, rw, H)
-        for i in range(L):
-            res = video[pos + i, ..., :3]
-            if orig is not None and orig.shape[0]:
-                o = orig[min(i, orig.shape[0] - 1)][..., :3].float()
-                if o.shape[:2] != (H, W):
-                    o = torch.nn.functional.interpolate(o.movedim(-1, 0)[None], size=(H, W), mode="bilinear",
-                                                        align_corners=False)[0].movedim(0, -1)
-            else:
-                o = torch.full((H, W, 3), 0.1)
-            frames.append(torch.cat([top, torch.cat([o.cpu(), col, res.cpu()], 1), bottom], 0))
+        res = _scale_batch(video[pos:pos + L], H, W)
+        if orig is not None and orig.shape[0]:
+            idx = torch.clamp(torch.arange(L), max=orig.shape[0] - 1)
+            o = orig[idx]
+            o = _scale_batch(o.float() / 255.0 if o.dtype == torch.uint8 else o, H, W)
+        else:
+            o = torch.full((L, H, W, 3), 0.1)
+        body = torch.cat([o, col[None].expand(L, -1, -1, -1), res], 2)
+        pieces.append((top, body, bottom))
         pos += L
-    if not frames:
+    if not pieces:
         return video[:1]
     # same height for every frame, and both sides on a multiple of 16: video encoders (x264 / yuv420p) need even sizes
-    hmax = max(f.shape[0] for f in frames)
+    hmax = max(t.shape[0] + b.shape[1] + bt.shape[0] for t, b, bt in pieces)
     H16, W16 = -(-hmax // 16) * 16, -(-total_w // 16) * 16
-    out = torch.full((min(n, len(frames)), H16, W16, 3), 18 / 255)
-    for i, f in enumerate(frames[:n]):
-        out[i, :f.shape[0], :f.shape[1]] = f
+    out = torch.full((sum(b.shape[0] for _, b, _ in pieces), H16, W16, 3), 18 / 255)
+    i = 0
+    for top, body, bottom in pieces:
+        n = body.shape[0]
+        y = 0
+        out[i:i + n, y:y + top.shape[0], :total_w] = top; y += top.shape[0]
+        out[i:i + n, y:y + body.shape[1], :total_w] = body; y += body.shape[1]
+        out[i:i + n, y:y + bottom.shape[0], :total_w] = bottom
+        i += n
     return out
 
 
