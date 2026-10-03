@@ -612,7 +612,7 @@ function Panel(io) {
         h("div", { class: ["bprog", pct < 0 && "ind"] }, [h("div", { style: pct >= 0 ? `width:${(pct * 100).toFixed(1)}%` : "" })]),
       ]);
     };
-    const guideUrl = new URL("../docs/BFSShotPlanner.md", import.meta.url).href;
+    const guideUrl = new URL("./docs/BFSShotPlanner.md", import.meta.url).href;
     const header = h("div", { class: "hdr" }, [
       h("span", { class: "ttl" }, "🎬 Shot Planner"),
       busy.value ? h("span", { class: "pill warn" }, busy.value) : (an.value ? h("span", { class: "pill ok" }, `${active.value.length} shots · ${(N / fps).toFixed(1)}s`) : null),

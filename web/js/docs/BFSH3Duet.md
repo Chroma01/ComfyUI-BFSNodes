@@ -21,6 +21,13 @@ The panel is cut off before decoding, so it never reaches the output.
 | **BFS H3 Side Panel** | Only the canvas: takes the conditioning and AV latent from Reference to Video, adds the pinned strip (and the guide), and returns them for your own sampler. Guides already added with Add Guide for MiniMax H3 are moved onto the canvas. |
 | **BFS H3 Side Panel Crop** | Removes the strip from the sampled latent (before VAE Decode) or from decoded images. |
 
+## First time?
+
+Click **❓ How to use** on the node: a window with drawings of every setting (panel side, size, contain/cover,
+gap, hold, canvas vs shifted RoPE) and how to write the task, instruction and prompt. The node shows only the main
+settings; *fit, gap, hold, rope_mode, rope_gap, ref_image_size, decode_canvas, guide_frame_idx* are under the
+node's advanced settings, with defaults that work.
+
 ## What to pin
 
 - **The source clip** (TSC's duet): the new character copies its motion, camera and cuts frame for

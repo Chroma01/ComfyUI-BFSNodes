@@ -315,10 +315,10 @@ class BFSH3SidePanel:
                 "size": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.5, "step": 0.01,
                                    "tooltip": "Strip size as a fraction of the video's height (top/bottom) or width (left/right), snapped to 32 px."}),
                 "fit": (FITS, {"default": "contain", "tooltip": "contain keeps the whole panel on gray; cover fills the strip and crops; stretch distorts."}),
-                "gap": ("INT", {"default": 0, "min": 0, "max": 8, "tooltip": "Gray separator between panel and video, in 32 px patches (held like the panel)."}),
+                "gap": ("INT", {"default": 0, "min": 0, "max": 8, "advanced": True, "tooltip": "Gray separator between panel and video, in 32 px patches (held like the panel)."}),
                 "panel_noise": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                           "tooltip": "0 pins the panel exactly. 0.05-0.15 lets the model loosen it a little when the result copies too much of it (TSC's SOURCE NOISE)."}),
-                "hold": (HOLDS, {"default": "all frames", "tooltip": "all frames: the panel is held for the whole clip. first latent frame: only the start is held, the rest of the strip is generated (and cropped)."}),
+                "hold": (HOLDS, {"default": "all frames", "advanced": True, "tooltip": "all frames: the panel is held for the whole clip. first latent frame: only the start is held, the rest of the strip is generated (and cropped)."}),
             },
             "optional": {
                 "guide": ("IMAGE", {"tooltip": "Aligned latent guide (e.g. the source video), placed in the video area. 5, 22, 39... (17k+5) frames, or one image."}),
@@ -583,22 +583,22 @@ if _io is not None:
                     _io.Int.Input("length", default=0, min=0, max=3600, tooltip="Frames at 24 fps, snapped to 17k+5. 0 = the guide's or panel clip's length."),
                     _io.Combo.Input("position", options=POSITIONS, default="left"),
                     _io.Float.Input("size", default=1.0, min=0.1, max=1.5, step=0.01, tooltip="Panel size against the video (1.0 = two equal halves)."),
-                    _io.Combo.Input("fit", options=FITS, default="contain", tooltip="contain keeps the whole clip (smaller, with grey around) so nothing is cropped; cover fills the panel and crops; stretch distorts."),
-                    _io.Int.Input("gap", default=0, min=0, max=8, tooltip="Grey separator in 32 px patches (pixels, held)."),
+                    _io.Combo.Input("fit", advanced=True, options=FITS, default="contain", tooltip="contain keeps the whole clip (smaller, with grey around) so nothing is cropped; cover fills the panel and crops; stretch distorts."),
+                    _io.Int.Input("gap", advanced=True, default=0, min=0, max=8, tooltip="Grey separator in 32 px patches (pixels, held)."),
                     _io.Float.Input("panel_noise", default=0.0, min=0.0, max=1.0, step=0.01, tooltip=
                         "0 copies the panel exactly (swaps, light). 0.1-0.2 gives room for big changes (style, creatures)."),
-                    _io.Combo.Input("hold", options=HOLDS, default=HOLDS[0]),
-                    _io.Combo.Input("rope_mode", options=ROPE_MODES, default="canvas", tooltip=
+                    _io.Combo.Input("hold", advanced=True, options=HOLDS, default=HOLDS[0]),
+                    _io.Combo.Input("rope_mode", advanced=True, options=ROPE_MODES, default="canvas", tooltip=
                         "canvas: panel and video share one wide grid (TSC). shifted (BFS): the video keeps the RoPE "
                         "positions of a render without the panel and the panel sits past its edge."),
-                    _io.Float.Input("rope_gap", default=0.0, min=0.0, max=256.0, step=1.0, tooltip="shifted only: empty RoPE steps (2x2 patches) between video and panel. Keep it small against the video width (0-2 at low resolution): a large gap makes the model draw its own split screen."),
-                    _io.Combo.Input("ref_image_size", options=["match", "max"], default="match"),
+                    _io.Float.Input("rope_gap", advanced=True, default=0.0, min=0.0, max=256.0, step=1.0, tooltip="shifted only: empty RoPE steps (2x2 patches) between video and panel. Keep it small against the video width (0-2 at low resolution): a large gap makes the model draw its own split screen."),
+                    _io.Combo.Input("ref_image_size", advanced=True, options=["match", "max"], default="match"),
                     _io.Int.Input("steps", default=20, min=1, max=200),
                     _io.Combo.Input("sampler_name", options=samplers, default="euler"),
                     _io.Combo.Input("scheduler", options=schedulers, default="beta"),
                     _io.Int.Input("seed", default=42, min=0, max=0xffffffffffffffff, control_after_generate=True),
-                    _io.Boolean.Input("decode_canvas", default=False, tooltip="Also decode the whole canvas, to check the sync."),
-                    _io.Int.Input("guide_frame_idx", default=0, min=-9999, max=9999, optional=True),
+                    _io.Boolean.Input("decode_canvas", advanced=True, default=False, tooltip="Also decode the whole canvas, to check the sync."),
+                    _io.Int.Input("guide_frame_idx", advanced=True, default=0, min=-9999, max=9999, optional=True),
                     _io.Autogrow.Input("ref_images", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Image.Input("ref_image", tooltip="<Picture n>, in order"), prefix="ref_image_", min=0, max=9)),
                     _io.Autogrow.Input("ref_videos", optional=True, template=_io.Autogrow.TemplatePrefix(
@@ -658,18 +658,19 @@ class BFSShotH3Duet:
                                   "per-shot or global prompt in the Planner)."}),
                 "instruction": ("STRING", {"default": "", "tooltip": "What changes, in a few seen words (see BFS H3 Duet)."}),
                 "use_ref_2": ("BOOLEAN", {"default": True}),
-                "position": panel_req["position"], "size": panel_req["size"], "fit": (FITS, {"default": "contain", "tooltip": "contain keeps the whole clip (smaller, with grey around) so nothing is cropped"}),
+                "position": panel_req["position"], "size": panel_req["size"],
+                "fit": (FITS, {"default": "contain", "advanced": True, "tooltip": "contain keeps the whole clip (smaller, with grey around) so nothing is cropped"}),
                 "gap": panel_req["gap"], "panel_noise": panel_req["panel_noise"],
-                "ref_image_size": (["match", "max"], {"default": "match"}),
+                "ref_image_size": (["match", "max"], {"default": "match", "advanced": True}),
                 "steps": ("INT", {"default": 20, "min": 1, "max": 200}),
                 "sampler_name": (samplers, {"default": "euler"}),
                 "scheduler": (schedulers, {"default": "beta"}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
-                "decode_canvas": ("BOOLEAN", {"default": False}),
+                "decode_canvas": ("BOOLEAN", {"default": False, "advanced": True}),
             },
             "optional": {"audio_vae": ("VAE",),
-                         "rope_mode": (ROPE_MODES, {"default": "canvas"}),
-                         "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0})},
+                         "rope_mode": (ROPE_MODES, {"default": "canvas", "advanced": True}),
+                         "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0, "advanced": True})},
         }
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "IMAGE", "STRING", "STRING")
