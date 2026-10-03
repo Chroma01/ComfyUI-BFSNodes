@@ -581,7 +581,7 @@ if _io is not None:
                     _io.Int.Input("length", default=0, min=0, max=3600, tooltip="Frames at 24 fps, snapped to 17k+5. 0 = the guide's or panel clip's length."),
                     _io.Combo.Input("position", options=POSITIONS, default="left"),
                     _io.Float.Input("size", default=1.0, min=0.1, max=1.5, step=0.01, tooltip="Panel size against the video (1.0 = two equal halves)."),
-                    _io.Combo.Input("fit", options=FITS, default="cover"),
+                    _io.Combo.Input("fit", options=FITS, default="contain", tooltip="contain keeps the whole clip (smaller, with grey around) so nothing is cropped; cover fills the panel and crops; stretch distorts."),
                     _io.Int.Input("gap", default=0, min=0, max=8, tooltip="Grey separator in 32 px patches (pixels, held)."),
                     _io.Float.Input("panel_noise", default=0.0, min=0.0, max=1.0, step=0.01, tooltip=
                         "0 copies the panel exactly (swaps, light). 0.1-0.2 gives room for big changes (style, creatures)."),
@@ -656,7 +656,7 @@ class BFSShotH3Duet:
                                   "per-shot or global prompt in the Planner)."}),
                 "instruction": ("STRING", {"default": "", "tooltip": "What changes, in a few seen words (see BFS H3 Duet)."}),
                 "use_ref_2": ("BOOLEAN", {"default": True}),
-                "position": panel_req["position"], "size": panel_req["size"], "fit": (FITS, {"default": "cover"}),
+                "position": panel_req["position"], "size": panel_req["size"], "fit": (FITS, {"default": "contain", "tooltip": "contain keeps the whole clip (smaller, with grey around) so nothing is cropped"}),
                 "gap": panel_req["gap"], "panel_noise": panel_req["panel_noise"],
                 "ref_image_size": (["match", "max"], {"default": "match"}),
                 "steps": ("INT", {"default": 20, "min": 1, "max": 200}),

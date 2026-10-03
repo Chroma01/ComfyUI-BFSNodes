@@ -93,7 +93,7 @@ None.
 | setting | effect |
 |---|---|
 | position / size | side of the strip and its size relative to the video (1.0 = two equal halves) |
-| fit | contain (whole panel on grey), cover (fill and crop), stretch |
+| fit | contain (default: the whole clip, smaller, with grey around, nothing cropped), cover (fill and crop), stretch |
 | gap | grey separator between panel and video, in 32 px patches |
 | panel_noise | 0 pins the panel exactly; 0.05-0.15 loosens it when the result copies too much of it |
 | hold | pin the panel for the whole clip, or only its first latent frame |

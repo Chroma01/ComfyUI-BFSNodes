@@ -1429,7 +1429,7 @@ class BFSShotH3Conditioning:
             # the guide goes straight onto the canvas (guides added above are moved onto it by the panel step)
             guide = shot["frames"] if aligned and audio is None else None
             positive, latent, info, _, _ = BFSH3SidePanel().apply(
-                positive, latent, vae, shot["frames"], panel_position, panel_size, "cover", 0, "all frames",
+                positive, latent, vae, shot["frames"], panel_position, panel_size, "contain", 0, "all frames",
                 panel_noise, guide, 0)
             shot["panel"] = info        # BFS Shot Join crops the decoded canvas back to the video
             if duet == "shifted RoPE":
