@@ -412,7 +412,7 @@ DEFAULT_PLAN = {
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
-    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto",
+    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
 
 
@@ -979,7 +979,7 @@ def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict,
 # ---------------------------------------------------------------------------- VLM suggestions (optional)
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 320, "auto_segment": True, "auto_shot": True,
-               "instruction": ""}
+               "instruction": "", "describe_preset": "full body", "describe_custom": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
 
@@ -1022,6 +1022,28 @@ def _node_boundary() -> None:
         pass
 
 
+def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int) -> str:
+    """Text from a vision-language CLIP. Some models end the answer before writing anything for some wordings:
+    retry with a reworded request, then with sampling, and clean leftovers of the chat template."""
+    from comfy_extras.nodes_textgen import TextGenerate
+    tries = [(prompt, {"sampling_mode": "off"}),
+             ("Look at the picture(s) carefully. " + prompt + " Write the answer now.", {"sampling_mode": "off"}),
+             (prompt, {"sampling_mode": "on", "temperature": 0.7, "top_k": 40, "top_p": 0.9, "min_p": 0.0,
+                       "repetition_penalty": 1.05, "presence_penalty": 0.0, "seed": 1})]
+    text = ""
+    for q, mode in tries:
+        text = TextGenerate.execute(clip=clip, prompt=q, max_length=int(max_tokens), sampling_mode=mode,
+                                    image=images, mtp="off").args[0]
+        _node_boundary()
+        text = str(text or "").strip()
+        for junk in ("assistant\n", "assistant:", "assistant"):
+            if text.lower().startswith(junk):
+                text = text[len(junk):].strip()
+        if text:
+            break
+    return text
+
+
 def vlm_cfg(cfg: dict | None) -> dict:
     out = dict(DEFAULT_VLM)
     out.update({k: v for k, v in (cfg or {}).items() if v is not None})
@@ -1056,10 +1078,7 @@ def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -
     imgs = torch.from_numpy(np.stack(_read_frames(path, src[picks], size)).astype(np.float32) / 255.0)
     extra = ("\n" + cfg["instruction"].strip()) if str(cfg.get("instruction") or "").strip() else ""
     q = VLM_QUESTION.format(n=n, extra=extra)
-    text = TextGenerate.execute(clip=clip, prompt=q, max_length=int(cfg["max_tokens"]),
-                                sampling_mode={"sampling_mode": "off"}, image=imgs,
-                                mtp="off").args[0]
-    _node_boundary()
+    text = vlm_generate(clip, q, imgs, int(cfg["max_tokens"]))
 
     out = _parse_json(text)
     out = {"segment": str(out.get("segment") or "").strip(), "shot": str(out.get("shot") or "").strip(),
@@ -1067,6 +1086,80 @@ def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -
            "reason": str(out.get("reason") or "").strip(), "raw": "" if out else text}
     _VLM_CACHE[key] = out
     return out
+
+
+# ---------------------------------------------------------------------------- reference descriptions (VLM)
+
+DESCRIBE_PRESETS = {
+    "full body": ("Describe the person in these reference pictures for a video-generation prompt: one paragraph of "
+                  "3 to 5 sentences in English. Only what is visible: apparent gender and age, skin tone and texture, "
+                  "face shape and distinctive facial features (eyes, eyebrows, nose, lips, facial hair, wrinkles, "
+                  "freckles), hair colour, length, texture and style (hairline, parting, bald areas), body build and "
+                  "proportions, then the clothing piece by piece with colours and materials, shoes and accessories. "
+                  "Concrete words only: no negations, no names, no opinions, no camera or background."),
+    "head / face": ("Describe the head and face of the person in these reference pictures for a video-generation "
+                    "prompt: one paragraph of 3 to 4 sentences in English. Only what is visible: apparent gender and "
+                    "age, skin tone and texture, head and face shape, eyes, eyebrows, nose, lips, jawline, ears, "
+                    "facial hair, wrinkles, freckles or marks, glasses, and the hair: colour, length, texture, style, "
+                    "hairline. Concrete words only: no negations, no names, no opinions."),
+    "face attributes": ("Describe this face in a short comma-separated attribute list, in exactly this style: \"Male, oval "
+                        "face shape, average-sized head with strong jawline, light brown skin, dark eyes, black tousled "
+                        "hair, silver hoop earring.\" Cover, in order: gender, head/face shape and proportions (e.g. "
+                        "oval/round/square/heart-shaped, narrow/wide, jaw structure, whether the head reads as "
+                        "small/average/large relative to the shoulders), skin tone, eye color, hair color and style, and any "
+                        "distinctive features (facial hair, jewelry, makeup, glasses, etc.). Only output the description, "
+                        "nothing else."),
+    "outfit": ("Describe only what the person in these reference pictures wears, piece by piece, for a "
+               "video-generation prompt: garments, colours, materials, fit, shoes and accessories, in 2 or 3 "
+               "sentences in English. No negations, no names."),
+}
+_DESCRIBE_CACHE: dict[tuple, str] = {}
+
+
+def _image_key(img: torch.Tensor | None) -> str:
+    if img is None:
+        return ""
+    x = torch.nn.functional.interpolate(img[:1, ..., :3].movedim(-1, 1).float(), size=(32, 32), mode="area")
+    return hashlib.sha1((x * 255).round().to(torch.uint8).numpy().tobytes()).hexdigest()[:16]
+
+
+def describe_instruction(cfg: dict) -> str:
+    preset = cfg.get("describe_preset", "full body")
+    if preset == "custom":
+        return str(cfg.get("describe_custom") or DESCRIBE_PRESETS["full body"]).strip()
+    return DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["full body"])
+
+
+def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) -> str:
+    """One description for a set of reference pictures (e.g. a close-up and a full-body photo of one person)."""
+    images = [im for im in images if im is not None]
+    if not images:
+        return ""
+    key = (tuple(_image_key(im) for im in images), instruction, id(clip), int(max_tokens))
+    if key in _DESCRIBE_CACHE:
+        return _DESCRIBE_CACHE[key]
+    from comfy_extras.nodes_textgen import TextGenerate
+    _status("Describing the references with the VLM", force=True)
+    side = 448   # same size for the batch: letterbox every picture on grey
+    batch = []
+    for im in images:
+        x = im[:1, ..., :3].movedim(-1, 1).float()
+        s = side / max(x.shape[-2:])
+        nh, nw = max(2, int(x.shape[-2] * s)), max(2, int(x.shape[-1] * s))
+        x = torch.nn.functional.interpolate(x, size=(nh, nw), mode="bilinear", align_corners=False)
+        canvas = torch.full((1, 3, side, side), 0.5)
+        canvas[:, :, (side - nh) // 2:(side - nh) // 2 + nh, (side - nw) // 2:(side - nw) // 2 + nw] = x
+        batch.append(canvas)
+    imgs = torch.cat(batch, 0).movedim(1, -1).clamp(0, 1)
+    text = vlm_generate(clip, instruction, imgs, int(max_tokens))
+    text = " ".join(str(text).replace("```", " ").split())
+    _DESCRIBE_CACHE[key] = text
+    return text
+
+
+def ref_set_key(ref: str, ref2: str) -> str:
+    """Key of a reference set in plan['ref_details'] (edited descriptions)."""
+    return f"{ref or ''}|{ref2 or ''}"
 
 
 # ---------------------------------------------------------------------------- continuity between shots
@@ -1262,6 +1355,17 @@ class BFSShotPlanner:
             return out or [_grey()]
 
         used_refs, used_refs2 = unique("ref", g_ref), unique("ref2", g_ref2)
+        details = p.get("ref_details") or {}
+
+        def fill_details(text, rname, r2name, rimg, r2img):
+            """{details} = the description of this shot's references: edited in the panel, else from the VLM."""
+            if "{details}" not in text:
+                return text
+            d = details.get(ref_set_key(rname, r2name), "")
+            if not d and vlm is not None:
+                d = vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg), int(vcfg["max_tokens"]))
+            return text.replace("{details}", d)
+
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
         vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in todo} if use_vlm else {}
         shots = []
@@ -1309,8 +1413,9 @@ class BFSShotPlanner:
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames,
                 "ref": ref, "ref2": ref2,
-                "prompt": (s["prompt"] or g_prompt or "").replace(
+                "prompt": fill_details((s["prompt"] or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
+                    s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
@@ -2001,8 +2106,10 @@ try:
         try:
             clip = _VLM.get("clip")
             if clip is None:
-                raise ValueError("No VLM yet: connect a CLIPLoader with qwen3vl_4b / qwen3vl_8b to the planner's "
-                                 "vlm input and run the workflow once, then Analyse works from the panel.")
+                raise ValueError("The panel has no VLM yet. Connect the VLM (a CLIPLoader with a Qwen3-VL text encoder, "
+                                 "the same one Generate Text uses) to the planner's vlm input and run the workflow once "
+                                 "(Queue): ComfyUI only hands models to nodes when they run. After that the panel's "
+                                 "VLM buttons use it.")
             p = _load_plan(json.dumps(body.get("plan", {})))
             path = _input_path(p["video"])
             a = analyze(path, float(p["fps"]))
@@ -2018,6 +2125,32 @@ try:
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": out})
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/describe")
+    async def _bfs_shot_describe(request):
+        """Descriptions for reference sets: body {plan, sets: [[ref, ref2], ...]} -> {texts: {key: text}}."""
+        body = await request.json()
+        try:
+            clip = _VLM.get("clip")
+            if clip is None:
+                raise ValueError("The panel has no VLM yet. Connect the VLM (a CLIPLoader with a Qwen3-VL text encoder, "
+                                 "the same one Generate Text uses) to the planner's vlm input and run the workflow once "
+                                 "(Queue): ComfyUI only hands models to nodes when they run. After that the panel's "
+                                 "VLM buttons use it.")
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            cfg = vlm_cfg(p.get("vlm_cfg"))
+            sets = [tuple(x) for x in body.get("sets", []) if any(x)]
+
+            def work():
+                out = {}
+                for r1, r2 in sets:
+                    out[ref_set_key(r1, r2)] = vlm_describe(clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
+                                                            describe_instruction(cfg), int(cfg["max_tokens"]))
+                return out
+            texts = await _off_loop(work)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response({"texts": texts})
 
     @PromptServer.instance.routes.post("/bfs/shotloop/cast")
     async def _bfs_shot_cast(request):

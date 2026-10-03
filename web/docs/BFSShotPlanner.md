@@ -156,6 +156,39 @@ suggestions at run time (mask text for shots without one; `{shot}` in a prompt b
 description), *Analyse shots* asks from the panel (after one run with the VLM connected), and each shot's
 editor shows its suggestion with buttons to apply it. The summary output lists them too.
 
+## Describe references ({details})
+
+The VLM can describe the references, for any task (not tied to swaps). In the **VLM** card pick an instruction
+preset: *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
+short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
+description per reference set: the global references, every shot's and every cast person's. They are saved in
+the plan and editable. Write **`{details}`** anywhere in a prompt and every shot gets the description of its own
+references; a set without a description is described by the VLM at run time.
+
+The VLM buttons in the panel work after the workflow has run once with the VLM connected (ComfyUI only hands
+models to nodes when they run). Tested with Qwen3-VL 8B; some smaller or modified models return empty answers
+for some wordings: the planner retries with a reworded request and with sampling, but if a preset stays empty,
+use the 8B or another preset.
+
+## Settings reference
+
+Every setting in the panel has a hover tooltip (ⓘ). The main ones:
+
+| setting | what it does |
+|---|---|
+| Mode | Camera cuts (shots start at cuts, long ones split evenly) or fixed length |
+| Detector / Sensitivity | PySceneDetect adaptive or content, or the built-in one; higher sensitivity finds more cuts |
+| Frame grid | frame counts the model accepts (H3 17n+5, LTX/Wan 8n+1, Wan 4n+1) |
+| Max / Min seconds per shot | longest shot sent to the model; shorter shots merge into a neighbour |
+| Timeline fps | the frame rate the planner works on (generation and audio use it) |
+| Max shots / Max total seconds | test on the first shots or seconds only |
+| Megapixels / Size multiple | generation size at the source's aspect ratio, snapped to the multiple |
+| Run | auto loop (all shots in one run) or queue loop (one shot per run, stored on disk) |
+| Skipped shots in the output | keep the original video there or remove those shots |
+| Mask: padding / expand / feather / temporal expand / blockify | crop context, paste-back growth and softness, flicker hold, square blocks |
+| Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
+| VLM: frames per shot / max tokens | how much the VLM sees and how long it may answer |
+
 ## Continuity between shots
 
 Each shot (after the first) can continue from the **previous shot's generated result**: in the shot editor,

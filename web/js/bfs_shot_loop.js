@@ -15,7 +15,7 @@ const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "",
   megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
-  skip_fill: "original", audio_mode: "auto", mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
+  skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
@@ -24,7 +24,35 @@ const DEFAULTS = {
 const MASK_DEFAULTS = { threshold: 0.5, max_objects: 4, invert: false, fill_holes: true, temporal_expand: 2, blockify: 0,
                         padding: 0.15, expand: 16, feather: 12, paste: "mask" };
 
-const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 320, auto_segment: true, auto_shot: true, instruction: "" };
+const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 320, auto_segment: true, auto_shot: true, instruction: "",
+                       describe_preset: "full body", describe_custom: "" };
+
+// hover help for every setting (the 📖 Guide button opens the full documentation)
+const TIPS = {
+  "Mode": "Camera cuts: shots start at the detected cuts, long ones are split evenly. Fixed length: equal parts no longer than the maximum.",
+  "Detector": "Cut detector. PySceneDetect adaptive works on most footage (fast camera moves don't trigger it); content is stricter on hard cuts; built-in needs no package.",
+  "Sensitivity": "How easily a change counts as a cut. Higher finds more cuts (and more false ones).",
+  "Frame grid": "Frame counts the model accepts. H3: 17n+5, LTX/Wan: 8n+1, Wan: 4n+1. Each shot is generated at the next valid length and trimmed back.",
+  "Max seconds / shot": "Longest shot sent to the model. Keep it within what the model / LoRA was trained on (H3 body swap: about 4.5 s).",
+  "Min seconds / shot": "Shorter shots merge into a neighbour when the merge still fits the maximum.",
+  "Timeline fps": "The planner works on this frame rate (the source is resampled). Generated video and audio use it too.",
+  "Max shots": "Only the first N shots (0 = all). Handy for quick tests.",
+  "Max total seconds": "Only the first N seconds of the video (0 = all).",
+  "Megapixels": "Generation size: the source aspect ratio at this pixel area (0.15 ≈ 512×288). Cropped shots use it for the crop.",
+  "Size multiple": "Width and height snap to this multiple (32 for H3 and most video models).",
+  "Run": "Auto loop: every shot in one queue run. Queue loop: one shot per run, stored on disk, the join outputs the video after the last shot.",
+  "Skipped shots in the output": "Shots that do not run: keep the original video there, or remove them (with their audio).",
+  "Crop padding": "Context kept around the mask's box, as a % of the box. More context blends better; less gives the model more pixels on the subject.",
+  "Expand": "Grow the mask by this many pixels before pasting the result back (covers hair, edges, motion blur).",
+  "Feather": "Soft edge of the paste-back, in pixels.",
+  "Temporal expand": "Hold the mask this many frames before and after: removes flicker where SAM 3 drops a frame.",
+  "Blockify": "Square blocks of this size (0 = off). 16 matches H3's latent grid, useful as an inpainting mask.",
+  "Detection threshold": "SAM 3 score needed to keep a text match. Lower finds more (and more wrong) objects.",
+  "Max objects": "How many matches of the text prompt are tracked together.",
+  "Paste back": "Only the mask: the result replaces the masked pixels. The whole box: the full crop is pasted with feathered borders.",
+  "Frames per shot": "How many frames of each shot the VLM looks at.",
+  "Max tokens": "Longest VLM answer. Raise it for long descriptions.",
+};
 
 const snapUp = (n, grid) => {
   const [s, o] = GRIDS[grid] || GRIDS["H3 (17n+5)"]; n = Math.max(1, n | 0);
@@ -49,6 +77,7 @@ function styles() {
   el.id = "bfs-shotloop-css";
   el.textContent = `
 .bsl:focus{outline:none}
+.bsl .qm{color:#7d8bb0;cursor:help}
 .bsl .busybar{position:sticky;top:0;z-index:5;margin:6px 0;padding:6px 8px;border-radius:8px;background:#22222b;border:1px solid #3d3d4a}
 .bsl .busybar .brow{display:flex;gap:6px;align-items:center}
 .bsl .busybar .spin{width:12px;height:12px;border-radius:50%;border:2px solid #5b8cff;border-top-color:transparent;animation:bslspin .8s linear infinite;flex:none}
@@ -57,6 +86,10 @@ function styles() {
 .bsl .busybar .bprog.ind>div{position:absolute;width:30%;animation:bslind 1.2s ease-in-out infinite}
 @keyframes bslspin{to{transform:rotate(360deg)}}
 @keyframes bslind{0%{left:-30%}100%{left:100%}}
+.bsl .dlist{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.bsl .drow{display:flex;gap:8px;align-items:flex-start}
+.bsl .dthumbs{display:flex;gap:3px}
+.bsl .dthumbs img{width:44px;height:58px;object-fit:cover;border-radius:5px;border:1px solid #3a3a45}
 .bsl .vsug{margin-top:6px;padding:6px 8px;border:1px dashed #4a4a58;border-radius:6px;display:flex;flex-direction:column;gap:3px}
 .bsl .vsug button{margin-left:6px;padding:1px 6px}
 .bsl .mstrip{display:flex;gap:4px;margin-top:6px;align-items:center;flex-wrap:wrap}
@@ -199,6 +232,7 @@ function Panel(io) {
     plan.cast = { ...(p.cast || {}) };
     plan.mask_cfg = { ...MASK_DEFAULTS, ...(p.mask_cfg || {}) };
     plan.vlm_cfg = { ...VLM_DEFAULTS, ...(p.vlm_cfg || {}) };
+    plan.ref_details = { ...(p.ref_details || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
   };
@@ -357,6 +391,26 @@ function Panel(io) {
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
+  // reference sets used by the plan (global, every shot's, every cast person's): one description each
+  const refSets = computed(() => {
+    const out = new Map();
+    const add = (a, b, where) => { if (!a && !b) return; const k = `${a || ""}|${b || ""}`; if (!out.has(k)) out.set(k, { a, b, where: [] }); out.get(k).where.push(where); };
+    add(plan.global_ref, plan.global_ref2, "global");
+    segs.value.forEach((x, i) => add(x.ref || plan.global_ref, x.ref2 || plan.global_ref2, `#${i + 1}`));
+    Object.entries(plan.cast || {}).forEach(([id, c]) => { if (!c.ignore) add(c.ref, c.ref2, `person ${id}`); });
+    return [...out.entries()].map(([key, v]) => ({ key, ...v }));
+  });
+  async function describeRefs() {
+    busy.value = "Describing the references with the VLM…"; error.value = "";
+    try {
+      const sets = refSets.value.map(x => [x.a || "", x.b || ""]);
+      const r = await api.fetchApi("/bfs/shotloop/describe", { method: "POST", body: JSON.stringify({ plan: { ...plan }, sets }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      plan.ref_details = { ...plan.ref_details, ...j.texts }; save();
+    } catch (e) { error.value = String(e.message || e); }
+    busy.value = "";
+  }
+  const setDetail = (k, v) => { plan.ref_details = { ...plan.ref_details, [k]: v }; save(); };
   const setVlmCfg = (k, v) => { plan.vlm_cfg = { ...plan.vlm_cfg, [k]: v }; save(); };
   const applySug = (i, what) => {
     const s = segs.value[i], g = s && vlmSug.value[`${s.start}-${s.end}`]; if (!g) return;
@@ -508,7 +562,10 @@ function Panel(io) {
   io.expose({ reload: () => { load(); analyze(); progress(); } });
 
   // ---- view helpers
-  const fld = (label, input, hint) => h("div", { class: "fld" }, [h("label", label), input, hint ? h("div", { class: "hint" }, hint) : null]);
+  const fld = (label, input, hint) => {
+    const tip = Object.entries(TIPS).find(([k]) => String(label).startsWith(k))?.[1] || "";
+    return h("div", { class: "fld", title: tip }, [h("label", tip ? [label, h("span", { class: "qm" }, " ⓘ")] : label), input, hint ? h("div", { class: "hint" }, hint) : null]);
+  };
   const num = (k, step = 0.1, min = 0) => h("input", { type: "number", step, min, value: plan[k], onChange: e => { plan[k] = parseFloat(e.target.value) || 0; save(); } });
   const sel_ = (k, opts, after) => h("select", { value: plan[k], onChange: e => { plan[k] = e.target.value; save(); after && after(); } },
     opts.map(o => h("option", { value: Array.isArray(o) ? o[0] : o }, Array.isArray(o) ? o[1] : o)));
@@ -555,11 +612,13 @@ function Panel(io) {
         h("div", { class: ["bprog", pct < 0 && "ind"] }, [h("div", { style: pct >= 0 ? `width:${(pct * 100).toFixed(1)}%` : "" })]),
       ]);
     };
+    const guideUrl = new URL("../docs/BFSShotPlanner.md", import.meta.url).href;
     const header = h("div", { class: "hdr" }, [
       h("span", { class: "ttl" }, "🎬 Shot Planner"),
       busy.value ? h("span", { class: "pill warn" }, busy.value) : (an.value ? h("span", { class: "pill ok" }, `${active.value.length} shots · ${(N / fps).toFixed(1)}s`) : null),
       h("span", { class: "grow" }),
       plan.run === "queue" ? h("span", { class: "pill" }, "queue loop") : h("span", { class: "pill" }, "auto loop"),
+      h("button", { title: "Open the full guide (every setting explained, with examples)", onClick: () => window.open(guideUrl, "_blank") }, "📖 Guide"),
     ]);
 
     const source = h("div", { class: "card" }, [
@@ -750,10 +809,30 @@ function Panel(io) {
       ]),
       h("textarea", { style: "margin-top:6px;min-height:44px", placeholder: "Extra instruction for the VLM (optional), e.g. 'segment the woman, not the man'",
         value: VC.instruction || "", onChange: e => setVlmCfg("instruction", e.target.value) }),
+      h("h5", { style: "margin-top:10px" }, ["Describe references", h("span", { class: "hint", style: "text-transform:none;letter-spacing:0" },
+        "write {details} in any prompt: each shot gets the description of its own references")]),
+      h("div", { class: "row", style: "gap:8px" }, [
+        h("select", { value: VC.describe_preset, style: "width:auto", onChange: e => setVlmCfg("describe_preset", e.target.value) },
+          ["full body", "head / face", "face attributes", "outfit", "custom"].map(o => h("option", { value: o }, o))),
+        h("button", { class: "pri", disabled: !!busy.value || !refSets.value.length, onClick: describeRefs }, "📝 Describe refs"),
+        h("span", { class: "hint" }, `${refSets.value.length} reference set(s) · editable below`),
+      ]),
+      VC.describe_preset === "custom" ? h("textarea", { style: "margin-top:6px;min-height:52px", value: VC.describe_custom || "",
+        placeholder: "Your instruction for the VLM, e.g. 'Describe the character's costume and props piece by piece…'",
+        onChange: e => setVlmCfg("describe_custom", e.target.value) }) : null,
+      refSets.value.length ? h("div", { class: "dlist" }, refSets.value.map(x => h("div", { class: "drow" }, [
+        h("div", { class: "dthumbs" }, [x.a ? h("img", { src: viewUrl(x.a) }) : null, x.b ? h("img", { src: viewUrl(x.b) }) : null]),
+        h("div", { style: "flex:1" }, [
+          h("div", { class: "hint" }, x.where.length > 4 ? `${x.where.slice(0, 4).join(", ")} +${x.where.length - 4}` : x.where.join(", ")),
+          h("textarea", { style: "min-height:44px", value: plan.ref_details?.[x.key] || "",
+            placeholder: "no description yet: Describe refs, write your own, or leave it to the VLM at run time",
+            onChange: e => setDetail(x.key, e.target.value) }),
+        ]),
+      ]))) : null,
       h("div", { class: "row", style: "margin-top:6px" }, [
         h("button", { class: "pri", disabled: !!busy.value, onClick: analyseVLM }, "🤖 Analyse shots"),
         h("button", { disabled: !sugN, onClick: applyAllSug, title: "Mask text for shots without one, skip where the VLM says skip" }, "Apply suggestions → all"),
-        h("span", { class: "hint" }, "Analyse works once the workflow has run with the VLM connected."),
+        h("span", { class: "hint" }, "The VLM buttons work after the workflow has run once with the VLM connected (ComfyUI only hands models to nodes when they run)."),
       ]),
     ]) : null;
 
