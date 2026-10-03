@@ -380,6 +380,29 @@ class ConditioningWriterTest(unittest.TestCase):
         self.assertNotIn("split screen", out[3])
         self.assertEqual(out[2], "patched")
 
+    def test_setting_picture_is_the_last_reference_with_static(self):
+        seen = {}
+        orig = sys.modules["comfy_extras.nodes_minimax_h3"].MiniMaxH3ReferenceToVideo.execute
+
+        def capture(**kw):
+            seen.update(kw)
+            return orig(**kw)
+        sys.modules["comfy_extras.nodes_minimax_h3"].MiniMaxH3ReferenceToVideo.execute = staticmethod(capture)
+        shot = self._shot()
+        shot["frames"] = torch.full((22, 8, 8, 3), 0.5)
+        mask = torch.zeros(22, 8, 8)
+        mask[:, 2:4, 2:4] = 1
+        out = SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", "none", True, "none", "match", duet="canvas",
+                                                    task="character swap", setting_ref="on (generation size)",
+                                                    setting_mask=mask)
+        refs = list(seen["ref_images"].values())
+        self.assertEqual(len(refs), 2)
+        pic = refs[-1][0]
+        self.assertTrue(((pic[3, 3] == 0) | (pic[3, 3] == 1)).all())      # static inside the (grown) mask
+        self.assertTrue(torch.allclose(pic[7, 7], torch.tensor(0.5)))   # the place outside it
+        self.assertIn("<Picture 2> shows the setting", out[3])
+        self.assertEqual(SL.add_setting("a {setting} b", 3, True), "a <Picture 3> b")
+
     def test_task_needs_duet(self):
         with self.assertRaises(ValueError):
             self._run(task="style", instruction="anime")

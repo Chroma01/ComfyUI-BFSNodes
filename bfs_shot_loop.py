@@ -1597,6 +1597,7 @@ class BFSShotPlanner:
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
                 "prev_length": prev_len,
+                "source": {"path": path, "frames": [int(x) for x in src[idx]]},
             })
         if suggestions:
             _notify("bfs-shotloop-vlm", {"video": p["video"], "segs": suggestions})
@@ -1706,6 +1707,79 @@ class BFSShotRepack:
         return (out,)
 
 
+SETTING_MODES = ["off", "on (generation size)", "on (source size, slower)"]
+
+
+def tv_static(img: torch.Tensor, mask: torch.Tensor, grow: float = 0.03, seed: int = 0) -> torch.Tensor:
+    """[1,H,W,3] with the masked region (dilated by `grow` of the short side) covered in black-and-white TV static,
+    TSC's 'person noised out' setting picture: the place is seen in full detail, the person is not."""
+    H, W = img.shape[1:3]
+    m = torch.nn.functional.interpolate(mask.float().reshape(1, 1, *mask.shape[-2:]), size=(H, W), mode="nearest")[0, 0]
+    g = max(1, int(min(H, W) * grow))
+    m = torch.nn.functional.max_pool2d(m[None, None], 2 * g + 1, stride=1, padding=g)[0, 0] > 0.5
+    gen = torch.Generator().manual_seed(seed)
+    grain = 2
+    n = (torch.rand((H + grain - 1) // grain, (W + grain - 1) // grain, generator=gen) > 0.5).float()
+    n = n.repeat_interleave(grain, 0).repeat_interleave(grain, 1)[:H, :W]
+    out = img.clone()
+    out[0][m] = n[m][:, None].expand(-1, 3).to(out)
+    return out
+
+
+def setting_picture(shot: dict, mode: str, mask: torch.Tensor | None = None) -> torch.Tensor:
+    """The middle frame of the shot with the person covered in TV static. Mask: the given one, else the shot's SAM 3
+    crop mask, else SAM 3 'person' on that frame."""
+    src = shot.get("source") or {}
+    k = len(shot["frames"]) // 2
+    if mode == SETTING_MODES[2] and src.get("path"):
+        f = _read_frames(src["path"], np.array([src["frames"][min(k, len(src["frames"]) - 1)]]), None)[0]
+        img = torch.from_numpy(f.astype(np.float32) / 255.0)[None]
+        short = min(img.shape[1:3])
+        if short > 2048:   # what H3's 'max' reference size keeps anyway
+            s = 2048 / short
+            img = torch.nn.functional.interpolate(img.movedim(-1, 1), scale_factor=s, mode="bilinear",
+                                                  align_corners=False).movedim(1, -1)
+    else:
+        full = shot.get("full_frames")
+        img = (full if full is not None else shot["frames"])[k:k + 1]
+    if mask is not None:
+        m = mask[min(k, mask.shape[0] - 1)] if mask.ndim == 3 else mask
+    elif shot.get("crop") is not None:
+        cm = shot["crop"]["mask"]
+        m = cm[min(k, cm.shape[0] - 1)]
+    else:
+        spec = dict(DEFAULT_MASK, text="person", max_objects=8)
+        small = torch.nn.functional.interpolate(img.movedim(-1, 1), size=_fit_size(img.shape[1:3], 640),
+                                                mode="bilinear", align_corners=False).movedim(1, -1)
+        m = segment_frames(small, spec)[0]
+        _node_boundary()
+    return tv_static(img, m)
+
+
+def _fit_size(hw, side: int) -> tuple[int, int]:
+    s = side / max(hw)
+    return max(32, int(hw[0] * s) // 2 * 2), max(32, int(hw[1] * s) // 2 * 2)
+
+
+def setting_line(k: int, swap: bool) -> str:
+    who = "<Subject 1>" if swap else "the performer"
+    return (f"<Picture {k}> shows the setting, the same place as the kept footage in full detail; the noise patch in it "
+            f"is where {who} stands.")
+
+
+def add_setting(text: str, k: int, swap: bool) -> str:
+    """`{setting}` becomes <Picture k>; without it, a sentence goes at the end of subject_definitions."""
+    if "{setting}" in text:
+        return text.replace("{setting}", f"<Picture {k}>")
+    line = setting_line(k, swap)
+    if "subject_definitions:" in text:
+        a = text.index("subject_definitions:")
+        b = text.find("\n\n", a)
+        b = len(text) if b < 0 else b
+        return text[:b].rstrip() + " " + line + text[b:]
+    return (text.rstrip() + "\n\n" + line).strip()
+
+
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
@@ -1758,6 +1832,14 @@ class BFSShotH3Conditioning:
                     "the references)."}),
                 "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder) that writes the "
                                             "prompt when a task is chosen. Without it the task's template is used."}),
+                "setting_ref": (SETTING_MODES, {"default": "off", "tooltip":
+                    "TSC's trick: one more reference picture, the shot's middle frame with the person covered in TV "
+                    "static, so the model sees the place in full detail (the panel / guide is often small). It is "
+                    "the last <Picture n>; a sentence about it is added to subject_definitions (or write {setting} "
+                    "where you want its tag). Mask: setting_mask, else the shot's SAM 3 crop mask, else SAM 3 "
+                    "'person' on that frame. 'source size' uses the video's own resolution (up to 2048 short edge): "
+                    "sharper, slower."}),
+                "setting_mask": ("MASK", {"tooltip": "Optional mask of the person to cover in the setting picture."}),
             },
         }
 
@@ -1770,7 +1852,8 @@ class BFSShotH3Conditioning:
 
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
-                  panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None):
+                  panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
+                  setting_ref="off", setting_mask=None):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, layout_text, make_info
@@ -1802,6 +1885,24 @@ class BFSShotH3Conditioning:
                 _node_boundary()
             else:
                 text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
+        setting = setting_picture(shot, setting_ref, setting_mask) if setting_ref and setting_ref != "off" else None
+        if setting is not None:
+            if ref_image_size == "match":   # keep 'match' for the people, the setting keeps its own size
+                for k, r in list(refs.items()):
+                    sc = min(1.0, math.sqrt(shot["width"] * shot["height"] / (r.shape[1] * r.shape[2])))
+                    if sc < 1.0:
+                        refs[k] = torch.nn.functional.interpolate(
+                            r[:1].movedim(-1, 1), size=(max(16, int(r.shape[1] * sc)), max(16, int(r.shape[2] * sc))),
+                            mode="bilinear", align_corners=False).movedim(1, -1)
+                if setting_ref == SETTING_MODES[1]:
+                    sc = min(1.0, math.sqrt(shot["width"] * shot["height"] / (setting.shape[1] * setting.shape[2])))
+                    if sc < 1.0:
+                        setting = torch.nn.functional.interpolate(
+                            setting.movedim(-1, 1), size=(int(setting.shape[1] * sc), int(setting.shape[2] * sc)),
+                            mode="bilinear", align_corners=False).movedim(1, -1)
+                ref_image_size = "max"
+            refs[f"ref_image_{len(refs)}"] = setting
+            text = add_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
         if "{layout}" in text:
             fill = layout_text(make_info(shot["width"], shot["height"], panel_position, panel_size, 0), rope_mode) \
                 if on_canvas else ""
