@@ -218,7 +218,9 @@ class ComparisonTest(unittest.TestCase):
         video, _, _, comp = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True], label=["steps 20"])
         self.assertEqual(video.shape[0], 40)
         self.assertEqual(comp.shape[0], 40)
-        self.assertEqual(comp.shape[2], 48 * 2 + 32)
+        self.assertEqual(comp.shape[2] % 16, 0)
+        self.assertEqual(comp.shape[1] % 16, 0)
+        self.assertGreaterEqual(comp.shape[2], 48 * 2 + 32)
         self.assertGreater(comp.shape[1], 32)
         off = SL.BFSShotJoin().join(imgs, shots, [0])[3]
         self.assertEqual(off.shape[0], 1)

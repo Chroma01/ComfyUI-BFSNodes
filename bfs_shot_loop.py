@@ -1722,10 +1722,13 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "") -> torch
         pos += L
     if not frames:
         return video[:1]
+    # same height for every frame, and both sides on a multiple of 16: video encoders (x264 / yuv420p) need even sizes
     hmax = max(f.shape[0] for f in frames)
-    frames = [f if f.shape[0] == hmax else torch.cat([f, torch.full((hmax - f.shape[0], total_w, 3), 18 / 255)], 0)
-              for f in frames]
-    return torch.stack(frames[:n])
+    H16, W16 = -(-hmax // 16) * 16, -(-total_w // 16) * 16
+    out = torch.full((min(n, len(frames)), H16, W16, 3), 18 / 255)
+    for i, f in enumerate(frames[:n]):
+        out[i, :f.shape[0], :f.shape[1]] = f
+    return out
 
 
 NODE_CLASS_MAPPINGS = {

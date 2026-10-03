@@ -1,7 +1,7 @@
 [project]
 name = "bfsnodes"
 description = "Custom ComfyUI nodes for reference-guided video: BFS Sampler (guide-driven IC-LoRAs with auto crop, mask inpainting and temporal chunking), LTX Multiple Controls and Identity Transfer, LTXV Edit Anything, Head-Swap/Anime2Real conditioning, AMV Guide Builder, MiniMax-H3 downscaled latent guides with training-matched geometry, overlap/sidecar source-phase RoPE, single-frame/video targets and VAE loaders, LoRA Surgery (scale or drop a LoRA's layers live to find a defect, save the result), and Shot Planner / Shot Loop (split long videos into model-sized shots at camera cuts with PySceneDetect, YOLO person/face filters, face-tracked cast with a reference per person, a reference and prompt per shot, run any workflow per shot, join with the original timing and audio), and H3 Duet (pin a source clip or reference beside the video, training-free, cropped off before decoding)."
-version = "1.56.0"
+version = "1.56.1"
 license = {file = "LICENSE"}
 dependencies = [
     "torch",
