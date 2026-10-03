@@ -169,8 +169,68 @@ def generation_size(src_w: int, src_h: int, megapixels: float, multiple: int) ->
     return w, h
 
 
+def audio_info(path: str) -> dict:
+    """Whether the video has a usable audio track (PyAV, no ffmpeg binary needed)."""
+    try:
+        import av
+        with av.open(path) as c:
+            if not c.streams.audio:
+                return {"has_audio": False, "reason": "no audio track"}
+            st = c.streams.audio[0]
+            cc = st.codec_context
+            ch = getattr(cc, "channels", 0) or (len(cc.layout.channels) if getattr(cc, "layout", None) else 0)
+            return {"has_audio": True, "sample_rate": int(cc.sample_rate or 0), "channels": int(ch or 0),
+                    "codec": cc.name}
+    except Exception as exc:  # noqa: BLE001
+        return {"has_audio": False, "reason": f"audio unreadable ({type(exc).__name__})"}
+
+
+def silence(seconds: float, sample_rate: int = 44100, channels: int = 2) -> dict:
+    """A silent AUDIO of the given length: Create Video and friends always get a valid track."""
+    n = max(1, int(round(max(0.0, seconds) * sample_rate)))
+    return {"waveform": torch.zeros(1, channels, n), "sample_rate": sample_rate}
+
+
+def _usable(audio: dict | None) -> bool:
+    try:
+        return audio is not None and audio["waveform"].ndim == 3 and audio["waveform"].shape[-1] > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _read_audio_av(path: str, sample_rate: int) -> dict | None:
+    """PyAV fallback when the ffmpeg binary is missing."""
+    import av
+    with av.open(path) as c:
+        if not c.streams.audio:
+            return None
+        st = c.streams.audio[0]
+        layout = "stereo" if (getattr(st.codec_context, "channels", 2) or 2) >= 2 else "mono"
+        rs = av.AudioResampler(format="fltp", layout=layout, rate=sample_rate)
+        chunks = []
+        for fr in c.decode(st):
+            for r in rs.resample(fr):
+                chunks.append(r.to_ndarray())
+        for r in rs.resample(None):
+            chunks.append(r.to_ndarray())
+    if not chunks:
+        return None
+    a = np.concatenate(chunks, axis=1).astype(np.float32)
+    return {"waveform": torch.from_numpy(a)[None], "sample_rate": sample_rate}
+
+
 def _read_audio(path: str, sample_rate: int = 44100) -> dict | None:
-    """Decode the whole soundtrack as float32 [1, C, T] with ffmpeg; None when silent."""
+    """Decode the whole soundtrack as float32 [1, C, T] (ffmpeg, else PyAV); None when there is none."""
+    a = _read_audio_ffmpeg(path, sample_rate)
+    if not _usable(a):
+        try:
+            a = _read_audio_av(path, sample_rate)
+        except Exception:  # noqa: BLE001 - audio is optional
+            a = None
+    return a if _usable(a) else None
+
+
+def _read_audio_ffmpeg(path: str, sample_rate: int = 44100) -> dict | None:
     try:
         probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
                                 "stream=channels", "-of", "csv=p=0", path],
@@ -242,7 +302,7 @@ def analyze(path: str, fps: float, thumbs: int = 120, thumb_h: int = 72) -> dict
     for j, fr in enumerate(frames_for_thumbs):
         ok, buf = cv2.imencode(".jpg", cv2.cvtColor(fr, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 70])
         th.append({"f": int(j * k), "src": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()})
-    out = dict(info, fps=float(fps), n=n, thumbs=th, thumb_w=tw, thumb_h=thumb_h,
+    out = dict(info, fps=float(fps), n=n, thumbs=th, thumb_w=tw, thumb_h=thumb_h, audio=audio_info(path),
                raw=[round(float(x), 4) for x in raw], score=[round(float(x), 3) for x in score])
     _ANALYSIS_CACHE[key] = out
     return out
@@ -352,7 +412,7 @@ DEFAULT_PLAN = {
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
-    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {},
+    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto",
 }
 
 
@@ -1165,7 +1225,7 @@ class BFSShotPlanner:
             raise ValueError("BFS Shot Planner: no shot is left to run (all disabled or filtered out).")
         W, H = generation_size(a["width"], a["height"], float(p["megapixels"]), int(p["multiple"]))
         src = _timeline(a["n_src"], a["fps_src"], fps)
-        audio = _read_audio(path)
+        audio = _read_audio(path) if p.get("audio_mode", "auto") != "silent" else None
         g_ref = ref_image if ref_image is not None else _load_image(p.get("global_ref", ""))
         g_ref2 = ref_image_2 if ref_image_2 is not None else _load_image(p.get("global_ref2", ""))
         g_prompt = prompt if prompt is not None else p.get("global_prompt", "")
@@ -1259,7 +1319,8 @@ class BFSShotPlanner:
         if suggestions:
             _notify("bfs-shotloop-vlm", {"video": p["video"], "segs": suggestions})
         total = sum(s["end"] - s["start"] for s in segs)
-        full_audio = _slice_audio(audio, segs[0]["start"] / fps, total / fps) if audio else None
+        # no (usable) soundtrack: a silent track of the right length, so Create Video never gets None
+        full_audio = _slice_audio(audio, segs[0]["start"] / fps, total / fps) if audio else silence(total / fps)
         full_total = sum(s["end"] - s["start"] for s in all_segs)
         timeline = {"path": path, "fps": fps, "width": W, "height": H, "fill": p.get("skip_fill", "original"),
                     "audio": _slice_audio(audio, all_segs[0]["start"] / fps, full_total / fps) if audio else None,
@@ -1590,6 +1651,8 @@ class BFSShotJoin:
         video = torch.cat(out, 0)
         fps = float(shots[order[0]]["fps"])
         a = audio[0] if audio else None
+        if not _usable(a):   # no soundtrack: a silent one, so Create Video always gets valid audio
+            return (video, silence(video.shape[0] / fps), fps)
         if a is not None:
             n = int(round(video.shape[0] / fps * a["sample_rate"]))
             wf = a["waveform"][..., :n]
@@ -1642,6 +1705,8 @@ def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
                                      "cut_before": seg["cut_before"]}, L, orig))
     video = torch.cat(out, 0)
     a = (audio[0] if audio else None) or tl.get("audio")
+    if not _usable(a):
+        return (video, silence(video.shape[0] / fps), fps)
     if a is not None:
         sr = a["sample_rate"]; base = tl["segs"][0]["start"]
         if tl.get("fill", "original") == "drop":

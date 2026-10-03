@@ -15,7 +15,7 @@ const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "",
   megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
-  skip_fill: "original", mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
+  skip_fill: "original", audio_mode: "auto", mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
@@ -572,6 +572,15 @@ function Panel(io) {
       ]),
       an.value ? h("div", { class: "hint", style: "margin-top:4px" },
         `${an.value.width}×${an.value.height} · ${an.value.fps_src.toFixed(2)} fps · ${an.value.duration.toFixed(2)}s → timeline ${fps} fps, ${an.value.n} frames · generate at ${size.w}×${size.h}`) : null,
+      an.value ? (au => h("div", { class: "row", style: "margin-top:4px;gap:8px" }, [
+        au?.has_audio
+          ? h("span", { class: "pill ok", title: au.codec || "" }, `🔊 audio · ${au.sample_rate ? (au.sample_rate / 1000).toFixed(1) + " kHz" : "?"} · ${au.channels || "?"} ch`)
+          : h("span", { class: "pill warn", title: "The outputs carry a silent track of the right length, so Create Video works" }, `🔇 ${au?.reason || "no audio"} → silent track`),
+        h("select", { value: plan.audio_mode, style: "width:auto", disabled: !au?.has_audio,
+          title: "Audio of the planner's and the join's outputs",
+          onChange: e => { plan.audio_mode = e.target.value; save(); } },
+          [h("option", { value: "auto" }, "use the video's audio"), h("option", { value: "silent" }, "silent track")]),
+      ]))(an.value.audio) : null,
     ]);
 
     const settings = h("details", { class: "card", open: true }, [

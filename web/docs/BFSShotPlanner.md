@@ -62,6 +62,14 @@ camera cuts.
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
 107 frames for H3). *Max shots* and *Max total seconds* cap a long source.
 
+## Audio
+
+The source card shows whether the video has a usable audio track (rate, channels) or why not. *Use the
+video's audio* or *silent track*. Without a usable track (none, unreadable, or silent chosen) the planner's
+`audio`, BFS Shot Join's `audio` and the H3 Duet nodes return a **silent track of the right length** instead
+of nothing, so Create Video / Save Video always work. Audio is read with ffmpeg, or with PyAV when the ffmpeg
+binary is missing.
+
 ## Preview
 
 *Play shot* plays only the selected shot, from its first to its last frame, and stops (or loops with

@@ -299,6 +299,16 @@ class DuetPanelCropTest(unittest.TestCase):
         self.assertIs(SL.crop_panel(canvas, {"width": 64}), canvas)  # no panel
 
 
+class SilentAudioTest(unittest.TestCase):
+    def test_join_without_audio_returns_a_silent_track(self):
+        imgs = [torch.full((39, 8, 8, 3), 0.5)]
+        video, a, fps = SL.BFSShotJoin()._join_all(imgs, [_shot(0, 0, 24, gen=39)], [0])
+        self.assertEqual(tuple(a["waveform"].shape[:2]), (1, 2))
+        self.assertEqual(a["waveform"].shape[-1], 44100)        # 24 frames at 24 fps = 1 s
+        self.assertEqual(float(a["waveform"].abs().max()), 0.0)
+        self.assertFalse(SL._usable({"waveform": torch.zeros(1, 2, 0), "sample_rate": 44100}))
+
+
 class RepackTest(unittest.TestCase):
     def test_replaces_only_connected_pieces_and_fits_the_guide(self):
         shot = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3),

@@ -517,6 +517,8 @@ def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, 
     if audio_vae is not None:
         from comfy_extras.nodes_audio import vae_decode_audio
         audio = vae_decode_audio(audio_vae, {"samples": audio_lat})
+    if audio is None:   # no audio VAE: a silent track of the video's length, so Create Video gets valid audio
+        audio = {"waveform": torch.zeros(1, 2, max(1, int(round(images.shape[0] / 24.0 * 44100)))), "sample_rate": 44100}
     return images, audio, canvas, text, cropped, prompt
 
 
