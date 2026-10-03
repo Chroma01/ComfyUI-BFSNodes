@@ -979,7 +979,8 @@ def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict,
 # ---------------------------------------------------------------------------- VLM suggestions (optional)
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
-               "instruction": "", "describe_preset": "full body", "describe_custom": ""}
+               "instruction": "", "describe_preset": "full body", "describe_custom": "",
+               "write_prompt": False, "write_task": "character swap", "write_change": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
 
@@ -1162,6 +1163,169 @@ def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) ->
 def ref_set_key(ref: str, ref2: str) -> str:
     """Key of a reference set in plan['ref_details'] (edited descriptions)."""
     return f"{ref or ''}|{ref2 or ''}"
+
+
+# ---------------------------------------------------------------------------- prompt writer (VLM)
+
+WRITER_TASKS = ["character swap", "style", "setting", "appearance", "lighting / weather", "custom"]
+
+WRITER_INSTRUCTION = """You write the prompt for MiniMax H3, a video model, for a split-screen "duet": the KEPT FOOTAGE (the first {nf} images, one camera shot in time order) stays exactly as it is in one half of the frame, and the other half is generated moving in sync with it. {refs_txt}
+
+Task: {task}. {change}
+
+Rules (render-tested, follow them exactly):
+1. Never describe the kept footage's performer, face, hair, clothes, props or room, not even to contrast them: whatever you name gets drawn, whatever you leave out is copied from the kept footage.
+2. The kept footage has no tag: call it "the kept footage". Never write <Video 1>.
+3. In the shot paragraph, restate the new look with two or three concrete words from the reference pictures (hair, outfit, face){face_rule}.
+4. Describe what the camera records in the kept footage: distance, angle and movement, where the subject is, and what they do, one sentence per real action, in time order.
+5. Write only what is seen. No negations (no "not", "no", "never", "without"), no quality words ("realistic", "high quality", "cinematic").
+6. Keep the literal text {{layout}} exactly where it is in the template.
+
+Output exactly these six sections in this order, nothing before or after:
+
+subject_definitions:
+{subject_line}
+
+summary:
+[reference generation] The target video is a split screen: the kept footage beside <the generated half>, which moves in sync with it.
+
+retention_analysis:
+<one line per subject: "... fully_preserved - ... are retained.">
+The kept footage: fully_preserved - the panel is kept exactly.
+
+detailed_description:
+The target video is in <style and medium>. {{layout}}
+
+[Shot 1] <camera, framing, the subject restated, the actions>
+
+overall_soundscape:
+<the sounds of the scene>
+
+non_diegetic_music:
+None."""
+
+TASK_SUBJECT = {
+    "character swap": '"<Subject 1> is the person whose appearance comes from <Picture 1>[ and <Picture 2>]: <face, hair, skin, outfit piece by piece, from the pictures>."',
+    "style": '"The kept footage is the motion reference of the split screen." (and, when there are reference pictures, "<Picture 1> is the style reference.")',
+    "setting": '"<Subject 1> is the place: <the requested place with two or three concrete details>." (from <Picture 1> when given)',
+    "appearance": '"<Subject 1> is the performer of the kept footage, now <the requested look in concrete seen words>."',
+    "lighting / weather": '"The kept footage is the motion reference of the split screen."',
+    "custom": '"<Subject 1> is ..." for whatever the change brings in, from the pictures when given.',
+}
+
+TASK_HINTS = {
+    "character swap": "Replace the performer with the person from the reference pictures; the place stays the same room.",
+    "style": "Keep the same performance and camera, redrawn in the requested style.",
+    "setting": "Keep the same performer and performance, moved to the requested place.",
+    "appearance": "Keep the same performance, with the performer's look changed as requested.",
+    "lighting / weather": "Keep the same performance and place, under the requested light or weather.",
+    "custom": "Do what the change below asks, keeping the kept footage's performance and camera in sync.",
+}
+
+
+def _letterbox_batch(images: list, side: int = 448) -> torch.Tensor:
+    batch = []
+    for im in images:
+        x = im[:1, ..., :3].movedim(-1, 1).float()
+        s = side / max(x.shape[-2:])
+        nh, nw = max(2, int(x.shape[-2] * s)), max(2, int(x.shape[-1] * s))
+        x = torch.nn.functional.interpolate(x, size=(nh, nw), mode="bilinear", align_corners=False)
+        canvas = torch.full((1, 3, side, side), 0.5)
+        canvas[:, :, (side - nh) // 2:(side - nh) // 2 + nh, (side - nw) // 2:(side - nw) // 2 + nw] = x
+        batch.append(canvas)
+    return torch.cat(batch, 0).movedim(1, -1).clamp(0, 1)
+
+
+def _clean_written(text: str) -> str:
+    t = text.replace("```", "").strip()
+    i = t.find("subject_definitions:")
+    if i > 0:
+        t = t[i:]
+    t = t.replace("<Video 1>", "the kept footage")
+    if "{layout}" not in t and "detailed_description:" in t:
+        a = t.index("detailed_description:") + len("detailed_description:")
+        nl = t.find("\n[Shot", a)
+        cut = nl if nl > 0 else len(t)
+        t = t[:cut].rstrip() + " {layout}\n" + t[cut:]
+    return t
+
+
+def vlm_write_prompt(clip, path: str, analysis: dict, start: int, end: int, refs: list, task: str, change: str,
+                     max_tokens: int = 1024, frames: int = 4) -> str:
+    """A duet prompt for one shot, written by the VLM from frames of the shot and the reference pictures."""
+    src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
+    n = max(1, min(8, int(frames)))
+    picks = np.clip(np.linspace(start, end - 1, n).round().astype(int), 0, analysis["n"] - 1)
+    fr = [torch.from_numpy(f.astype(np.float32) / 255.0)[None] for f in _read_frames(path, src[picks], None)]
+    return write_duet_prompt(clip, fr, refs, task, change, max_tokens)
+
+
+def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, max_tokens: int = 1024,
+                      mode: str = "canvas") -> str:
+    """A duet prompt from frames of the kept footage ([1,H,W,3] each) and the reference pictures. The VLM only fills
+    a few fields (look, medium, camera and actions, sounds); the six REF2VA sections are assembled here, so a small
+    model cannot break the format."""
+    refs = [r for r in refs if r is not None]
+    fr = [f for f in frames if f is not None]
+    key = ("write2", tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change, id(clip),
+           int(max_tokens), mode)
+    if key in _DESCRIBE_CACHE:
+        return _DESCRIBE_CACHE[key]
+    _status("Writing the prompt with the VLM", force=True)
+    swap = task == "character swap" and bool(refs)
+    q = (f"The first {len(fr)} images are frames (in time order) of one camera shot. "
+         + (f"The last {len(refs)} image(s) show a reference person. " if refs else "")
+         + "Answer with one JSON object only, no code fence:\n{"
+         + ('"look": "the reference person only: apparent gender and age, face, hair colour, length and style, skin, and '
+            'the clothing piece by piece with colours, in one sentence of concrete seen words", ' if swap else "")
+         + '"medium": "what the shot is, e.g. handheld vertical smartphone footage under soft window light", '
+         + '"shot": "the camera distance, angle and movement, then what the person in the frames does, in time order, '
+           'one short sentence per real action; call them the person and never describe their face, hair or clothes", '
+         + '"sounds": "the sounds of the scene in a few words"}')
+    text = vlm_generate(clip, q, _letterbox_batch(fr + refs), max_tokens)
+    d = _parse_json(text)
+    look = str(d.get("look") or "").strip().rstrip(".")
+    medium = str(d.get("medium") or "real camera footage").strip().rstrip(".")
+    shot = str(d.get("shot") or "").strip()
+    sounds = str(d.get("sounds") or "the sounds of the kept footage").strip().rstrip(".")
+    for w in ("The person", "the person"):
+        shot = shot.replace(w, "<Subject 1>" if swap else w)
+    pics = " and ".join(f"<Picture {k + 1}>" for k in range(len(refs)))
+    chg = change.strip().rstrip(".")
+    split = mode != "shifted"
+    lead = ("a split screen: the kept footage beside " if split else "")
+    if swap:
+        defs = f"<Subject 1> is the person whose appearance comes from {pics}" + (f": {look}." if look else ".")
+        if chg:
+            defs += f" {chg}."
+        who = "<Subject 1>"
+        summary = (f"[reference generation] The target video is {lead}<Subject 1>, who " if split else
+                   "[reference generation] The target video shows <Subject 1>, who ") + "moves in sync with the kept footage, in the same place."
+        keep = f"<Subject 1> (appears in [Shot 1]): fully_preserved - the face, hair and clothing from {pics} are retained."
+        short = ", ".join(look.split(", ")[:3]) if look else ""
+        restate = f" <Subject 1>, the face from <Picture 1>{', ' + short if short else ''}, performs every movement in sync with the kept footage."
+        style = f"The target video is in a realistic style, as {medium}."
+    else:
+        what = {"style": f"redrawn as {chg or 'the requested style'}", "setting": f"moved to {chg or 'the requested place'}",
+                "appearance": f"with the performer now {chg or 'changed'}", "lighting / weather": f"under {chg or 'the new light'}",
+                }.get(task, chg or "changed as requested")
+        defs = (f"<Subject 1> is the place: {chg}." if task == "setting" and chg else
+                "The kept footage is the motion reference.") + (f" {pics} show the look to follow." if refs else "")
+        summary = (f"[reference generation] The target video is {lead}the same performance, {what}." if split else
+                   f"[reference generation] The target video shows the same performance as the kept footage, {what}.")
+        keep = f"The performance and camera: fully_preserved - every movement and expression in sync with the kept footage."
+        restate = f" The same performance, {what}, in sync with the kept footage."
+        style = (f"The target video is in {chg}." if task == "style" and chg else f"The target video is in a realistic style, as {medium}.")
+    out = "\n\n".join([
+        "subject_definitions:\n" + defs,
+        "summary:\n" + summary,
+        "retention_analysis:\n" + keep + "\nThe kept footage: fully_preserved - the panel is kept exactly.",
+        "detailed_description:\n" + style + " {layout}\n\n[Shot 1] " + (shot or "The same framing and camera as the kept footage.") + restate,
+        "overall_soundscape:\n" + (sounds[0].upper() + sounds[1:] if sounds else "The sounds of the kept footage") + ".",
+        "non_diegetic_music:\nNone.",
+    ])
+    _DESCRIBE_CACHE[key] = out
+    return out
 
 
 # ---------------------------------------------------------------------------- continuity between shots
@@ -1370,6 +1534,13 @@ class BFSShotPlanner:
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
         vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in todo} if use_vlm else {}
+        written = {}
+        if vlm is not None and vcfg.get("write_prompt"):   # the VLM writes the prompt of every shot without its own
+            for i in todo:
+                if not segs[i]["prompt"]:
+                    written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"],
+                                                  [ref_for(segs[i]["ref"], g_ref), ref_for(segs[i]["ref2"], g_ref2)],
+                                                  vcfg["write_task"], vcfg["write_change"], int(vcfg["max_tokens"]))
         shots = []
         for i, s in enumerate(segs):
             if i not in todo:
@@ -1415,7 +1586,7 @@ class BFSShotPlanner:
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames,
                 "ref": ref, "ref2": ref2,
-                "prompt": fill_details((s["prompt"] or g_prompt or "").replace(
+                "prompt": fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
                     s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
@@ -2153,6 +2324,31 @@ try:
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"texts": texts})
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/write")
+    async def _bfs_shot_write(request):
+        """The VLM writes one shot's duet prompt: body {plan, index} -> {prompt}."""
+        body = await request.json()
+        try:
+            clip = _VLM.get("clip")
+            if clip is None:
+                raise ValueError("The panel has no VLM yet. Connect the VLM to the planner's vlm input and run the "
+                                 "workflow once (Queue): ComfyUI only hands models to nodes when they run.")
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            path = _input_path(p["video"])
+            cfg = vlm_cfg(p.get("vlm_cfg"))
+
+            def work():
+                a = analyze(path, float(p["fps"]))
+                seg = resolve_plan(p, a, path)[int(body.get("index", 0))]
+                r1 = _load_image(seg["ref"] or p.get("global_ref", "")) if (seg["ref"] or p.get("global_ref")) else None
+                r2 = _load_image(seg["ref2"] or p.get("global_ref2", "")) if (seg["ref2"] or p.get("global_ref2")) else None
+                return vlm_write_prompt(clip, path, a, seg["start"], seg["end"], [r1, r2], cfg["write_task"],
+                                        cfg["write_change"], int(cfg["max_tokens"]))
+            text = await _off_loop(work)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response({"prompt": text})
 
     @PromptServer.instance.routes.post("/bfs/shotloop/cast")
     async def _bfs_shot_cast(request):

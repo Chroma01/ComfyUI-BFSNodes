@@ -2,7 +2,7 @@
 import { app } from "../../scripts/app.js";
 import { showGuide } from "./bfs_md_view.js";
 
-const NODES = ["BFSH3Duet", "BFSShotH3Duet", "BFSH3SidePanel"];
+const NODES = ["BFSH3Duet", "BFSShotH3Duet", "BFSH3SidePanel", "BFSH3DuetConditioning"];
 
 // ---- small SVG diagrams -------------------------------------------------------------------
 const C = { video: "#3b6fd8", panel: "#d88a2b", grey: "#7a7a7a", ink: "#e8e8ee", dim: "#9a9aa8", bg: "#1b1b21" };
