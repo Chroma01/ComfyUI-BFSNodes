@@ -19,7 +19,7 @@ every shot inside that range.
 | **BFS Shot Planner** | Pick a video, split it on a timeline, set a reference and prompt per shot. Outputs the shots as a ComfyUI **list**. |
 | **BFS Shot Unpack** | Opens one shot into plain values: guide frames, reference, second reference, prompt, length, first frame, audio, size, index. Use it with any model. |
 | **BFS Shot Repack** | Puts edited pieces back into a shot: Unpack's `shot` output goes to Repack's `shot`, the edited piece (e.g. the reference with its background removed) to its input. Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
-| **BFS Shot H3 Conditioning** | Ready-made MiniMax H3 conditioning for one shot, built with the native nodes (Reference to Video + Add Guide). |
+| **BFS Shot H3 Conditioning** | Ready-made MiniMax H3 conditioning for one shot, built with the native nodes (Reference to Video + Add Guide). Optional *duet*: the shot's clip pinned in a side panel (canvas or shifted RoPE; route the model through the node for the shift); the join cuts the panel off. |
 | **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. With *comparison* on it also returns a side-by-side video (original shot \| references \| result) with the shot's info and your *label* on top and its prompt below, ready for Create Video. |
 | **BFS Shot H3 Duet** | Renders one shot with H3: the shot's clip pinned beside the video (duet, no LoRA), the shot as an aligned guide (for body-swap LoRAs), or both. |
 

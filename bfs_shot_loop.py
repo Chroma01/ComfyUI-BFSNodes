@@ -836,6 +836,19 @@ def box_px(box: list[float], W: int, H: int, multiple: int = 2) -> tuple[int, in
     return x0, y0, min(W, x1), min(H, y1)
 
 
+def crop_panel(img: torch.Tensor, shot: dict) -> torch.Tensor:
+    """Cut a duet panel off a decoded canvas (the shot was conditioned with a duet panel)."""
+    info = shot.get("panel")
+    if not info or img.shape[1:3] == (shot.get("height"), shot.get("width")):
+        return img
+    h, w = info["h"] * 16, info["w"] * 16
+    y0 = info["strip_h"] * 16 if info["position"] == "top" else 0
+    x0 = info["strip_w"] * 16 if info["position"] == "left" else 0
+    if img.shape[1] < y0 + h or img.shape[2] < x0 + w:
+        return img
+    return img[:, y0:y0 + h, x0:x0 + w]
+
+
 def uncrop(result: torch.Tensor, shot: dict) -> torch.Tensor:
     """Paste a cropped shot's result back into its full frames (feathered by the mask or the box)."""
     c = shot["crop"]
@@ -1333,18 +1346,35 @@ class BFSShotH3Conditioning:
                 "audio_vae": ("VAE",),
                 "with_audio": ("BOOLEAN", {"default": False, "tooltip":
                     "Attach the shot's soundtrack to the guide / reference video (needs audio_vae)."}),
+                "duet": (["off", "canvas", "shifted RoPE"], {"default": "off", "tooltip":
+                    "Pin the shot's own clip in a side panel and generate in sync with it (training-free duet). "
+                    "canvas: panel and video share one wide grid. shifted RoPE: the video keeps its own RoPE "
+                    "positions and the panel sits past its edge (connect the model and use the model output). "
+                    "BFS Shot Join cuts the panel off by itself. In the prompt the panel has no tag: call it "
+                    "'the kept footage' by its side ('the LEFT half')."}),
+                "model": ("MODEL", {"tooltip": "Needed for 'shifted RoPE': route the model through this node."}),
+                "panel_position": (["left", "right", "top", "bottom"], {"default": "left"}),
+                "panel_size": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.5, "step": 0.01,
+                                         "tooltip": "Panel size against the video (1.0 = two equal halves)."}),
+                "panel_noise": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                          "tooltip": "0 pins the panel exactly; 0.05-0.2 loosens it for bigger changes."}),
+                "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0,
+                                       "tooltip": "shifted RoPE only: empty RoPE steps (2x2 patches) between video and panel. Keep it small "
+                                                  "against the video width (0-2 at low resolution): a gap close to the "
+                                                  "video's width makes the model draw its own split screen."}),
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT")
-    RETURN_NAMES = ("positive", "latent")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "MODEL")
+    RETURN_NAMES = ("positive", "latent", "model")
     FUNCTION = "condition"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Build MiniMax H3 conditioning for one shot with the native nodes: Reference to Video "
                    "(prompt, references, length) plus the shot as an aligned guide and/or reference video.")
 
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
-                  audio_vae=None, with_audio=False):
+                  audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
+                  panel_noise=0.0, rope_gap=0.0):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         refs = {}
         if shot["ref"] is not None:
@@ -1365,7 +1395,8 @@ class BFSShotH3Conditioning:
             if audio is not None:
                 kwargs["ref_video_audios"] = {"ref_video_audio_1": audio}
         positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
-        if aligned:
+        on_canvas = duet != "off"
+        if aligned and (not on_canvas or audio is not None):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  audio_vae=audio_vae if audio is not None else None,
                                                  image=shot["frames"], audio=audio).args[0]
@@ -1376,7 +1407,23 @@ class BFSShotH3Conditioning:
         if prev is not None and shot.get("chain") == "first frame":
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  image=prev).args[0]
-        return (positive, latent)
+        shot.pop("panel", None)
+        if on_canvas:
+            try:
+                from .bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
+            except ImportError:
+                from bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
+            # the guide goes straight onto the canvas (guides added above are moved onto it by the panel step)
+            guide = shot["frames"] if aligned and audio is None else None
+            positive, latent, info, _, _ = BFSH3SidePanel().apply(
+                positive, latent, vae, shot["frames"], panel_position, panel_size, "cover", 0, "all frames",
+                panel_noise, guide, 0)
+            shot["panel"] = info        # BFS Shot Join crops the decoded canvas back to the video
+            if duet == "shifted RoPE":
+                if model is None:
+                    raise ValueError("duet 'shifted RoPE' needs the model input (and its model output in the sampler)")
+                model = patch_model_rope(model, info, rope_gap)
+        return (positive, latent, model)
 
 
 class BFSShotJoin:
@@ -1415,6 +1462,7 @@ class BFSShotJoin:
         want = bool(comparison[0]) if comparison else False
         lab = (label[0] if label else "") or ""
         self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
+        images = [crop_panel(img, sh) for img, sh in zip(images, shots)]
         images = [uncrop(img, sh) if sh.get("crop") and sh.get("full_frames") is not None else img
                   for img, sh in zip(images, shots)]
         if shots and shots[0].get("queue"):

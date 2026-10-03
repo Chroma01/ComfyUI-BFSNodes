@@ -285,6 +285,18 @@ class MaskCropTest(unittest.TestCase):
         self.assertEqual(float(out[0, 1, 1, 0]), 0.0)
 
 
+class DuetPanelCropTest(unittest.TestCase):
+    def test_join_side_cuts_the_panel_off(self):
+        shot = {"width": 64, "height": 32, "panel": {"position": "left", "h": 2, "w": 4, "strip_h": 0, "strip_w": 4}}
+        canvas = torch.zeros(3, 32, 128, 3)
+        canvas[:, :, 64:] = 1.0
+        out = SL.crop_panel(canvas, shot)
+        self.assertEqual(tuple(out.shape), (3, 32, 64, 3))
+        self.assertEqual(float(out.min()), 1.0)
+        self.assertIs(SL.crop_panel(out, shot), out)            # already the video size
+        self.assertIs(SL.crop_panel(canvas, {"width": 64}), canvas)  # no panel
+
+
 class RepackTest(unittest.TestCase):
     def test_replaces_only_connected_pieces_and_fits_the_guide(self):
         shot = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3),

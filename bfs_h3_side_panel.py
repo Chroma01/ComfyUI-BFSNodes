@@ -589,7 +589,7 @@ if _io is not None:
                     _io.Combo.Input("rope_mode", options=ROPE_MODES, default="canvas", tooltip=
                         "canvas: panel and video share one wide grid (TSC). shifted (BFS): the video keeps the RoPE "
                         "positions of a render without the panel and the panel sits past its edge."),
-                    _io.Float.Input("rope_gap", default=0.0, min=0.0, max=256.0, step=1.0, tooltip="shifted only: empty RoPE steps (2x2 patches) between video and panel."),
+                    _io.Float.Input("rope_gap", default=0.0, min=0.0, max=256.0, step=1.0, tooltip="shifted only: empty RoPE steps (2x2 patches) between video and panel. Keep it small against the video width (0-2 at low resolution): a large gap makes the model draw its own split screen."),
                     _io.Combo.Input("ref_image_size", options=["match", "max"], default="match"),
                     _io.Int.Input("steps", default=20, min=1, max=200),
                     _io.Combo.Input("sampler_name", options=samplers, default="euler"),
