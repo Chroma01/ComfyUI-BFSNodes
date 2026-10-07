@@ -2050,6 +2050,15 @@ def add_setting(text: str, k: int, swap: bool) -> str:
 
 
 INPAINT_MODES = ["per shot (planner)", "off", "only the mask"]
+PERSON_GUIDES = ["off", "+ extra guide (person only)", "instead of the full guide (person only)"]
+
+
+def person_only(frames: torch.Tensor, mask: torch.Tensor, grey: float = 0.5) -> torch.Tensor:
+    """The shot's frames with everything outside the mask grey: what the person-only guide shows."""
+    m = torch.nn.functional.interpolate(mask[:, None].float(), size=frames.shape[1:3], mode="nearest")[:, 0]
+    idx = torch.clamp(torch.arange(frames.shape[0]), max=m.shape[0] - 1)
+    m = m[idx][..., None]
+    return frames[..., :3] * m + grey * (1 - m)
 
 
 def mask_report(m: torch.Tensor) -> str:
@@ -2200,6 +2209,12 @@ class BFSShotH3Conditioning:
                     "crop / uncrop at all). Needs a mask (text or points) on the shot. Crop + H3 generation mask: credit to Neko (Nekodificador) and AbleJones, "
                     "whose workflow and nodes this follows. On ComfyUI builds without native H3 generation masks, add "
                     "a per-row mask patch to the model (e.g. ComfyUI-MiniMaxH3-PerRowMasking)."}),
+                "person_guide": (PERSON_GUIDES, {"default": PERSON_GUIDES[0], "tooltip":
+                    "Experimental, shots with a mask: a guide latent that shows ONLY the masked person (the rest "
+                    "grey), so the model looks at their pose and outline on its own. '+ extra guide': added next to "
+                    "the normal aligned guide (the model sees both). 'instead of the full guide': replaces it (with "
+                    "a mask mode the background is kept anyway). The LoRAs were trained with one full guide, so test "
+                    "against off; it can also pull the old person's look."}),
             },
         }
 
@@ -2213,7 +2228,7 @@ class BFSShotH3Conditioning:
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
                   panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
-                  setting_ref="off", setting_mask=None, inpaint="off"):
+                  setting_ref="off", setting_mask=None, inpaint="off", person_guide="off"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, layout_text, make_info
@@ -2275,6 +2290,16 @@ class BFSShotH3Conditioning:
             if audio is not None:
                 kwargs["ref_video_audios"] = {"ref_video_audio_1": audio}
         positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
+        pg = person_guide if person_guide in PERSON_GUIDES[1:] and not on_canvas else None
+        if pg:
+            gtag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
+            pmask = generation_mask(shot, log=gtag)
+            guide_px = person_only(shot["frames"], pmask)
+            print(f"{gtag}: person-only guide ({pg}), {mask_report(pmask)}", flush=True)
+            positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
+                                                 image=guide_px).args[0]
+            if pg == PERSON_GUIDES[2]:
+                aligned = False                        # the person-only guide replaces the full one
         if aligned and (not on_canvas or audio is not None):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  audio_vae=audio_vae if audio is not None else None,

@@ -179,6 +179,11 @@ rows at *opacity* × the noise level, so they start from the original partly vis
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
 the motion either way. (Not applied with the duet panel.)
 
+**Person-only guide** (experimental, BFS Shot H3 Conditioning → `person_guide`): a guide latent that shows only the
+masked person, the rest grey, so the model looks at their pose and outline on its own. *+ extra guide* adds it next
+to the normal aligned guide (the model sees both); *instead of the full guide* replaces the full one. Compare with
+*off*: the LoRAs were trained with one full guide, and it can also pull the old person's look.
+
 ### Masks from a video (rotoscoping) instead of SAM 3
 
 A mask made elsewhere (After Effects Roto Brush, DaVinci Resolve Magic Mask, another ComfyUI workflow…) can replace

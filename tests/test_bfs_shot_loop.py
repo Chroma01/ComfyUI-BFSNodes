@@ -602,5 +602,16 @@ class FramePasteTest(unittest.TestCase):
         self.assertAlmostEqual(float(only_old[0, 30, 41, 0]), 0.2, places=4)
 
 
+class PersonGuideTest(unittest.TestCase):
+    def test_person_only_greys_everything_outside_the_mask(self):
+        fr = torch.full((4, 32, 32, 3), 0.9)
+        m = torch.zeros(4, 16, 16); m[:, 4:12, 4:12] = 1
+        g = SL.person_only(fr, m)
+        self.assertEqual(tuple(g.shape), (4, 32, 32, 3))
+        self.assertAlmostEqual(float(g[0, 16, 16, 0]), 0.9)      # the person
+        self.assertAlmostEqual(float(g[0, 2, 2, 0]), 0.5)        # grey elsewhere
+        self.assertEqual(SL.PERSON_GUIDES[0], "off")
+
+
 if __name__ == "__main__":
     unittest.main()
