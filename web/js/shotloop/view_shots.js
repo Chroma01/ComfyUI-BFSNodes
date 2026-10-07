@@ -1,7 +1,7 @@
 // 🎬 Shots tab: one card per shot, then the selected shot's editor (preview, reference & prompt, who is replaced,
 // continuity, copy to other shots).
 import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { hue, fmtT, segKey, hasMask, pill, hint, check, section } from "./common.js";
+import { hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section } from "./common.js";
 
 const bdg = (text, kind = "", title = "") => h("span", { class: ["bdg", kind], title }, text);
 
@@ -16,7 +16,8 @@ function shotCard(c, s, i) {
     h("div", { class: "row" }, [h("b", `#${i + 1}`), s.cut ? pill("cut") : null,
       why ? pill("skip", "warn", why) : pill("run", "ok"), s.force !== "auto" ? pill(s.force) : null]),
     h("div", { class: "badges" }, [
-      hasMask(s) ? bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) : null,
+      { video: bdg("🎞 mask video", "", s.mask.video), global: bdg("🎞 global mask", "", "the plan's mask video for the whole video"),
+        sam: bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) }[maskSource(s)] || null,
       s.crop || s.inpaint ? bdg({ mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)], "on", c.modeName(s)) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
       i > 0 && s.chain !== "off" ? bdg("⛓", "on", `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
@@ -134,9 +135,20 @@ function editor(c, cur) {
       h("button", { class: hasMask(cur) && !mp ? "pri" : "", disabled: !!busy.value || !hasMask(cur),
         title: (cur.mask.points || []).length ? "Segment this shot (the points win over the text)" : "Segment this shot with the text and show a few frames",
         onClick: () => c.previewMask(i) }, "👁 Preview"),
-      h("button", { class: "dng", disabled: !(hasMask(cur) || cur.crop), title: "Remove this shot's segmentation (points, text, crop) - for shots where it picked the wrong thing",
+      h("button", { class: "dng", disabled: !(cur.mask.text || (cur.mask.points || []).length || cur.mask.video || cur.crop || cur.inpaint), title: "Remove this shot's mask (points, text, mask video) and mode - for shots where it picked the wrong thing",
         onClick: () => c.clearMask(i) }, "✕ Clear"),
     ]),
+    h("div", { class: "row", style: "margin-top:6px;align-items:center" }, [
+      h("span", { class: "hint", style: "white-space:nowrap", title: "A black/white video (white = the subject), e.g. rotoscoped in another tool. It replaces SAM 3 for this shot and covers only this shot: its first frame is the shot's first frame." }, "🎞 mask video"),
+      h("select", { value: cur.mask.video || "", style: "flex:1;min-width:160px",
+        onChange: e => c.setMask(i, "video", e.target.value) },
+        [h("option", { value: "" }, cur.extMask ? "— none: the global mask video (People & masks) —" : "— none: SAM 3 (text / points) —"),
+         ...c.files.videos.map(v => h("option", { value: v }, v))]),
+      h("button", { title: "upload a mask video for this shot", onClick: () => c.pickFile("video/*", name => c.setMask(i, "video", name)) }, "⬆ Upload"),
+      cur.mask.video ? h("button", { title: "back to SAM 3 / the global mask", onClick: () => c.setMask(i, "video", "") }, "✕") : null,
+    ]),
+    maskSource(cur) === "video" ? hint("This shot uses its mask video: the text and points are ignored.", "display:block;margin-top:2px")
+      : maskSource(cur) === "global" ? hint("No mask of its own: this shot uses the global mask video (People & masks tab).", "display:block;margin-top:2px") : null,
     mp ? h("div", { class: "mstrip" }, [
       ...mp.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
       hint(mp.empty ? "nothing found: the shot runs without a mask" : `mask covers ${(mp.coverage * 100).toFixed(1)}%${cur.crop ? " · yellow = crop box" : ""}`),
@@ -147,7 +159,7 @@ function editor(c, cur) {
       ["crop", "✂ Crop", "A box around the mask is regenerated (more pixels for a small person); BFS Shot Join pastes it back."],
       ["cropmask", "✂🎭 Crop + mask", "Inside the crop, only the mask is regenerated: the most detail with the background kept."],
     ].map(([k, t, d]) => mode(c.modeOf(cur) === k, t, d, () => c.setMode(i, k)))),
-    (cur.crop || cur.inpaint) && !hasMask(cur) ? h("div", { class: "err" }, `${c.modeName(cur)} needs a mask on this shot: add a mask text or points.`) : null,
+    (cur.crop || cur.inpaint) && !hasMask(cur) ? h("div", { class: "err" }, `${c.modeName(cur)} needs a mask on this shot: a mask text, points or a mask video (or the planner's mask input).`) : null,
     cur.inpaint ? h("div", { class: "note", style: "margin-bottom:6px" }, [h("b", "Mask only / Crop + mask: "),
       "set BFS Shot H3 Conditioning → inpaint to ", h("b", "per shot (planner)"), " (the default). Raise Expand (People & masks tab) when the new person is bigger than the old one."]) : null,
     h("div", { class: "row", style: "margin-top:4px;align-items:center" }, [
@@ -188,6 +200,7 @@ function editor(c, cur) {
       check(copyOpts[f], v => { copyOpts[f] = v; }, label, {
         ref: "reference + ref 2", prompt: "this shot's prompt", mask_text: "the mask text (shots keep their own points)",
         points: "the points, on each shot's frame at the same relative position (a subject that stays in place)",
+        mask_video: "the shot's mask video (it covers only its own shot: usually you want a different one per shot)",
         crop: "the generation mode: Full frame / Mask only / Crop / Crop + mask (shots with a mask)", target: "the {target} description",
         chain: "continuity (not on the first shot)" }[f]))),
     h("div", { class: "row", style: "margin-top:6px" }, [

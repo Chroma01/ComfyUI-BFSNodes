@@ -171,6 +171,21 @@ result back, feathered by the mask (or the whole box). **BFS Shot Unpack** also 
 e.g. for an inpainting model. In **BFS Shot Join**'s comparison video, cropped shots show their mask (red) and crop
 box (yellow) over the original column (`comparison_mask`, on by default).
 
+### Masks from a video (rotoscoping) instead of SAM 3
+
+A mask made elsewhere (After Effects Roto Brush, DaVinci Resolve Magic Mask, another ComfyUI workflow…) can replace
+SAM 3. It is a black and white video, **white = the subject**, and it works with every mode (Mask only, Crop,
+Crop + mask), `{target}`, the setting picture and the comparison overlay. Three places, the most specific wins:
+
+| where | covers | wins over |
+|---|---|---|
+| shot editor → **🎞 mask video** | only that shot (its first frame = the shot's first frame) | everything |
+| the shot's own SAM 3 text / points | that shot | the two below |
+| the planner's optional **`mask`** input (MASK or IMAGE batch, e.g. Load Video + Convert Image to Mask) | the whole video, one mask per source frame | the panel's mask video |
+| People & masks → **🎞 Mask video (whole video)** | the whole video, matched by time | SAM 3 for shots without a mask |
+
+Any size and frame rate: it is matched to the shot by time and resized. The console says which mask each shot used.
+
 **Stitch finishing** (BFS Shot Join, cropped shots only; adapted from Neko (Nekodificador)'s *NKD Inpaint Stitch*, MIT, built on AbleJones's workflow and nodes):
 
 | Option | What it does |

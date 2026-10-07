@@ -101,7 +101,7 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first",
-                 crop: !!m.crop, inpaint: !!m.inpaint, mask: m.mask || {}, target: m.target || "" });
+                 crop: !!m.crop, inpaint: !!m.inpaint, mask: m.mask || {}, target: m.target || "", extMask: !!plan.mask_video });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -155,7 +155,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       const add = (lvl, text) => out.push({ lvl, shot: i, text });
       const p = promptOf(s);
       if (s.len > maxLen.value) add("warn", `longer than ${maxLen.value} frames: split it`);
-      if ((s.crop || s.inpaint) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text or points) on the shot`);
+      if ((s.crop || s.inpaint) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text, points or a mask video; or the planner's mask input)`);
       if (hasMask(s) && maskPrev.value[segKey(s)]?.empty) add("warn", "the mask preview found nothing");
       if (/\{target\}/.test(p) && !s.target) add("warn", "the prompt uses {target} but the shot has no target description");
       if (/\{details\}/.test(p) && !detailsOf(s) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its references have no description yet");
@@ -291,7 +291,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     save();
   };
   // copy the chosen settings of shot `from` to the other shots (all of them, or the ones after it)
-  const COPY_FIELDS = { ref: "references", prompt: "prompt", mask_text: "mask text", points: "mask points", crop: "mode",
+  const COPY_FIELDS = { ref: "references", prompt: "prompt", mask_text: "mask text", points: "mask points", mask_video: "mask video", crop: "mode",
                         target: "{target}", chain: "continuity" };
   const copyFrom = (from, fields = copyOpts, scope = copyOpts.scope) => {
     const src = segs.value[from]; if (!src) return 0;
@@ -301,12 +301,13 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (fields.ref) { m.ref = src.ref; m.ref2 = src.ref2; }
       if (fields.prompt) m.prompt = src.prompt;
       if (fields.mask_text) m.mask = { ...(m.mask || {}), text: src.mask.text || "" };
+      if (fields.mask_video) m.mask = { ...(m.mask || {}), video: src.mask.video || "" };
       if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; }
       if (fields.target) m.target = src.target;
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; }
     });
     if (fields.points && (src.mask.points || []).length) pointsTo(src.mask.points, src.mask.key ?? Math.floor(src.len / 2), undefined, from, scope);
-    if (fields.mask_text || fields.points) maskPrev.value = {};
+    if (fields.mask_text || fields.points || fields.mask_video) maskPrev.value = {};
     save();
     return to.length;
   };
@@ -358,6 +359,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const setCastOpt = (k, v) => { plan[k] = v; save(); if (k === "cast_split") autoSplit(true); };
   const setFilter = (k, v) => { plan.filters = { ...plan.filters, [k]: v }; save(); if (stats.value.length) analyzeContent(); };
   const setPlan = (k, v, after) => { plan[k] = v; save(); after && after(); };
+  const setGlobalMaskVideo = v => { plan.mask_video = v; save(); maskPrev.value = {}; };
   // XHR instead of fetch: big videos show how much has been sent
   const postWithProgress = (url, body, onPct) => new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
@@ -524,7 +526,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, savePoints, savePointsAll, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
-    applySug, applyAllSug, setCastOpt, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
+    applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
     frameAt, thumbFor, playShot, playAll, stop, seek, setRef, uploadRef,
   };
 

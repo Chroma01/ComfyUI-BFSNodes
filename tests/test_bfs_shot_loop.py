@@ -523,5 +523,58 @@ class InpaintInCropTest(unittest.TestCase):
         self.assertAlmostEqual(float(o[0, 2, 2, 0]), 0.5)                        # untouched outside
 
 
+class ExternalMaskTest(unittest.TestCase):
+    def _video(self, name, n=48, fps=24.0, w=64, h=36, box=(10, 5, 30, 25)):
+        import cv2
+        import numpy as np
+        path = str(Path(_TMP) / name)
+        vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        for i in range(n):
+            f = np.zeros((h, w, 3), np.uint8)
+            x0, y0, x1, y1 = box
+            f[y0:y1, x0 + i % 4:x1 + i % 4] = 255
+            vw.write(f)
+        vw.release()
+        return path
+
+    def setUp(self):
+        self.an = {"fps": 24.0, "n": 48, "n_src": 48, "fps_src": 24.0, "width": 64, "height": 36}
+
+    def test_precedence(self):
+        p = {"mask_video": "global.mp4"}
+        self.assertEqual(SL.plan_spec(p, {"video": "shot.mp4", "text": "man"})["ext"]["scope"], "shot")
+        self.assertNotIn("ext", SL.plan_spec(p, {"text": "man"}))                  # the shot's own SAM 3 text wins
+        self.assertEqual(SL.plan_spec(p, {})["ext"], {"file": "global.mp4", "scope": "video"})
+        SL._EXT_MASK["v.mp4"] = torch.ones(48, 36, 64)
+        try:
+            self.assertEqual(SL.plan_spec(p, {}, "v.mp4")["ext"], {"tensor": "v.mp4"})   # the node input beats the panel file
+        finally:
+            SL._EXT_MASK.pop("v.mp4")
+        self.assertFalse(SL.spec_has_mask(SL.plan_spec({}, {})))
+
+    def test_file_and_tensor_masks_replace_sam(self):
+        path = self._video("roto_whole.mp4")
+        self._video("roto_shot.mp4", n=12)
+        orig = SL.segment_frames
+        SL.segment_frames = lambda *a, **k: self.fail("SAM 3 must not run with an external mask")
+        try:
+            r = SL.shot_mask(path, self.an, 24, 12, SL.plan_spec({"mask_video": "roto_whole.mp4"}, {}))
+            self.assertEqual(r["masks"].shape[0], 12)
+            self.assertTrue(r["box"] is not None)
+            cov = float(r["masks"].float().mean())
+            self.assertTrue(0.1 < cov < 0.4, cov)
+            r2 = SL.shot_mask(path, self.an, 24, 12, SL.plan_spec({}, {"video": "roto_shot.mp4"}))
+            self.assertEqual(r2["masks"].shape[0], 12)
+            t = torch.zeros(48, 36, 64); t[:, 0:18, :] = 1                         # top half
+            SL._EXT_MASK[path] = t
+            r3 = SL.shot_mask(path, self.an, 0, 10, SL.plan_spec({}, {}, path))
+            m = r3["masks"].float()
+            self.assertGreater(float(m[:, :8].mean()), 0.9)
+            self.assertLess(float(m[:, -8:].mean()), 0.1)
+        finally:
+            SL.segment_frames = orig
+            SL._EXT_MASK.pop(path, None)
+
+
 if __name__ == "__main__":
     unittest.main()

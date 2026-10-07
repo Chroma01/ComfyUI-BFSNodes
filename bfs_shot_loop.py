@@ -814,6 +814,61 @@ def mask_spec(m: dict | None, cfg: dict | None = None) -> dict:
     return spec
 
 
+# external masks (e.g. rotoscoped in another tool) replace SAM 3. Most specific first: the shot's own mask video
+# (covers only that shot), the shot's own SAM 3 text / points, the planner's `mask` input (the whole video), the
+# panel's mask video (the whole video).
+_EXT_MASK: dict[str, torch.Tensor] = {}     # video path -> the planner's `mask` input from its last run
+
+
+def plan_spec(p: dict, m: dict | None, path: str = "") -> dict:
+    """mask_spec plus the external mask this shot uses, if any (spec['ext'])."""
+    spec = mask_spec(m, p.get("mask_cfg"))
+    if (m or {}).get("video"):
+        spec["ext"] = {"file": m["video"], "scope": "shot"}
+    elif (m or {}).get("points") or str((m or {}).get("text") or "").strip():
+        pass                                                    # the shot's own SAM 3 selection
+    elif path and path in _EXT_MASK:
+        spec["ext"] = {"tensor": path}
+    elif p.get("mask_video"):
+        spec["ext"] = {"file": p["mask_video"], "scope": "video"}
+    return spec
+
+
+def spec_has_mask(spec: dict) -> bool:
+    return bool(spec.get("ext") or spec.get("points") or str(spec.get("text") or "").strip())
+
+
+def ext_masks(ext: dict, analysis: dict, start: int, length: int, w: int, h: int) -> torch.Tensor:
+    """[length,h,w] uint8 from an external mask (white = the subject) for timeline frames start..start+length."""
+    idx = np.clip(np.arange(start, start + length), 0, analysis["n"] - 1)
+    if "tensor" in ext:
+        t = _EXT_MASK[ext["tensor"]].float()
+        if t.ndim == 4:                                    # an IMAGE batch (e.g. Load Video of a black/white video)
+            t = t[..., :3].mean(-1)
+        if t.ndim == 2:
+            t = t[None]
+        src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))[idx]
+        n = t.shape[0]                                     # one mask per source frame; otherwise spread over the video
+        ii = src if n == analysis["n_src"] else np.round(src * (n - 1) / max(1, analysis["n_src"] - 1))
+        m = t[torch.from_numpy(np.clip(ii, 0, n - 1).astype(np.int64))]
+        m = torch.nn.functional.interpolate(m[:, None], size=(h, w), mode="bilinear", align_corners=False)[:, 0]
+    else:
+        fpath = _input_path(ext["file"])
+        pr = _probe(fpath)
+        t = (idx - start) / float(analysis["fps"]) if ext.get("scope") == "shot" else idx / float(analysis["fps"])
+        mi = np.clip(np.round(t * pr["fps_src"]), 0, pr["n_src"] - 1).astype(np.int64)
+        fr = _read_frames(fpath, mi, (w, h), stage="Reading the mask video")
+        m = torch.from_numpy(np.stack(fr).astype(np.float32).mean(-1) / 255.0)
+    return (m > 0.5).to(torch.uint8)
+
+
+def _ext_name(ext: dict) -> str:
+    if "tensor" in ext:
+        t = _EXT_MASK.get(ext["tensor"])
+        return f"the planner's mask input ({tuple(t.shape) if t is not None else 'gone'})"
+    return f"mask video '{ext['file']}'" + (" (this shot)" if ext.get("scope") == "shot" else " (whole video)")
+
+
 def shape_mask(masks: torch.Tensor, spec: dict) -> torch.Tensor:
     """invert -> fill holes -> temporal expand -> blockify, on [N,H,W] 0/1 masks."""
     x = masks.float()
@@ -872,8 +927,17 @@ def segment_frames(imgs: torch.Tensor, spec: dict) -> torch.Tensor:
 
 
 def _mask_key(path: str, analysis: dict, start: int, length: int, spec: dict) -> tuple:
+    ext = spec.get("ext")
+    if ext and "tensor" in ext:
+        t = _EXT_MASK.get(ext["tensor"])
+        e = ("tensor", id(t), tuple(t.shape) if t is not None else None)
+    elif ext:
+        f = folder_paths.get_annotated_filepath(ext["file"])
+        e = ("file", ext["file"], ext.get("scope"), os.path.getmtime(f) if f and os.path.isfile(f) else 0)
+    else:
+        e = None
     return (path, os.path.getmtime(path), float(analysis["fps"]), int(start), int(length),
-            json.dumps({k: spec[k] for k in ("text", "points", "key", "threshold", "max_objects")}, sort_keys=True))
+            json.dumps({k: spec[k] for k in ("text", "points", "key", "threshold", "max_objects")}, sort_keys=True), e)
 
 
 def shot_mask(path: str, analysis: dict, start: int, length: int, spec: dict) -> dict:
@@ -885,6 +949,15 @@ def shot_mask(path: str, analysis: dict, start: int, length: int, spec: dict) ->
         sw, sh = analysis["width"], analysis["height"]
         s = 640 / max(sw, sh)
         w, h = max(32, int(sw * s) // 2 * 2), max(32, int(sh * s) // 2 * 2)
+        if spec.get("ext"):
+            t0 = time.time()
+            _MASK_CACHE[key] = {"masks": ext_masks(spec["ext"], analysis, start, length, w, h), "size": (w, h)}
+            print(f"[BFS Shot] {_ext_name(spec['ext'])} instead of SAM 3, timeline {start}-{start + length - 1}: "
+                  f"{mask_report(_MASK_CACHE[key]['masks'])} ({time.time() - t0:.1f}s)", flush=True)
+            out = dict(_MASK_CACHE[key])
+            out["masks"] = shape_mask(out["masks"], spec)
+            out["box"] = crop_box(out["masks"], float(spec["padding"]))
+            return out
         frames = _read_frames(path, src[idx], (w, h), stage="Reading the shot")
         imgs = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
         _status(f"Segmenting {len(frames)} frames with SAM 3", force=True)
@@ -1092,9 +1165,14 @@ def target_crop(path: str, analysis: dict, start: int, length: int, spec: dict, 
     src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
     key = max(0, min(length - 1, int(spec.get("key") or length // 2)))
     fr = _read_frames(path, src[np.clip(np.array([start + key]), 0, analysis["n"] - 1)], None)[0]
-    img = torch.from_numpy(fr.astype(np.float32) / 255.0)[None]
-    m = segment_frames(img, dict(spec, key=0))[0] > 0.5
-    _node_boundary()
+    if spec.get("ext"):
+        sm = shot_mask(path, analysis, start, length, spec)["masks"]
+        m = torch.nn.functional.interpolate(sm[min(key, sm.shape[0] - 1)][None, None].float(), size=fr.shape[:2],
+                                            mode="nearest")[0, 0] > 0.5
+    else:
+        img = torch.from_numpy(fr.astype(np.float32) / 255.0)[None]
+        m = segment_frames(img, dict(spec, key=0))[0] > 0.5
+        _node_boundary()
     if not bool(m.any()):
         return None
     ys, xs = np.where(m.numpy())
@@ -1575,6 +1653,10 @@ class BFSShotPlanner:
                 "prompt": ("STRING", {"forceInput": True,
                                       "tooltip": "Default prompt for shots without their own "
                                                  "(overrides the panel's global prompt)."}),
+                "mask": ("MASK,IMAGE", {"tooltip": "Optional mask of the WHOLE video (white = the subject), e.g. "
+                                    "rotoscoped in another tool and loaded with Load Video (+ Convert Image to Mask). "
+                                    "Replaces SAM 3 for every shot without its own mask video / text / points. One mask per source "
+                                    "frame; a different count is spread over the video."}),
                 "vlm": ("CLIP", {"tooltip": "Optional vision-language model (CLIPLoader with qwen3vl_4b / qwen3vl_8b). "
                                             "It looks at every shot and suggests what to segment, a description of the "
                                             "shot (fills {shot} in the prompt) and whether to run it. Settings in the "
@@ -1610,7 +1692,7 @@ class BFSShotPlanner:
             pass
         return plan
 
-    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None, vlm=None):
+    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None, vlm=None, mask=None):
         p = _load_plan(plan)
         if vlm is not None:
             _VLM["clip"] = vlm       # the panel's Analyse button uses it too
@@ -1620,6 +1702,10 @@ class BFSShotPlanner:
         path = _input_path(p["video"])
         fps = float(p["fps"])
         a = analyze(path, fps)
+        if mask is not None:
+            _EXT_MASK[path] = mask.detach().cpu()
+        else:
+            _EXT_MASK.pop(path, None)
         if p.get("cast") or p.get("cast_split"):
             analyze_cast(path, a)   # warms the cache so the plan uses the same people as the panel
         all_segs = apply_filters(p, a, path, resolve_plan(p, a, path))
@@ -1705,15 +1791,15 @@ class BFSShotPlanner:
             sug = vlm_out.get(i)
             if sug is not None:
                 suggestions.append(dict(sug, start=s["start"], end=s["end"]))
-                if vcfg["auto_segment"] and sug["segment"] and not (s["mask"].get("text") or s["mask"].get("points")):
+                if vcfg["auto_segment"] and sug["segment"] and not spec_has_mask(plan_spec(p, s["mask"], path)):
                     s["mask"] = dict(s["mask"], text=sug["segment"])
             crop, full_frames, mask_src = None, None, None
-            if not s.get("crop") and (s["mask"].get("text") or s["mask"].get("points")):
+            sspec = plan_spec(p, s.get("mask"), path)
+            if not s.get("crop") and spec_has_mask(sspec):
                 # mask without crop: segmented only if the conditioning asks for it (inpaint "only the mask")
-                mask_src = {"path": path, "analysis": a, "start": s["start"], "length": s["gen_len"],
-                            "spec": mask_spec(s.get("mask"), p.get("mask_cfg"))}
+                mask_src = {"path": path, "analysis": a, "start": s["start"], "length": s["gen_len"], "spec": sspec}
             if s.get("crop"):
-                spec = mask_spec(s.get("mask"), p.get("mask_cfg"))
+                spec = sspec
                 r = shot_mask(path, a, s["start"], s["gen_len"], spec)
                 if r["box"] is not None:
                     full_frames = ft
@@ -2701,7 +2787,7 @@ try:
             a = analyze(path, float(p["fps"]))
             segs = resolve_plan(p, a, path)
             seg = segs[int(body.get("index", 0))]
-            spec = mask_spec(body.get("mask") or seg.get("mask"), p.get("mask_cfg"))
+            spec = plan_spec(p, body.get("mask") or seg.get("mask"), path)
             import asyncio   # SAM 3 takes seconds: keep the server responsive
             _outside_prompt()
             out = await asyncio.get_running_loop().run_in_executor(
@@ -2746,9 +2832,10 @@ try:
             path = _input_path(p["video"])
             a = analyze(path, float(p["fps"]))
             seg = resolve_plan(p, a, path)[int(body.get("index", 0))]
-            spec = mask_spec(body.get("mask") or seg.get("mask"), p.get("mask_cfg"))
-            if not (spec.get("points") or str(spec.get("text") or "").strip()):
-                raise ValueError("Select the person first: 🎯 Points… (click on them) or type what to segment.")
+            spec = plan_spec(p, body.get("mask") or seg.get("mask"), path)
+            if not spec_has_mask(spec):
+                raise ValueError("Select the person first: 🎯 Points… (click on them), type what to segment, or give the "
+                                 "shot a mask video.")
             clip = _VLM.get("clip")
 
             def work():
