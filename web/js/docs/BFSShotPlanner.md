@@ -251,7 +251,10 @@ Open a shot and click **🎯 Points…**. The modal shows one frame of the shot;
   description then misses the clothes.
 - **Right-click** (or shift+click) puts an *exclude* point, e.g. on a second person standing close.
 - **👁 Segment** shows what SAM 3 picked (red). Add or remove points until only that person is red.
-- Instead of points you can type what to segment (`woman in pink`, `man with glasses`). Points win when both are set.
+- Instead of points you can just type what to segment (`woman in pink`, `man with glasses`, `dog`): no clicking is
+  needed, SAM 3 finds and tracks it through the shot. Points are for when the text is ambiguous (two similar people).
+  Points win when both are set. **Mask text → all** copies the text to every shot; **Crop → all** sets *✂ Crop to
+  mask* on every shot that has a mask.
 
 Then save:
 
