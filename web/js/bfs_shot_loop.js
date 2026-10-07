@@ -546,7 +546,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     ])));
     const views = { video: videoTab, shots: shotsTab, people: peopleTab, prompts: promptsTab, run: runTab };
     const cur = an.value || tab.value === "video" ? tab.value : "video";
-    return h("div", { class: "bsl", ref: rootEl, tabindex: 0, onKeydown: onKey }, [
+    return h("div", { class: "bsl root", ref: rootEl, tabindex: 0, onKeydown: onKey }, [
       header, tabs,
       busy.value ? busyBar(c, busy.value) : null,
       error.value ? h("div", { class: "err" }, [h("span", { class: "grow" }, error.value), h("button", { class: "ghost", onClick: () => { error.value = ""; } }, "✕")]) : null,
@@ -563,9 +563,14 @@ app.registerExtension({
     if (node.comfyClass !== "BFSShotPlanner") return;
     styles();
     const planWidget = node.widgets?.find(w => w.name === "plan");
-    if (planWidget) { planWidget.type = "hidden"; planWidget.computeSize = () => [0, -4]; }
+    if (planWidget) {   // the JSON plan stays a widget (saved with the workflow) but is never shown, in both node renderers
+      planWidget.type = "hidden"; planWidget.hidden = true; planWidget.computeSize = () => [0, -4];
+      planWidget.options = { ...(planWidget.options || {}), hidden: true };
+    }
     const host = document.createElement("div");
-    host.style.cssText = "width:100%;height:100%;min-height:520px";
+    // the panel is absolutely positioned inside the host and scrolls by itself, so switching tabs never resizes the
+    // node (Vue nodes mode sizes widgets by their content); min-width keeps it from collapsing to its content width
+    host.style.cssText = "position:relative;width:100%;height:100%;min-width:600px;min-height:600px";
     node.addDOMWidget("bfs_shot_planner", "div", host, { serialize: false, hideOnZoom: false });
     const handle = {};
     createApp({

@@ -4,6 +4,7 @@ const CSS = `
   --acc:#5b8cff;--acc2:#3a63e0;--ok:#7fe0a8;--warn:#ffc46b;--bad:#ff8f8f;
   font:12px/1.45 var(--font-family,system-ui,sans-serif);color:var(--txt);background:var(--bg);border-radius:10px;
   height:100%;overflow:auto;box-sizing:border-box;padding:10px;position:relative}
+.bsl.root{position:absolute;inset:0;height:auto}
 .bsl:focus{outline:none}
 .bsl *{box-sizing:border-box}
 .bsl .qm{color:#7d8bb0;cursor:help}
