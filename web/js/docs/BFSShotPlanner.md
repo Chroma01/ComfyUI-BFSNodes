@@ -143,7 +143,7 @@ Unpack** also outputs the shot's mask (`mask`), e.g. for an inpainting model. In
 video, cropped shots show their mask (red) and crop box (yellow) over the original column (`comparison_mask`, on by
 default), so you can check what was selected next to the result.
 
-**Stitch finishing** (BFS Shot Join, cropped shots only; adapted from Nekodificador's *NKD Inpaint Stitch*, MIT):
+**Stitch finishing** (BFS Shot Join, cropped shots only; adapted from Neko (Nekodificador)'s *NKD Inpaint Stitch*, MIT, built on AbleJones's workflow and nodes):
 
 | Option | What it does |
 |---|---|
@@ -155,7 +155,12 @@ default), so you can check what was selected next to the result.
 **Mask, crop or both.** A generation mask alone (MiniMax H3 per-row noise mask) keeps the background exact but
 generates the person at the frame's own size, so a small person gets few pixels. A crop alone gives the person much
 more resolution, but the whole box is regenerated and has to be pasted back (that is what the finishing above is for).
-Both together is best: crop around the person and regenerate only the masked part inside the crop.
+Both together is best: crop around the person and regenerate only the masked part inside the crop. — set **inpaint → only
+the mask (crop)** on BFS Shot H3 Conditioning. The latent starts from the cropped shot and the shot's SAM 3 mask
+(grown by one latent cell) becomes the H3 generation mask, so the rest of the crop stays identical and the paste
+has no seam. Works with the duet panel too. Credit to **Neko (Nekodificador)** and **AbleJones**, whose workflow
+and nodes this follows. ComfyUI builds without native H3 generation masks need a per-row mask patch on the model
+(e.g. ComfyUI-MiniMaxH3-PerRowMasking).
 
 The **Mask & crop** card holds the global settings, with defaults that work as they are: fill holes on,
 temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off

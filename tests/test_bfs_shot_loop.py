@@ -450,5 +450,41 @@ class StitchFinishTest(unittest.TestCase):
         self.assertTrue(torch.equal(SL._alpha_hardness(a, 0.0), a))
 
 
+class InpaintInCropTest(unittest.TestCase):
+    def test_latent_starts_from_the_shot_and_only_the_mask_is_generated(self):
+        sys.path.insert(0, str(ROOT))
+        nested = sys.modules.get("comfy.nested_tensor")
+        if nested is None:
+            class _N:
+                is_nested = True
+
+                def __init__(self, t):
+                    self.tensors = list(t)
+            comfy = sys.modules.setdefault("comfy", types.ModuleType("comfy"))
+            nested = types.ModuleType("comfy.nested_tensor"); nested.NestedTensor = _N
+            comfy.nested_tensor = nested
+            sys.modules["comfy.nested_tensor"] = nested
+            sys.modules.setdefault("comfy.utils", types.ModuleType("comfy.utils"))
+
+        class VAE:
+            def encode(self, px):
+                t = ((px.shape[0] - 5) // 17) * 5 + 2
+                x = px.mean(-1)[None, None]
+                return torch.nn.functional.interpolate(x, size=(t, px.shape[1] // 16, px.shape[2] // 16)).repeat(1, 24, 1, 1, 1)
+
+        lat = {"samples": nested.NestedTensor((torch.zeros(1, 24, 7, 8, 8), torch.zeros(1, 32, 2, 37)))}
+        frames = torch.full((22, 128, 128, 3), 0.4)
+        mask = torch.zeros(22, 128, 128); mask[:, 48:80, 48:80] = 1
+        pos, out = SL.inpaint_latent(lat, [], VAE(), frames, mask)
+        video = out["samples"].tensors[0]
+        self.assertAlmostEqual(float(video.mean()), 0.4, places=4)        # starts from the shot's own frames
+        vm, am = out["noise_mask"].tensors
+        self.assertEqual(tuple(vm.shape), (1, 1, 7, 8, 8))
+        self.assertEqual(float(vm[0, 0, 3, 4, 4]), 1.0)                   # the person: generated
+        self.assertEqual(float(vm[0, 0, 3, 0, 0]), 0.0)                   # the rest of the crop: kept
+        self.assertEqual(float(vm[0, 0, 3, 2, 4]), 1.0)                   # grown by one latent cell
+        self.assertTrue(bool((am == 1).all()))                            # audio fully generated
+
+
 if __name__ == "__main__":
     unittest.main()

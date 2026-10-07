@@ -932,7 +932,8 @@ def crop_panel(img: torch.Tensor, shot: dict) -> torch.Tensor:
 
 
 # --- stitch finishing: edge hardness, Reinhard colour match (LAB) and Poisson seamless clone. The three operations are
-# adapted from Nekodificador's ComfyUI-NKD-Basic-Tools (NKD Inpaint Stitch, MIT licence). Differences: the colour
+# adapted from Neko (Nekodificador)'s ComfyUI-NKD-Basic-Tools (NKD Inpaint Stitch, MIT licence), built on AbleJones's
+# workflow and nodes. Differences: the colour
 # statistics are taken over the whole shot (no flicker), and by default from a ring AROUND the subject, so a swap's new
 # person keeps its own colours while the model's light / colour drift is corrected.
 
@@ -1907,6 +1908,31 @@ def add_setting(text: str, k: int, swap: bool) -> str:
     return (text.rstrip() + "\n\n" + line).strip()
 
 
+def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torch.Tensor):
+    """H3 AV latent whose video starts from `frames` (VAE-encoded) and whose generation mask is `mask` (1 = regenerate)
+    on H3's latent grid (grown by one cell); the audio stays fully generated. Per-row mixed-timestep masking for H3:
+    credit to Neko (Nekodificador) and AbleJones, whose workflow and nodes this follows."""
+    import comfy.nested_tensor
+    try:
+        from .bfs_h3_side_panel import _encode, latent_mask
+    except ImportError:
+        from bfs_h3_side_panel import _encode, latent_mask
+    samples = latent["samples"]
+    video, audio = samples.tensors[0], samples.tensors[1]
+    T, h, w = video.shape[2], video.shape[3], video.shape[4]
+    if frames.shape[1] != h * 16 or frames.shape[2] != w * 16:
+        frames = torch.nn.functional.interpolate(frames[..., :3].movedim(-1, 1).float(), size=(h * 16, w * 16),
+                                                 mode="bilinear", align_corners=False).movedim(1, -1)
+    enc = _encode(vae, frames[..., :3]).to(video)
+    if enc.shape[2] != T:
+        raise ValueError(f"inpaint: the shot encodes to {enc.shape[2]} latent frames, the video has {T}")
+    vmask = latent_mask(mask, T, h, w, grow=1).to(video.device)
+    out = dict(latent)
+    out["samples"] = comfy.nested_tensor.NestedTensor((enc, audio))
+    out["noise_mask"] = comfy.nested_tensor.NestedTensor((vmask, torch.ones_like(audio)))
+    return positive, out
+
+
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
@@ -1967,6 +1993,13 @@ class BFSShotH3Conditioning:
                     "'person' on that frame. 'source size' uses the video's own resolution (up to 2048 short edge): "
                     "sharper, slower."}),
                 "setting_mask": ("MASK", {"tooltip": "Optional mask of the person to cover in the setting picture."}),
+                "inpaint": (["off", "only the mask (crop)"], {"default": "off", "tooltip":
+                    "Cropped shots: regenerate ONLY the person inside the crop. The latent starts from the shot's own "
+                    "frames and the shot's SAM 3 mask (grown by one latent cell) becomes H3's generation mask, so the "
+                    "rest of the crop stays exactly as it was and BFS Shot Join pastes it back with no seam. Needs "
+                    "'Crop to mask' on the shot. Crop + H3 generation mask: credit to Neko (Nekodificador) and AbleJones, "
+                    "whose workflow and nodes this follows. On ComfyUI builds without native H3 generation masks, add "
+                    "a per-row mask patch to the model (e.g. ComfyUI-MiniMaxH3-PerRowMasking)."}),
             },
         }
 
@@ -1980,7 +2013,7 @@ class BFSShotH3Conditioning:
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
                   panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
-                  setting_ref="off", setting_mask=None):
+                  setting_ref="off", setting_mask=None, inpaint="off"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, layout_text, make_info
@@ -2054,6 +2087,15 @@ class BFSShotH3Conditioning:
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  image=prev).args[0]
         shot.pop("panel", None)
+        keep_mask = keep_video = None
+        if inpaint and inpaint != "off":
+            crop = shot.get("crop") or {}
+            keep_mask = crop.get("crop_mask")
+            if keep_mask is None:
+                raise ValueError("inpaint 'only the mask (crop)' needs 'Crop to mask' on the shot (with a SAM 3 mask)")
+            keep_video = shot["frames"]
+        if keep_mask is not None and not on_canvas:
+            positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask)
         if on_canvas:
             try:
                 from .bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
@@ -2063,7 +2105,7 @@ class BFSShotH3Conditioning:
             guide = shot["frames"] if aligned and audio is None else None
             positive, latent, info, _, _ = BFSH3SidePanel().apply(
                 positive, latent, vae, shot["frames"], panel_position, panel_size, "contain", 0, "all frames",
-                panel_noise, guide, 0)
+                panel_noise, guide, 0, keep_video=keep_video, keep_mask=keep_mask)
             shot["panel"] = info        # BFS Shot Join crops the decoded canvas back to the video
             if duet == "shifted RoPE":
                 if model is None:
