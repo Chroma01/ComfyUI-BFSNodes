@@ -139,7 +139,9 @@ positive / negative points on any frame of the shot, then **👁 Preview mask** 
 Tick **✂ Crop to mask** and the shot is cropped to one box around the mask (the union over all its frames, so
 the crop does not shake), at the source resolution, and sent to the model at the generation size; **BFS Shot
 Join** pastes the result back into the full frame, feathered by the mask (or the whole box). **BFS Shot
-Unpack** also outputs the shot's mask (`mask`), e.g. for an inpainting model.
+Unpack** also outputs the shot's mask (`mask`), e.g. for an inpainting model. In **BFS Shot Join**'s comparison
+video, cropped shots show their mask (red) and crop box (yellow) over the original column (`comparison_mask`, on by
+default), so you can check what was selected next to the result.
 
 The **Mask & crop** card holds the global settings, with defaults that work as they are: fill holes on,
 temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off

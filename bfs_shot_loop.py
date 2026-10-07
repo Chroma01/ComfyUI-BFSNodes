@@ -2006,7 +2006,10 @@ class BFSShotJoin:
                              "comparison's top bar, e.g. the model, LoRA, steps and seed."}),
                          "comparison_height": ("INT", {"default": 360, "min": 0, "max": 4096, "step": 16, "tooltip":
                              "Height of each column in the comparison (0 = full size). Smaller is much lighter "
-                             "for long videos."})},
+                             "for long videos."}),
+                         "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
+                             "'Crop to mask' show their SAM 3 mask (red) and crop box (yellow) over the original "
+                             "column, to check what was selected."})},
         }
 
     INPUT_IS_LIST = True
@@ -2017,8 +2020,9 @@ class BFSShotJoin:
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
-             comparison_height=None):
+             comparison_height=None, comparison_mask=None):
         tl = timeline[0] if timeline else None
+        self._comp_mask = bool(comparison_mask[0]) if comparison_mask else True
         want = bool(comparison[0]) if comparison else False
         self._comp_h = int(comparison_height[0]) if comparison_height else 360
         self._want = want
@@ -2034,7 +2038,7 @@ class BFSShotJoin:
         if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
             return out + (out[0],)
         video = out[0]
-        comp = comparison_video(video, self._parts, lab, self._comp_h) if want else video[:1]
+        comp = comparison_video(video, self._parts, lab, self._comp_h, self._comp_mask) if want else video[:1]
         return tuple(out) + (comp,)
 
     def _join_queue(self, images, shots, crossfade, audio, tl=None):
@@ -2258,9 +2262,31 @@ def _scale_batch(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
     return y.movedim(1, -1).clamp(0, 1)
 
 
-def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: int = 480) -> torch.Tensor:
+def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
+    """The shot's SAM 3 mask in red (45 %) and its crop box in yellow over the original column [L,H,W,3]."""
+    H, W = o.shape[1:3]
+    m = crop.get("mask")
+    if m is not None and m.numel():
+        idx = torch.clamp(torch.arange(L), max=m.shape[0] - 1)
+        mm = torch.nn.functional.interpolate(m[idx].float()[:, None], size=(H, W), mode="nearest")[:, 0] > 0.5
+        red = torch.tensor([1.0, 0.16, 0.24])
+        o = torch.where(mm[..., None], o * 0.55 + red * 0.45, o)
+    box = crop.get("box")
+    if box:
+        x0, y0, x1, y1 = [int(round(v)) for v in (box[0] * W, box[1] * H, box[2] * W, box[3] * H)]
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W - 1, x1), min(H - 1, y1)
+        yel, t = torch.tensor([1.0, 0.82, 0.35]), max(1, H // 180)
+        o = o.clone()
+        o[:, y0:y0 + t, x0:x1] = yel; o[:, max(0, y1 - t):y1, x0:x1] = yel
+        o[:, y0:y1, x0:x0 + t] = yel; o[:, y0:y1, max(0, x1 - t):x1] = yel
+    return o
+
+
+def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: int = 480,
+                     show_mask: bool = True) -> torch.Tensor:
     """original | references | result for every output frame, with shot info on top and the prompt below.
-    Built at `height` px per column (0 = full size) so long videos stay light."""
+    Built at `height` px per column (0 = full size) so long videos stay light. With show_mask, cropped shots show
+    their mask (red) and crop box (yellow) over the original column."""
     vH, vW = video.shape[1:3]
     s = min(1.0, height / vH) if height and height > 0 else 1.0
     H, W = max(16, int(vH * s) // 2 * 2), max(16, int(vW * s) // 2 * 2)
@@ -2299,6 +2325,8 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
             idx = torch.clamp(torch.arange(L), max=orig.shape[0] - 1)
             o = orig[idx]
             o = _scale_batch(o.float() / 255.0 if o.dtype == torch.uint8 else o, H, W)
+            if show_mask and shot.get("crop"):
+                o = _mask_overlay(o, shot["crop"], L)
         else:
             o = torch.full((L, H, W, 3), 0.1)
         body = torch.cat([o, col[None].expand(L, -1, -1, -1), res], 2)

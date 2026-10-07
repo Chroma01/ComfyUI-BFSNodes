@@ -416,5 +416,15 @@ class TargetTest(unittest.TestCase):
         self.assertEqual(SL.fill_target("no placeholder", "x"), "no placeholder")
 
 
+class MaskOverlayTest(unittest.TestCase):
+    def test_overlay_marks_mask_and_box(self):
+        o = torch.zeros(3, 32, 32, 3)
+        m = torch.zeros(3, 32, 32); m[:, 8:16, 8:16] = 1
+        out = SL._mask_overlay(o, {"mask": m, "box": [0.1, 0.1, 0.9, 0.9]}, 3)
+        self.assertGreater(float(out[0, 12, 12, 0]), 0.3)          # red inside the mask
+        self.assertEqual(float(out[0, 20, 20].sum()), 0.0)          # untouched outside mask and box
+        self.assertGreater(float(out[0, 3, 16, 1]), 0.5)            # yellow box edge
+
+
 if __name__ == "__main__":
     unittest.main()
