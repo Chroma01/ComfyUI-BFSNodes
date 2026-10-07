@@ -101,7 +101,7 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first",
-                 crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "", extMask: !!plan.mask_video });
+                 crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "", extMask: !!plan.mask_video });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -202,7 +202,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         plan.bounds = j.segs.slice(1).map(s => s.start);
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
           chain: keep[i]?.chain || "off", chain_frame: keep[i]?.chain_frame || "first",
-          crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "" }));
+          crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "" }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -305,7 +305,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (fields.prompt) m.prompt = src.prompt;
       if (fields.mask_text) m.mask = { ...(m.mask || {}), text: src.mask.text || "" };
       if (fields.mask_video) m.mask = { ...(m.mask || {}), video: src.mask.video || "" };
-      if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; m.paste = src.paste; m.strength = src.strength; }
+      if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; m.paste = src.paste; m.paste_text = src.pasteText; m.strength = src.strength; }
       if (fields.target) m.target = src.target;
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; }
     });

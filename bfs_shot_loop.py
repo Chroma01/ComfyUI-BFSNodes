@@ -461,6 +461,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["crop"] = bool(m.get("crop"))
         s["inpaint"] = bool(m.get("inpaint"))
         s["paste"] = bool(m.get("paste")) and not s["crop"] and not s["inpaint"]
+        s["paste_text"] = str(m.get("paste_text") or "")
         s["strength"] = min(1.0, max(0.05, float(m.get("strength") or 1.0)))
         s["mask"] = m.get("mask") or {}
         s["target"] = m.get("target") or ""
@@ -1095,8 +1096,9 @@ MATCH_REGIONS = ["around the subject (swap)", "inside the subject (same content)
 
 def paste_back(result: torch.Tensor, shot: dict, new_outline: bool = True, **finish) -> torch.Tensor:
     """'Frame + paste' shots: the whole frame was generated (so the model followed the guide freely); paste only the
-    person onto the original frame. The pasted area is the shot's mask, plus (new_outline) the new person found by
-    SAM 3 ('person') on the result near the original one, so a bigger silhouette is not cut."""
+    subject onto the original frame. The pasted area is the shot's mask, plus (new_outline) the new subject found by
+    SAM 3 on the result near the original one (the shot's 'new subject' text, default 'person'), so a bigger
+    silhouette is not cut."""
     base = shot["frames"]
     H, W = base.shape[1:3]
     ms = shot["mask_src"]
@@ -1110,12 +1112,13 @@ def paste_back(result: torch.Tensor, shot: dict, new_outline: bool = True, **fin
         small = torch.nn.functional.interpolate(result[:n, ..., :3].movedim(-1, 1).float(), size=(max(32, int(H * s) // 2 * 2),
                     max(32, int(W * s) // 2 * 2)), mode="bilinear", align_corners=False).movedim(1, -1).clamp(0, 1)
         t0 = time.time()
-        new = segment_frames(small, dict(DEFAULT_MASK, text="person", max_objects=8))
+        what = str(shot.get("paste_text") or "").strip() or "person"
+        new = segment_frames(small, dict(DEFAULT_MASK, text=what, max_objects=8))
         _node_boundary()
         new = torch.nn.functional.interpolate(new[:, None].float(), size=(H, W), mode="nearest")[:, 0]
         near = torch.zeros(H, W); near[y0:y1, x0:x1] = 1
         m = torch.maximum(m, new * near)
-        print(f"{tag}: Frame + paste, new outline by SAM 3 in {time.time() - t0:.1f}s", flush=True)
+        print(f"{tag}: Frame + paste, new outline ('{what}') by SAM 3 in {time.time() - t0:.1f}s", flush=True)
     sp = ms["spec"]
     crop = {"box": [0.0, 0.0, 1.0, 1.0], "mask": m, "paste": "mask",
             "expand": int(sp["expand"] if sp.get("expand") is not None else 16),
@@ -1853,7 +1856,7 @@ class BFSShotPlanner:
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
                 "inpaint": bool(s.get("inpaint")), "inpaint_strength": float(s.get("strength") or 1.0),
-                "paste": bool(s.get("paste")),
+                "paste": bool(s.get("paste")), "paste_text": s.get("paste_text") or "",
                 "ref": ref, "ref2": ref2,
                 "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
@@ -2049,12 +2052,28 @@ def add_setting(text: str, k: int, swap: bool) -> str:
     return (text.rstrip() + "\n\n" + line).strip()
 
 
+def add_mask_video(text: str, k: int) -> str:
+    """`{mask_video}` becomes <Video k>; without it, a sentence goes at the end of subject_definitions."""
+    if "{mask_video}" in text:
+        return text.replace("{mask_video}", f"<Video {k}>")
+    line = (f"<Video {k}> shows only the region being replaced, the rest grey: follow its pose, outline and motion "
+            f"frame by frame.")
+    if "subject_definitions:" in text:
+        a = text.index("subject_definitions:")
+        b = text.find("\n\n", a)
+        b = len(text) if b < 0 else b
+        return text[:b].rstrip() + " " + line + text[b:]
+    return (text.rstrip() + "\n\n" + line).strip()
+
+
 INPAINT_MODES = ["per shot (planner)", "off", "only the mask"]
-PERSON_GUIDES = ["off", "+ extra guide (person only)", "instead of the full guide (person only)"]
+MASK_REF_SIZES = {"full": 1.0, "1/2": 0.5, "1/3": 1 / 3, "1/4": 0.25}
+MASK_GUIDES = ["off", "+ extra guide (masked region only)", "instead of the full guide (masked region only)",
+               "+ reference video (masked region only)"]
 
 
-def person_only(frames: torch.Tensor, mask: torch.Tensor, grey: float = 0.5) -> torch.Tensor:
-    """The shot's frames with everything outside the mask grey: what the person-only guide shows."""
+def masked_only(frames: torch.Tensor, mask: torch.Tensor, grey: float = 0.5) -> torch.Tensor:
+    """The shot's frames with everything outside the mask grey: what the mask guide shows."""
     m = torch.nn.functional.interpolate(mask[:, None].float(), size=frames.shape[1:3], mode="nearest")[:, 0]
     idx = torch.clamp(torch.arange(frames.shape[0]), max=m.shape[0] - 1)
     m = m[idx][..., None]
@@ -2209,12 +2228,18 @@ class BFSShotH3Conditioning:
                     "crop / uncrop at all). Needs a mask (text or points) on the shot. Crop + H3 generation mask: credit to Neko (Nekodificador) and AbleJones, "
                     "whose workflow and nodes this follows. On ComfyUI builds without native H3 generation masks, add "
                     "a per-row mask patch to the model (e.g. ComfyUI-MiniMaxH3-PerRowMasking)."}),
-                "person_guide": (PERSON_GUIDES, {"default": PERSON_GUIDES[0], "tooltip":
-                    "Experimental, shots with a mask: a guide latent that shows ONLY the masked person (the rest "
-                    "grey), so the model looks at their pose and outline on its own. '+ extra guide': added next to "
-                    "the normal aligned guide (the model sees both). 'instead of the full guide': replaces it (with "
-                    "a mask mode the background is kept anyway). The LoRAs were trained with one full guide, so test "
-                    "against off; it can also pull the old person's look."}),
+                "mask_guide": (MASK_GUIDES, {"default": MASK_GUIDES[0], "tooltip":
+                    "Experimental, 'Mask only' shots (mask, no crop): the shot with ONLY the masked region visible "
+                    "(the rest grey), so the model looks at the subject's pose and outline on its own while the mask "
+                    "limits where it generates. '+ extra guide': a second aligned guide latent next to the normal one "
+                    "(the model sees both). 'instead of the full guide': replaces the normal guide. '+ reference "
+                    "video': enters as a native reference video (<Video n>, after the shot's own if guide_mode uses "
+                    "it). The LoRAs were trained with one full guide, so test against off; it can also pull the old "
+                    "subject's look."}),
+                "mask_ref_size": (list(MASK_REF_SIZES), {"default": "1/2", "tooltip":
+                    "mask_guide '+ reference video' only: size of that reference video (fraction of the generation "
+                    "size). The native reference channel keeps a smaller video as it is, so 1/2 costs ~1/4 of the "
+                    "tokens; it only has to show the pose and outline."}),
             },
         }
 
@@ -2228,7 +2253,7 @@ class BFSShotH3Conditioning:
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
                   panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
-                  setting_ref="off", setting_mask=None, inpaint="off", person_guide="off"):
+                  setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, layout_text, make_info
@@ -2285,21 +2310,43 @@ class BFSShotH3Conditioning:
         kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],
                       length=shot["gen_length"], ref_image_size=ref_image_size, vae=vae,
                       audio_vae=audio_vae, ref_images=refs or None)
-        if native:
-            kwargs["ref_videos"] = {"ref_video_1": shot["frames"]}
-            if audio is not None:
-                kwargs["ref_video_audios"] = {"ref_video_audio_1": audio}
-        positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
-        pg = person_guide if person_guide in PERSON_GUIDES[1:] and not on_canvas else None
+        use_mask = inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint"))
+        gtag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
+        pg = mask_guide if mask_guide in MASK_GUIDES[1:] else None
+        if pg and (not use_mask or shot.get("crop") or on_canvas):
+            print(f"{gtag}: mask_guide ignored: it is for 'Mask only' shots (mask, no crop, no duet)", flush=True)
+            pg = None
+        guide_px = None
         if pg:
-            gtag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
             pmask = generation_mask(shot, log=gtag)
-            guide_px = person_only(shot["frames"], pmask)
-            print(f"{gtag}: person-only guide ({pg}), {mask_report(pmask)}", flush=True)
+            guide_px = masked_only(shot["frames"], pmask)
+            print(f"{gtag}: mask guide ({pg}), {mask_report(pmask)}", flush=True)
+        if native or pg == MASK_GUIDES[3]:
+            vids = {}
+            if native:
+                vids["ref_video_1"] = shot["frames"]
+                if audio is not None:
+                    kwargs["ref_video_audios"] = {"ref_video_audio_1": audio}
+            if pg == MASK_GUIDES[3]:
+                sc = MASK_REF_SIZES.get(mask_ref_size, 0.5)
+                if sc < 1.0:
+                    H0, W0 = guide_px.shape[1:3]
+                    size = (max(32, int(H0 * sc) // 32 * 32), max(32, int(W0 * sc) // 32 * 32))
+                    guide_px = torch.nn.functional.interpolate(guide_px.movedim(-1, 1), size=size, mode="bilinear",
+                                                               align_corners=False).movedim(1, -1).clamp(0, 1)
+                print(f"{gtag}: masked-region reference video at {guide_px.shape[2]}x{guide_px.shape[1]} ({mask_ref_size})",
+                      flush=True)
+                vids[f"ref_video_{len(vids) + 1}"] = guide_px
+                kwargs["prompt"] = add_mask_video(kwargs["prompt"], len(vids))
+                print(f"{gtag}: the masked region is <Video {len(vids)}> (write {{mask_video}} in the prompt to place "
+                      f"its tag, otherwise a sentence is added)", flush=True)
+            kwargs["ref_videos"] = vids
+        positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
+        if pg in (MASK_GUIDES[1], MASK_GUIDES[2]):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  image=guide_px).args[0]
-            if pg == PERSON_GUIDES[2]:
-                aligned = False                        # the person-only guide replaces the full one
+            if pg == MASK_GUIDES[2]:
+                aligned = False                        # the mask guide replaces the full one
         if aligned and (not on_canvas or audio is not None):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  audio_vae=audio_vae if audio is not None else None,
@@ -2313,8 +2360,7 @@ class BFSShotH3Conditioning:
                                                  image=prev).args[0]
         shot.pop("panel", None)
         keep_mask = keep_video = None
-        use_mask = inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint"))
-        tag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
+        tag = gtag
         mode = ("Crop + mask" if shot.get("crop") else "Mask only") if use_mask else \
             ("Crop" if shot.get("crop") else "Frame + paste (BFS Shot Join pastes the person back)" if shot.get("paste") else "Full frame")
         print(f"{tag}: {mode}" + (f" (inpaint = {inpaint})" if use_mask else ""), flush=True)
@@ -2386,8 +2432,9 @@ class BFSShotJoin:
                              "(OpenCV seamlessClone) for stubborn seams. Slower; can shift colours near the edge. From "
                              "NKD Inpaint Stitch."}),
                          "paste_new_outline": ("BOOLEAN", {"default": True, "tooltip": "'Frame + paste' shots: also paste "
-                             "where the NEW person is (SAM 3 'person' on the result, near the original one), so a "
-                             "bigger silhouette (hair, body) is not cut. Off = only the original mask (+ expand)."}),
+                             "where the NEW subject is (SAM 3 on the result near the original one, with the shot's "
+                             "'new subject' text from the planner, default 'person'), so a bigger silhouette (hair, "
+                             "body) is not cut. Off = only the original mask (+ expand)."}),
                          "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
                              "a crop or a generation mask (Mask only / Crop + mask) show the mask (red, as grown by "
                              "expand) and the crop box (yellow) over the original column, to check what was selected."})},

@@ -155,9 +155,9 @@ function editor(c, cur) {
     ]) : null,
     h("div", { class: "modes", style: "margin-top:8px" }, [
       ["frame", "Full frame", "The whole frame is regenerated. The mask, if any, only feeds {target} / the setting picture."],
-      ["paste", "🧩 Frame + paste", "The whole frame is generated (the pose follows the guide, the new person may be bigger); BFS Shot Join pastes only the person onto the original: background exact."],
+      ["paste", "🧩 Frame + paste", "The whole frame is generated (the pose follows the guide, the new subject may be bigger); BFS Shot Join pastes only the subject onto the original: background exact."],
       ["mask", "🎭 Mask only", "Only the mask is regenerated, on the whole frame: the rest stays exactly as it was. No crop / uncrop."],
-      ["crop", "✂ Crop", "A box around the mask is regenerated (more pixels for a small person); BFS Shot Join pastes it back."],
+      ["crop", "✂ Crop", "A box around the mask is regenerated (more pixels for a small subject); BFS Shot Join pastes it back."],
       ["cropmask", "✂🎭 Crop + mask", "Inside the crop, only the mask is regenerated: the most detail with the background kept."],
     ].map(([k, t, d]) => mode(c.modeOf(cur) === k, t, d, () => c.setMode(i, k)))),
     (cur.crop || cur.inpaint || cur.paste) && !hasMask(cur) ? h("div", { class: "err" }, `${c.modeName(cur)} needs a mask on this shot: a mask text, points or a mask video (or the planner's mask input).`) : null,
@@ -170,7 +170,14 @@ function editor(c, cur) {
       hint(cur.strength >= 1 ? "regenerates the masked area completely" : `keeps ~${Math.round(100 - cur.strength * 100)}% of the original inside the mask`),
     ]) : null,
     cur.inpaint ? h("div", { class: "note", style: "margin-bottom:6px" }, [h("b", "Mask only / Crop + mask: "),
-      "set BFS Shot H3 Conditioning → inpaint to ", h("b", "per shot (planner)"), " (the default). Raise Expand (People & masks tab) when the new person is bigger than the old one."]) : null,
+      "set BFS Shot H3 Conditioning → inpaint to ", h("b", "per shot (planner)"), " (the default). Raise Expand (People & masks tab) when the new subject is bigger than the old one."]) : null,
+    cur.paste ? h("div", { class: "row", style: "margin-bottom:6px;align-items:center",
+      title: "What the NEW subject is, in English, for SAM 3 on the result: BFS Shot Join also pastes its outline (when it is bigger than the old one). E.g. person, dog, cat, car. Empty = person." }, [
+      h("span", { style: "white-space:nowrap" }, "new subject"),
+      h("input", { type: "text", value: cur.pasteText || "", placeholder: "person (or dog, cat, car… what the result shows)", style: "flex:1;max-width:420px",
+        onChange: e => c.setMeta(i, "paste_text", e.target.value) }),
+      hint("its outline on the result is pasted too, so a bigger silhouette is not cut"),
+    ]) : null,
     h("div", { class: "row", style: "margin-top:4px;align-items:center" }, [
       targetCrop.value[k] ? h("img", { src: targetCrop.value[k], style: "height:56px;border-radius:6px" }) : null,
       h("span", { class: "hint", style: "white-space:nowrap" }, "{target}"),

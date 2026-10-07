@@ -602,15 +602,117 @@ class FramePasteTest(unittest.TestCase):
         self.assertAlmostEqual(float(only_old[0, 30, 41, 0]), 0.2, places=4)
 
 
-class PersonGuideTest(unittest.TestCase):
-    def test_person_only_greys_everything_outside_the_mask(self):
+class MaskGuideTest(unittest.TestCase):
+    def test_masked_only_greys_everything_outside_the_mask(self):
         fr = torch.full((4, 32, 32, 3), 0.9)
         m = torch.zeros(4, 16, 16); m[:, 4:12, 4:12] = 1
-        g = SL.person_only(fr, m)
+        g = SL.masked_only(fr, m)
         self.assertEqual(tuple(g.shape), (4, 32, 32, 3))
-        self.assertAlmostEqual(float(g[0, 16, 16, 0]), 0.9)      # the person
+        self.assertAlmostEqual(float(g[0, 16, 16, 0]), 0.9)      # the masked region
         self.assertAlmostEqual(float(g[0, 2, 2, 0]), 0.5)        # grey elsewhere
-        self.assertEqual(SL.PERSON_GUIDES[0], "off")
+        self.assertEqual(SL.MASK_GUIDES[0], "off")
+        t = SL.add_mask_video("x subject_definitions: <Subject 1> is ...", 2)
+        self.assertIn("<Video 2> shows only the region", t)
+        self.assertEqual(SL.add_mask_video("follow {mask_video}", 1), "follow <Video 1>")
+
+
+class ConditionFlowTest(unittest.TestCase):
+    """BFS Shot H3 Conditioning with the native H3 nodes replaced by recorders."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT))
+        calls = self.calls = {"r2v": [], "guides": []}
+
+        class Out:
+            def __init__(self, *a):
+                self.args = a
+
+        class R2V:
+            @staticmethod
+            def execute(**kw):
+                calls["r2v"].append(kw)
+                N = sys.modules["comfy.nested_tensor"].NestedTensor
+                return Out([[torch.zeros(1), {}]], {"samples": N((torch.zeros(1, 24, 2, 4, 4), torch.zeros(1, 32, 2, 37)))})
+
+        class Guide:
+            @staticmethod
+            def execute(positive, latent, frame_idx, vae, image=None, **kw):
+                calls["guides"].append(image)
+                return Out(positive)
+
+        mod = types.ModuleType("comfy_extras.nodes_minimax_h3")
+        mod.MiniMaxH3ReferenceToVideo, mod.MiniMaxH3AddGuide = R2V, Guide
+        sys.modules.setdefault("comfy_extras", types.ModuleType("comfy_extras"))
+        self._old = sys.modules.get("comfy_extras.nodes_minimax_h3")
+        sys.modules["comfy_extras.nodes_minimax_h3"] = mod
+        if "comfy.nested_tensor" not in sys.modules:
+            class _N:
+                is_nested = True
+
+                def __init__(self, t):
+                    self.tensors = list(t)
+            comfy = sys.modules.setdefault("comfy", types.ModuleType("comfy"))
+            nt = types.ModuleType("comfy.nested_tensor"); nt.NestedTensor = _N
+            comfy.nested_tensor = nt; sys.modules["comfy.nested_tensor"] = nt
+
+    def tearDown(self):
+        if self._old is not None:
+            sys.modules["comfy_extras.nodes_minimax_h3"] = self._old
+        else:
+            sys.modules.pop("comfy_extras.nodes_minimax_h3", None)
+
+    def _shot(self, **kw):
+        m = torch.zeros(22, 64, 64); m[:, 16:48, 16:40] = 1
+        shot = {"index": 0, "count": 1, "frames": torch.full((22, 64, 64, 3), 0.7), "ref": torch.zeros(1, 32, 32, 3),
+                "ref2": None, "prompt": "subject_definitions: <Subject 1> is ...", "width": 64, "height": 64,
+                "gen_length": 22, "audio": None, "crop": {"crop_mask": m, "expand": 0} if kw.get("crop") else None,
+                "inpaint": kw.get("inpaint", True)}
+        if not kw.get("crop"):
+            shot["mask_src"] = {"path": __file__, "analysis": {"fps": 24.0}, "start": 0, "length": 22, "spec": dict(SL.DEFAULT_MASK, expand=0)}
+        return shot, m
+
+    def run_cond(self, shot, m, **kw):
+        class VAE:
+            def encode(self, px):
+                return torch.zeros(1, 24, 2, px.shape[1] // 16, px.shape[2] // 16)
+        orig = SL.shot_mask
+        SL.shot_mask = lambda *a: {"masks": m.to(torch.uint8)}
+        try:
+            return SL.BFSShotH3Conditioning().condition(shot, None, VAE(), SL.BFSShotH3Conditioning.GUIDE_MODES[0], False,
+                                                        "none", "match", **kw)
+        finally:
+            SL.shot_mask = orig
+
+    def test_reference_video_of_the_masked_region(self):
+        shot, m = self._shot()
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3], mask_ref_size="full")
+        kw = self.calls["r2v"][0]
+        v = kw["ref_videos"]["ref_video_1"]
+        self.assertAlmostEqual(float(v[0, 2, 2, 0]), 0.5)          # grey outside the mask
+        self.assertAlmostEqual(float(v[0, 30, 30, 0]), 0.7)        # the subject
+        self.assertIn("<Video 1> shows only the region", kw["prompt"])
+        self.assertEqual(len(self.calls["guides"]), 1)             # the normal aligned guide is still there
+        self.calls["r2v"].clear()
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3], mask_ref_size="1/2")
+        self.assertEqual(tuple(self.calls["r2v"][0]["ref_videos"]["ref_video_1"].shape[1:3]), (32, 32))
+
+    def test_extra_and_instead_guides(self):
+        shot, m = self._shot()
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[1])
+        self.assertEqual(len(self.calls["guides"]), 2)
+        self.calls["guides"].clear()
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[2])
+        self.assertEqual(len(self.calls["guides"]), 1)
+        self.assertAlmostEqual(float(self.calls["guides"][0][0, 2, 2, 0]), 0.5)   # it is the masked one
+
+    def test_ignored_outside_mask_only(self):
+        shot, m = self._shot(inpaint=False)
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3])
+        self.assertNotIn("ref_videos", self.calls["r2v"][0])
+        shot, m = self._shot(crop=True)
+        self.calls["r2v"].clear()
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3])
+        self.assertNotIn("ref_videos", self.calls["r2v"][0])
 
 
 if __name__ == "__main__":

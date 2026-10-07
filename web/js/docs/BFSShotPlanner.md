@@ -160,7 +160,7 @@ yellow = crop box). Then pick how the shot is generated:
 | mode | what is generated | crop / uncrop |
 |---|---|---|
 | **Full frame** | the whole frame; the mask only feeds `{target}` and the setting picture | no |
-| **🧩 Frame + paste** | the whole frame (so the model follows the guide's pose freely and the new person may be bigger); BFS Shot Join then pastes only the person onto the original frame: the shot's mask plus the new person's outline (SAM 3 on the result, `paste_new_outline`) | no crop; paste in the Join |
+| **🧩 Frame + paste** | the whole frame (so the model follows the guide's pose freely and the new person may be bigger); BFS Shot Join then pastes only the person onto the original frame: the shot's mask plus the new subject's outline (SAM 3 on the result with the shot's *new subject* text, default `person`; `paste_new_outline`) | no crop; paste in the Join |
 | **🎭 Mask only** | only the mask, on the whole frame; everything else stays exactly as it was | no |
 | **✂ Crop** | a box around the mask (more pixels for a small person); BFS Shot Join pastes it back | yes |
 | **✂🎭 Crop + mask** | only the mask, inside the crop: the most detail with the background kept | yes |
@@ -179,10 +179,12 @@ rows at *opacity* × the noise level, so they start from the original partly vis
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
 the motion either way. (Not applied with the duet panel.)
 
-**Person-only guide** (experimental, BFS Shot H3 Conditioning → `person_guide`): a guide latent that shows only the
-masked person, the rest grey, so the model looks at their pose and outline on its own. *+ extra guide* adds it next
-to the normal aligned guide (the model sees both); *instead of the full guide* replaces the full one. Compare with
-*off*: the LoRAs were trained with one full guide, and it can also pull the old person's look.
+**Mask guide** (experimental, *Mask only* shots, BFS Shot H3 Conditioning → `mask_guide`): the shot with only the
+masked region visible, the rest grey, so the model looks at the subject's pose and outline on its own while the mask
+limits where it generates. *+ extra guide* adds it as a second aligned guide next to the normal one (the model sees
+both); *instead of the full guide* replaces the normal one; *+ reference video* gives it as a native reference video
+(`<Video n>`, after the shot's own one when guide_mode uses it; write `{mask_video}` in the prompt where its tag goes, otherwise a sentence is added). `mask_ref_size` makes that reference video smaller (default 1/2, ~1/4 of the tokens): it only has to show the pose and outline. Compare with
+*off*: the LoRAs were trained with one full guide, and it can also pull the old subject's look.
 
 ### Masks from a video (rotoscoping) instead of SAM 3
 
