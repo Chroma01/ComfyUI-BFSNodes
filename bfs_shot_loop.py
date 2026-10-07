@@ -494,7 +494,7 @@ _STATS_CACHE: dict[tuple, dict] = {}
 
 def _yolo(kind: str):
     """YOLO model for 'person' or 'face' from models/ultralytics, or None (OpenCV fallback)."""
-    if kind in _DET:
+    if _DET.get(kind) is not None:
         return _DET[kind]
     model = None
     try:
@@ -2091,8 +2091,14 @@ def pose_frames(frames: torch.Tensor, mask: torch.Tensor | None = None) -> torch
     import cv2
     model = _yolo("pose")
     if model is None:
-        raise ValueError("mask_guide_look 'pose' needs ultralytics and a YOLO pose model in models/ultralytics (e.g. "
-                         "models/ultralytics/pose/yolov8m-pose.pt from the ultralytics releases)")
+        try:
+            import ultralytics  # noqa: F401
+        except ImportError:
+            raise ValueError("mask_guide_look 'pose' needs the ultralytics package (the same one the Impact Pack and "
+                             "the planner's filters use): pip install ultralytics") from None
+        raise ValueError("mask_guide_look 'pose' needs a YOLO pose model in ComfyUI/models/ultralytics/pose/, e.g. "
+                         "yolov8m-pose.pt from https://github.com/ultralytics/assets/releases/download/v8.2.0/"
+                         "yolov8m-pose.pt (no restart needed after adding it)")
     F, H, W = frames.shape[:3]
     imgs = [cv2.cvtColor((f[..., :3].numpy() * 255).astype(np.uint8), cv2.COLOR_RGB2BGR) for f in frames]
     m = None
