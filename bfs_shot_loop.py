@@ -459,6 +459,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["chain_frame"] = m.get("chain_frame") or "first"
         s["crop"] = bool(m.get("crop"))
         s["mask"] = m.get("mask") or {}
+        s["target"] = m.get("target") or ""
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
         s["people"], s["main"] = [], -1
@@ -974,6 +975,42 @@ def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict,
         out.append({"f": start + i, "src": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()})
     cover = float(masks.float().mean()) if masks.numel() else 0.0
     return {"box": box, "frames": out, "coverage": cover, "empty": box is None}
+
+
+# ---------------------------------------------------------------------------- {target}: who is replaced
+
+TARGET_Q = ("Describe the person in this picture as one short English noun phrase for a video prompt, at most 14 words: "
+            "apparent gender and age group, hair, and the main clothing with colours. Example: 'the young woman with long "
+            "black hair in a white T-shirt and denim shorts'. Start with 'the'. Reply with the phrase only.")
+
+
+def target_crop(path: str, analysis: dict, start: int, length: int, spec: dict, pad: float = 0.12):
+    """The selected subject (the shot's SAM 3 points / text, on its key frame) cropped from that frame, RGB uint8."""
+    src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
+    key = max(0, min(length - 1, int(spec.get("key") or length // 2)))
+    fr = _read_frames(path, src[np.clip(np.array([start + key]), 0, analysis["n"] - 1)], None)[0]
+    img = torch.from_numpy(fr.astype(np.float32) / 255.0)[None]
+    m = segment_frames(img, dict(spec, key=0))[0] > 0.5
+    _node_boundary()
+    if not bool(m.any()):
+        return None
+    ys, xs = np.where(m.numpy())
+    H, W = fr.shape[:2]
+    py, px = int((ys.max() - ys.min()) * pad) + 4, int((xs.max() - xs.min()) * pad) + 4
+    return fr[max(0, ys.min() - py):min(H, ys.max() + py), max(0, xs.min() - px):min(W, xs.max() + px)]
+
+
+def describe_target(clip, crop: np.ndarray, max_tokens: int = 64) -> str:
+    img = torch.from_numpy(crop.astype(np.float32) / 255.0)[None]
+    t = vlm_generate(clip, TARGET_Q, img, max_tokens).strip().strip('"\'').split("\n")[0].strip().rstrip(".")
+    if t and not t.lower().startswith("the "):
+        t = "the " + t[0].lower() + t[1:]
+    return " ".join(t.split()[:16]) or "the person"
+
+
+def fill_target(text: str, desc: str) -> str:
+    """{target} = who is replaced in this shot (picked + described in the panel), else 'the person'."""
+    return text.replace("{target}", desc.strip() or "the person") if "{target}" in text else text
 
 
 # ---------------------------------------------------------------------------- VLM suggestions (optional)
@@ -1590,9 +1627,9 @@ class BFSShotPlanner:
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames,
                 "ref": ref, "ref2": ref2,
-                "prompt": fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
+                "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
-                    s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
+                    s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2), s.get("target", "")),
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
@@ -2436,6 +2473,35 @@ try:
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": out})
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/target")
+    async def _bfs_shot_target(request):
+        """Pick + describe who is replaced: body {plan, index, mask?} -> {desc, crop}. The subject is the shot's SAM 3
+        selection (points on its key frame, else its text); the VLM, when connected, writes the description."""
+        body = await request.json()
+        try:
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            path = _input_path(p["video"])
+            a = analyze(path, float(p["fps"]))
+            seg = resolve_plan(p, a, path)[int(body.get("index", 0))]
+            spec = mask_spec(body.get("mask") or seg.get("mask"), p.get("mask_cfg"))
+            if not (spec.get("points") or str(spec.get("text") or "").strip()):
+                raise ValueError("Select the person first: 🎯 Points… (click on them) or type what to segment.")
+            clip = _VLM.get("clip")
+
+            def work():
+                import cv2
+                crop = target_crop(path, a, seg["start"], seg["end"] - seg["start"], spec)
+                if crop is None:
+                    raise ValueError("SAM 3 found nothing at that selection.")
+                desc = describe_target(clip, crop) if clip is not None else ""
+                ok, buf = cv2.imencode(".jpg", cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 82])
+                return {"desc": desc, "crop": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(),
+                        "no_vlm": clip is None}
+            out = await _off_loop(work)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response(out)
 
     @PromptServer.instance.routes.post("/bfs/shotloop/describe")
     async def _bfs_shot_describe(request):

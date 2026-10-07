@@ -213,3 +213,15 @@ BFS Shot Join ◄── images ────────────────�
 
 For other models, use **BFS Shot Unpack** and wire `guide_frames`, `ref_image`, `prompt` and
 `length` into that model's own guide and reference nodes; the list mapping works the same way.
+
+## `{target}`: say which person is replaced
+
+Write `{target}` in a prompt (e.g. "Replace {target} in the guide video with <Subject 1>") and every shot fills it with
+its own description of the person being replaced, so the model knows WHICH person to swap when several are on screen.
+
+1. Select the person in the shot: **🎯 Points…** and click on their body (or type what to segment).
+2. **🧑 Describe target**: SAM 3 cuts that person out of the selected frame and the VLM (the planner's `vlm` input,
+   after one run) writes a short phrase such as "the young woman with dark hair in a pink top". A thumbnail of the
+   cut-out shows what was described.
+3. Edit the text if needed; **Target → all** copies it to every shot. An empty description becomes "the person".
+

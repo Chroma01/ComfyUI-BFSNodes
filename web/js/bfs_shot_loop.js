@@ -256,7 +256,7 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first",
-                 crop: !!m.crop, mask: m.mask || {} });
+                 crop: !!m.crop, mask: m.mask || {}, target: m.target || "" });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -358,6 +358,19 @@ function Panel(io) {
     save();
   };
   const segKey = s => `${s.start}-${s.end}`;
+  const targetCrop = ref({});    // "start-end" -> data URL of the subject the description was made from
+  async function describeTarget(i) {
+    const s = segs.value[i]; if (!s) return;
+    busy.value = "Selecting the person (SAM 3) and describing them (VLM)…"; busySince.value = Date.now(); error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/target", { method: "POST", body: JSON.stringify({ plan: { ...plan }, index: i }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      targetCrop.value = { ...targetCrop.value, [segKey(s)]: j.crop };
+      if (j.desc) setMeta(i, "target", j.desc);
+      else error.value = "No VLM yet: connect it to the planner's vlm input and run once, or type the description yourself.";
+    } catch (e) { error.value = String(e.message || e); }
+    busy.value = "";
+  }
   async function previewMask(i, spec, intoModal = false) {
     const s = segs.value[i]; if (!s) return;
     const label = "Segmenting with SAM 3… (the first time downloads/loads the model)";
@@ -949,6 +962,18 @@ function Panel(io) {
         h("button", { title: "Crop every shot that has a mask", onClick: () => {
           segs.value.forEach((x, i) => { if (x.mask.text || (x.mask.points || []).length || cur.mask.text) meta(i).crop = cur.crop; }); save();
         } }, "Crop → all"),
+      ]),
+      h("div", { class: "row", style: "margin-top:8px;align-items:center" }, [
+        targetCrop.value[`${cur.start}-${cur.end}`] ? h("img", { src: targetCrop.value[`${cur.start}-${cur.end}`], style: "height:56px;border-radius:6px" }) : null,
+        h("span", { class: "hint", style: "white-space:nowrap" }, "{target}"),
+        h("input", { type: "text", value: cur.target, style: "flex:1;min-width:200px",
+          placeholder: "who is replaced in this shot, e.g. the young woman in a pink crop top (empty = the person)",
+          title: "Write {target} in the prompt: it becomes this description, so the model knows WHICH person to replace (useful with several people on screen).",
+          onChange: e => setMeta(sel.value, "target", e.target.value) }),
+        h("button", { disabled: !!busy.value || !(cur.mask.text || (cur.mask.points || []).length),
+          title: "Uses this shot's selection (🎯 Points… on the person — click the BODY, not only the face, so the outfit is described — or the mask text): SAM 3 cuts the person out and the VLM describes them",
+          onClick: () => describeTarget(sel.value) }, "🧑 Describe target"),
+        h("button", { title: "Copy this description to every shot", onClick: () => { const t = cur.target; segs.value.forEach((_, i) => { meta(i).target = t; }); save(); } }, "Target → all"),
       ]),
       maskPrev.value[`${cur.start}-${cur.end}`] ? h("div", { class: "mstrip" }, [
         ...maskPrev.value[`${cur.start}-${cur.end}`].frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),

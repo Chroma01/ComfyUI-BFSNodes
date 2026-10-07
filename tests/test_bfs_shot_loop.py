@@ -408,5 +408,13 @@ class ConditioningWriterTest(unittest.TestCase):
             self._run(task="style", instruction="anime")
 
 
+class TargetTest(unittest.TestCase):
+    def test_target_placeholder(self):
+        self.assertEqual(SL.fill_target("Replace {target} with <Subject 1>", "the man in a red coat"),
+                         "Replace the man in a red coat with <Subject 1>")
+        self.assertEqual(SL.fill_target("Replace {target} with <Subject 1>", ""), "Replace the person with <Subject 1>")
+        self.assertEqual(SL.fill_target("no placeholder", "x"), "no placeholder")
+
+
 if __name__ == "__main__":
     unittest.main()
