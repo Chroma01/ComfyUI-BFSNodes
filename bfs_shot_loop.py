@@ -22,6 +22,7 @@ import json
 import math
 import os
 import subprocess
+import time
 from typing import Any
 
 import numpy as np
@@ -887,7 +888,13 @@ def shot_mask(path: str, analysis: dict, start: int, length: int, spec: dict) ->
         frames = _read_frames(path, src[idx], (w, h), stage="Reading the shot")
         imgs = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
         _status(f"Segmenting {len(frames)} frames with SAM 3", force=True)
+        what = f"{len(spec.get('points') or [])} points on frame {int(spec.get('key') or 0)}" if spec.get("points") \
+            else f"'{spec.get('text', '')}'"
+        print(f"[BFS Shot] SAM 3: segmenting {what} on {len(frames)} frames ({w}x{h}, timeline {start}-{start + length - 1})…",
+              flush=True)
+        t0 = time.time()
         _MASK_CACHE[key] = {"masks": (segment_frames(imgs, spec) > 0.5).to(torch.uint8), "size": (w, h)}
+        print(f"[BFS Shot] SAM 3: done in {time.time() - t0:.1f}s, {mask_report(_MASK_CACHE[key]['masks'])}", flush=True)
         _node_boundary()
     out = dict(_MASK_CACHE[key])
     out["masks"] = shape_mask(out["masks"], spec)
@@ -1925,14 +1932,31 @@ def add_setting(text: str, k: int, swap: bool) -> str:
 INPAINT_MODES = ["per shot (planner)", "off", "only the mask"]
 
 
-def generation_mask(shot: dict) -> torch.Tensor:
+def mask_report(m: torch.Tensor) -> str:
+    """'37 frames 512x288, covers 12.3% (min 8.1%, max 15.0%)' for console logs."""
+    cov = m.float().flatten(1).mean(1) if m.ndim == 3 and m.shape[0] else m.float().mean()[None]
+    empty = int((cov == 0).sum())
+    return (f"{m.shape[0]} frames {m.shape[-1]}x{m.shape[-2]}, covers {float(cov.mean()) * 100:.1f}% "
+            f"(min {float(cov.min()) * 100:.1f}%, max {float(cov.max()) * 100:.1f}%)"
+            + (f", EMPTY on {empty} frame(s)" if empty else ""))
+
+
+def generation_mask(shot: dict, log: str = "") -> torch.Tensor:
     """The shot's person mask [F,H,W] at the generation size, grown by the mask's `expand`: the crop's own mask for a
-    cropped shot, otherwise the whole frame's (segmented here, cached)."""
+    cropped shot, otherwise the whole frame's (segmented here, cached). `log`: prefix for console messages."""
     crop = shot.get("crop") or {}
     if crop.get("crop_mask") is not None:
         m, grow = crop["crop_mask"], int(crop.get("expand") or 0)
+        if log:
+            print(f"{log}: using the crop's SAM 3 mask (segmented by the planner), expand {grow}px", flush=True)
     elif shot.get("mask_src"):
         ms = shot["mask_src"]
+        if log:
+            sp = ms["spec"]
+            what = f"{len(sp.get('points') or [])} points" if sp.get("points") else f"'{sp.get('text', '')}'"
+            cached = _mask_key(ms["path"], ms["analysis"], ms["start"], ms["length"], sp) in _MASK_CACHE
+            print(f"{log}: mask {what}, expand {int(sp.get('expand') or 0)}px, "
+                  + ("already segmented (cache)" if cached else "not segmented yet: running SAM 3"), flush=True)
         r = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
         H, W = shot["frames"].shape[1:3]
         m = torch.nn.functional.interpolate(r["masks"][:, None].float(), size=(H, W), mode="nearest")[:, 0]
@@ -2142,10 +2166,19 @@ class BFSShotH3Conditioning:
                                                  image=prev).args[0]
         shot.pop("panel", None)
         keep_mask = keep_video = None
-        if inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint")):
-            keep_mask, keep_video = generation_mask(shot), shot["frames"]
+        use_mask = inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint"))
+        tag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
+        mode = ("Crop + mask" if shot.get("crop") else "Mask only") if use_mask else ("Crop" if shot.get("crop") else "Full frame")
+        print(f"{tag}: {mode}" + (f" (inpaint = {inpaint})" if use_mask else ""), flush=True)
+        if use_mask:
+            t0 = time.time()
+            keep_mask, keep_video = generation_mask(shot, log=tag), shot["frames"]
+            print(f"{tag}: generation mask {mask_report(keep_mask)}, ready in {time.time() - t0:.1f}s", flush=True)
         if keep_mask is not None and not on_canvas:
             positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask)
+            nm = latent["noise_mask"].tensors[0]
+            print(f"{tag}: {float(nm.mean()) * 100:.1f}% of the latent is regenerated, the rest is kept "
+                  f"({int(nm.shape[2])} latent frames)", flush=True)
         if on_canvas:
             try:
                 from .bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
