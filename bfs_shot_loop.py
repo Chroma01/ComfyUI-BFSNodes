@@ -993,10 +993,14 @@ def crop_box(masks: torch.Tensor, padding: float) -> list[float] | None:
 def grow_blur(m: torch.Tensor, grow: int, blur: int) -> torch.Tensor:
     """[N,H,W] in 0-1: dilate by `grow` px, then soften the edge by `blur` px."""
     x = m.float()[:, None]
-    if grow > 0:
-        x = torch.nn.functional.max_pool2d(x, 2 * grow + 1, 1, grow)
-    for _ in range(2 if blur > 0 else 0):
-        x = torch.nn.functional.avg_pool2d(torch.nn.functional.pad(x, (blur,) * 4, mode="replicate"), 2 * blur + 1, 1)
+    if grow > 0:   # separable: a square max = max over rows then over columns (much faster for big kernels)
+        k = 2 * grow + 1
+        x = torch.nn.functional.max_pool2d(x, (1, k), 1, (0, grow))
+        x = torch.nn.functional.max_pool2d(x, (k, 1), 1, (grow, 0))
+    for _ in range(2 if blur > 0 else 0):   # box blur, separable too
+        k = 2 * blur + 1
+        x = torch.nn.functional.avg_pool2d(torch.nn.functional.pad(x, (blur, blur, 0, 0), mode="replicate"), (1, k), 1)
+        x = torch.nn.functional.avg_pool2d(torch.nn.functional.pad(x, (0, 0, blur, blur), mode="replicate"), (k, 1), 1)
     return x[:, 0].clamp(0, 1)
 
 
@@ -2091,7 +2095,10 @@ def mask_report(m: torch.Tensor) -> str:
 
 def generation_mask(shot: dict, log: str = "") -> torch.Tensor:
     """The shot's person mask [F,H,W] at the generation size, grown by the mask's `expand`: the crop's own mask for a
-    cropped shot, otherwise the whole frame's (segmented here, cached). `log`: prefix for console messages."""
+    cropped shot, otherwise the whole frame's (segmented here, cached). `log`: prefix for console messages.
+    Kept on the shot, so the mask guide, the inpaint and the join reuse it."""
+    if shot.get("_gen_mask") is not None:
+        return shot["_gen_mask"]
     crop = shot.get("crop") or {}
     if crop.get("crop_mask") is not None:
         m, grow = crop["crop_mask"], int(crop.get("expand") or 0)
@@ -2112,7 +2119,8 @@ def generation_mask(shot: dict, log: str = "") -> torch.Tensor:
     else:
         raise ValueError(f"shot {shot.get('index', 0) + 1}: inpaint 'only the mask' needs a SAM 3 mask on the shot "
                          "(mask text or points in the Planner)")
-    return grow_blur(m, grow, 0) if grow > 0 else m.float()
+    shot["_gen_mask"] = grow_blur(m, grow, 0) if grow > 0 else m.float()
+    return shot["_gen_mask"]
 
 
 def overlay_of(shot: dict) -> dict | None:
