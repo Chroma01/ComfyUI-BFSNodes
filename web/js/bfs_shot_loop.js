@@ -254,7 +254,12 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     } catch (e) { error.value = String(e.message || e); }
     if (intoModal) modal.busy = ""; else busy.value = "";
   }
-  const setMask = (i, k, v) => { const m = meta(i); m.mask = { ...(m.mask || {}), [k]: v }; save(); };
+  const setMask = (i, k, v) => {
+    const m = meta(i); if ((m.mask || {})[k] === v) return;
+    m.mask = { ...(m.mask || {}), [k]: v }; save();
+    const s = segs.value[i];   // the old preview no longer matches
+    if (s && maskPrev.value[segKey(s)]) { const mp = { ...maskPrev.value }; delete mp[segKey(s)]; maskPrev.value = mp; }
+  };
   const setMaskCfg = (k, v) => { plan.mask_cfg = { ...plan.mask_cfg, [k]: v }; save(); maskPrev.value = {}; };
   const openPoints = i => {
     const s = segs.value[i]; if (!s) return;
