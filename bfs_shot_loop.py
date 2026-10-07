@@ -931,8 +931,84 @@ def crop_panel(img: torch.Tensor, shot: dict) -> torch.Tensor:
     return img[:, y0:y0 + h, x0:x0 + w]
 
 
-def uncrop(result: torch.Tensor, shot: dict) -> torch.Tensor:
-    """Paste a cropped shot's result back into its full frames (feathered by the mask or the box)."""
+# --- stitch finishing: edge hardness, Reinhard colour match (LAB) and Poisson seamless clone. The three operations are
+# adapted from Nekodificador's ComfyUI-NKD-Basic-Tools (NKD Inpaint Stitch, MIT licence). Differences: the colour
+# statistics are taken over the whole shot (no flicker), and by default from a ring AROUND the subject, so a swap's new
+# person keeps its own colours while the model's light / colour drift is corrected.
+
+def _alpha_hardness(alpha: torch.Tensor, hardness: float) -> torch.Tensor:
+    """Black / white point remap of the paste alpha: 0 = unchanged, 1 = hard cut at 0.5 (removes the halo of the
+    original subject in the soft edge)."""
+    if hardness <= 0.0:
+        return alpha
+    bp = min(hardness * 0.5, 0.499)
+    return ((alpha - bp) / (1.0 - 2 * bp)).clamp(0.0, 1.0)
+
+
+def _rgb_to_lab(rgb):
+    lin = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    M = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750], [0.0193339, 0.1191920, 0.9503041]], np.float32)
+    xyz = lin @ M.T / np.array([0.95047, 1.0, 1.08883], np.float32)
+    d = 6.0 / 29.0
+    f = lambda t: np.where(t > d ** 3, np.cbrt(t), t / (3 * d * d) + 4.0 / 29.0)
+    fx, fy, fz = f(xyz[..., 0]), f(xyz[..., 1]), f(xyz[..., 2])
+    return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], -1).astype(np.float32)
+
+
+def _lab_to_rgb(lab):
+    fy = (lab[..., 0] + 16.0) / 116.0
+    fx, fz = lab[..., 1] / 500.0 + fy, fy - lab[..., 2] / 200.0
+    d = 6.0 / 29.0
+    fi = lambda t: np.where(t > d, t ** 3, 3 * d * d * (t - 4.0 / 29.0))
+    xyz = np.stack([fi(fx) * 0.95047, fi(fy), fi(fz) * 1.08883], -1)
+    Mi = np.array([[3.2404542, -1.5371385, -0.4985314], [-0.9692660, 1.8760108, 0.0415560], [0.0556434, -0.2040259, 1.0572252]], np.float32)
+    lin = np.clip(xyz @ Mi.T, 0.0, None)
+    return np.clip(np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055), 0, 1).astype(np.float32)
+
+
+def _shot_color_transfer(orig: torch.Tensor, gen: torch.Tensor, region: torch.Tensor, strength: float) -> torch.Tensor:
+    """Reinhard transfer in LAB with statistics over the whole shot inside `region` [N,H,W] (original vs generated),
+    applied to every generated frame. Returns gen unchanged when the region is too small."""
+    if strength <= 0.0:
+        return gen
+    sel = region > 0.5
+    if int(sel.sum()) < 400:
+        return gen
+    step = max(1, int(sel.sum()) // 200000)
+    o = _rgb_to_lab(orig[sel].numpy()[::step].astype(np.float32))
+    g = _rgb_to_lab(gen[sel].numpy()[::step].astype(np.float32))
+    om, os_, gm, gs = o.mean(0), o.std(0) + 1e-5, g.mean(0), g.std(0) + 1e-5
+    ratio = np.clip(os_ / gs, 0.5, 2.0)          # a flat region has ~0 spread: never blow the contrast up
+    lab = _rgb_to_lab(gen.numpy().astype(np.float32))
+    out = _lab_to_rgb((lab - gm) * ratio + om)
+    return torch.from_numpy(out) * strength + gen * (1.0 - strength)
+
+
+def _seamless(orig: np.ndarray, gen: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """Poisson clone of gen onto orig inside alpha (one frame, float RGB 0-1)."""
+    import cv2
+    binary = (alpha > 0.1).astype(np.uint8) * 255
+    binary[0, :] = binary[-1, :] = 0
+    binary[:, 0] = binary[:, -1] = 0
+    x, y, w, h = cv2.boundingRect(binary)
+    a3 = alpha[..., None]
+    if w == 0 or h == 0:
+        return orig * (1 - a3) + gen * a3
+    try:
+        c = cv2.seamlessClone((np.clip(gen, 0, 1) * 255).astype(np.uint8), (np.clip(orig, 0, 1) * 255).astype(np.uint8),
+                              binary, (x + w // 2, y + h // 2), cv2.NORMAL_CLONE).astype(np.float32) / 255.0
+        return orig * (1 - a3) + c * a3
+    except Exception:  # noqa: BLE001
+        return orig * (1 - a3) + gen * a3
+
+
+MATCH_REGIONS = ["around the subject (swap)", "inside the subject (same content)"]
+
+
+def uncrop(result: torch.Tensor, shot: dict, edge_hardness: float = 0.0, match_colors: float = 0.0,
+           match_region: str = MATCH_REGIONS[0], seamless: bool = False) -> torch.Tensor:
+    """Paste a cropped shot's result back into its full frames (feathered by the mask or the box), with optional
+    edge hardness, colour match and seamless clone."""
     c = shot["crop"]
     full = shot["full_frames"]
     W, H = full.shape[2], full.shape[1]
@@ -948,8 +1024,22 @@ def uncrop(result: torch.Tensor, shot: dict) -> torch.Tensor:
     else:
         m = c["mask"][:n].float()
         alpha = grow_blur(m, int(c.get("expand", 8)), int(c.get("feather", 12)))
+    alpha = _alpha_hardness(alpha, float(edge_hardness))
+    if match_colors > 0 and c.get("mask") is not None:
+        m = c["mask"][:n].float()[:, y0:y1, x0:x1]
+        if match_region == MATCH_REGIONS[0]:     # ring around the subject: background the model also regenerated
+            k = max(3, int(0.06 * max(y1 - y0, x1 - x0)))
+            region = grow_blur(m, k, 0) - grow_blur(m, max(2, k // 3), 0)
+        else:
+            region = m
+        res = _shot_color_transfer(full[:n, y0:y1, x0:x1].float(), res, region, float(match_colors))
     a = alpha[:, y0:y1, x0:x1, None]
-    out[:, y0:y1, x0:x1] = res * a + out[:, y0:y1, x0:x1] * (1 - a)
+    if seamless:
+        for i in range(n):
+            out[i, y0:y1, x0:x1] = torch.from_numpy(_seamless(out[i, y0:y1, x0:x1].numpy().astype(np.float32),
+                                                              res[i].numpy().astype(np.float32), a[i, ..., 0].numpy()))
+    else:
+        out[:, y0:y1, x0:x1] = res * a + out[:, y0:y1, x0:x1] * (1 - a)
     if result.shape[0] > n:   # frames past the planned length stay as generated, pasted the same way
         out = torch.cat([out, out[-1:].expand(result.shape[0] - n, -1, -1, -1)], 0)
     return out
@@ -2007,6 +2097,19 @@ class BFSShotJoin:
                          "comparison_height": ("INT", {"default": 360, "min": 0, "max": 4096, "step": 16, "tooltip":
                              "Height of each column in the comparison (0 = full size). Smaller is much lighter "
                              "for long videos."}),
+                         "edge_hardness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip":
+                             "Cropped shots: harden the soft edge of the paste (0 = as feathered, 1 = hard cut). Raise it "
+                             "when a faint ghost of the original person shows around the new one. From NKD Inpaint Stitch."}),
+                         "match_colors": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip":
+                             "Cropped shots: correct the colour / brightness drift of the generated patch (Reinhard in "
+                             "LAB, statistics over the whole shot, so no flicker). 0.5-1 typical. From NKD Inpaint Stitch."}),
+                         "match_region": (MATCH_REGIONS, {"default": MATCH_REGIONS[0], "tooltip":
+                             "Where the colour statistics are measured. 'around the subject (swap)': a ring of background "
+                             "around the mask, so a new person keeps their own colours and only the scene's light drift "
+                             "is fixed. 'inside the subject': inside the mask (retouching the same person/content)."}),
+                         "seamless_edges": ("BOOLEAN", {"default": False, "tooltip": "Cropped shots: Poisson blend "
+                             "(OpenCV seamlessClone) for stubborn seams. Slower; can shift colours near the edge. From "
+                             "NKD Inpaint Stitch."}),
                          "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
                              "'Crop to mask' show their SAM 3 mask (red) and crop box (yellow) over the original "
                              "column, to check what was selected."})},
@@ -2020,8 +2123,13 @@ class BFSShotJoin:
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
-             comparison_height=None, comparison_mask=None):
+             comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
+             seamless_edges=None):
         tl = timeline[0] if timeline else None
+        fin = dict(edge_hardness=float(edge_hardness[0]) if edge_hardness else 0.0,
+                   match_colors=float(match_colors[0]) if match_colors else 0.0,
+                   match_region=match_region[0] if match_region else MATCH_REGIONS[0],
+                   seamless=bool(seamless_edges[0]) if seamless_edges else False)
         self._comp_mask = bool(comparison_mask[0]) if comparison_mask else True
         want = bool(comparison[0]) if comparison else False
         self._comp_h = int(comparison_height[0]) if comparison_height else 360
@@ -2029,7 +2137,7 @@ class BFSShotJoin:
         lab = (label[0] if label else "") or ""
         self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
         images = [crop_panel(img, sh) for img, sh in zip(images, shots)]
-        images = [uncrop(img, sh) if sh.get("crop") and sh.get("full_frames") is not None else img
+        images = [uncrop(img, sh, **fin) if sh.get("crop") and sh.get("full_frames") is not None else img
                   for img, sh in zip(images, shots)]
         if shots and shots[0].get("queue"):
             out = self._join_queue(images, shots, crossfade, audio, tl)

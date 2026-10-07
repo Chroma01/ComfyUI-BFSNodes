@@ -143,6 +143,20 @@ Unpack** also outputs the shot's mask (`mask`), e.g. for an inpainting model. In
 video, cropped shots show their mask (red) and crop box (yellow) over the original column (`comparison_mask`, on by
 default), so you can check what was selected next to the result.
 
+**Stitch finishing** (BFS Shot Join, cropped shots only; adapted from Nekodificador's *NKD Inpaint Stitch*, MIT):
+
+| Option | What it does |
+|---|---|
+| `edge_hardness` (0-1) | hardens the soft edge of the paste; raise it when a faint ghost of the original person shows around the new one |
+| `match_colors` (0-1) | corrects the colour / brightness drift of the generated patch (Reinhard in LAB), with statistics over the whole shot so it does not flicker |
+| `match_region` | *around the subject (swap)*: measured on a ring of background around the mask, so a new person keeps their own colours. *inside the subject*: measured inside the mask, for retouching the same content |
+| `seamless_edges` | Poisson blend (OpenCV) for stubborn seams; slower |
+
+**Mask, crop or both.** A generation mask alone (MiniMax H3 per-row noise mask) keeps the background exact but
+generates the person at the frame's own size, so a small person gets few pixels. A crop alone gives the person much
+more resolution, but the whole box is regenerated and has to be pasted back (that is what the finishing above is for).
+Both together is best: crop around the person and regenerate only the masked part inside the crop.
+
 The **Mask & crop** card holds the global settings, with defaults that work as they are: fill holes on,
 temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off
 (16 aligns the mask to H3's latent grid), threshold 0.5, 4 objects. *Show masks on shots* overlays the preview

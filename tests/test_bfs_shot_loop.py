@@ -426,5 +426,29 @@ class MaskOverlayTest(unittest.TestCase):
         self.assertGreater(float(out[0, 3, 16, 1]), 0.5)            # yellow box edge
 
 
+class StitchFinishTest(unittest.TestCase):
+    def _shot(self):
+        full = torch.full((4, 64, 64, 3), 0.5)
+        mask = torch.zeros(4, 64, 64); mask[:, 20:44, 24:40] = 1
+        return {"full_frames": full, "crop": {"box": [0.125, 0.125, 0.875, 0.875], "mask": mask, "paste": "mask",
+                                              "expand": 0, "feather": 2}}
+
+    def test_ring_colour_match_removes_drift_and_keeps_subject_contrast(self):
+        shot = self._shot()
+        gen = torch.full((4, 48, 48, 3), 0.62)          # the model brightened the whole crop (+0.12)
+        gen[:, 12:36, 16:32] = 0.2                       # a darker new subject
+        plain = SL.uncrop(gen, shot)
+        fixed = SL.uncrop(gen, shot, match_colors=1.0)
+        # around the subject the drift is gone, inside it the new subject stays darker than the scene
+        self.assertGreater(abs(float(plain[0, 21, 23].mean()) - 0.5), abs(float(fixed[0, 21, 23].mean()) - 0.5))
+        self.assertLess(float(fixed[0, 30, 30].mean()), 0.45)
+
+    def test_edge_hardness(self):
+        a = torch.tensor([[[0.1, 0.5, 0.9]]])
+        h = SL._alpha_hardness(a, 1.0)
+        self.assertEqual([round(float(x), 2) for x in h[0, 0]], [0.0, 0.5, 1.0])
+        self.assertTrue(torch.equal(SL._alpha_hardness(a, 0.0), a))
+
+
 if __name__ == "__main__":
     unittest.main()
