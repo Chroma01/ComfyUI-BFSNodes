@@ -214,24 +214,93 @@ BFS Shot Join ◄── images ────────────────�
 For other models, use **BFS Shot Unpack** and wire `guide_frames`, `ref_image`, `prompt` and
 `length` into that model's own guide and reference nodes; the list mapping works the same way.
 
-## `{target}`: say which person is replaced
+## Choosing who is replaced (`{target}`), step by step
 
-Write `{target}` in a prompt (e.g. "Replace {target} in the guide video with <Subject 1>") and every shot fills it with
-its own description of the person being replaced, so the model knows WHICH person to swap when several are on screen.
+With several people on screen, a prompt that says "replace the person" leaves the model to guess. `{target}`
+puts a short description of the right person into the prompt of every shot ("the young woman with dark hair in a
+pink top"), so the model knows WHICH one to swap. The selection is made with SAM 3, and the description by the
+VLM, so it works for anyone or anything you can click on.
 
-1. Select the person in the shot: **🎯 Points…** and click on their body (or type what to segment).
-2. **🧑 Describe target**: SAM 3 cuts that person out of the selected frame and the VLM (the planner's `vlm` input,
-   after one run) writes a short phrase such as "the young woman with dark hair in a pink top". A thumbnail of the
-   cut-out shows what was described.
-3. Edit the text if needed; **Target → all** copies it to every shot. An empty description becomes "the person".
+### What you need
 
-## One selection for the whole video
+- The planner's **`vlm`** input connected to a Qwen3-VL (CLIPLoader, type *stable_diffusion*, `qwen3vl_8b` recommended).
+- The workflow run **once** with it connected. ComfyUI only hands models to nodes when they run; after that the
+  panel buttons can use it.
+- Without a VLM it still works: you get the cut-out and type the description yourself.
 
-When the subject stays in the same place across shots (a sequential video), select them once:
+### 1. Put `{target}` in the prompt
 
-- In **🎯 Points…**, **Save → all shots** applies the points to every shot, each on its frame at the same relative
-  position as the frame you clicked on. **Save (this shot)** keeps them on the current shot only.
-- **Points → all** (in the shot's card) does the same from the points already saved on that shot.
-- **✕ Clear mask** removes a shot's segmentation (points, text and crop), for the shots where it picked the wrong thing.
-  Use **👁 Preview mask** on a few shots to check.
+Write `{target}` wherever the prompt names the person being replaced: in the global prompt (all shots) or in a
+shot's own prompt. For example, the swap caption the H3 LoRAs were trained with:
+
+```
+... only the face, body and clothing of {target} are replaced.  summary: [video generation + reference] Replace
+{target} in the guide video with <Subject 1>, keeping the scene, camera and the complete motion and facial
+performance of the guide video.  detailed_description: [Shot 1] <Subject 1> takes the exact place of {target}
+and moves with the same timing, body pose, gestures, ...
+```
+
+`{target}` can be combined with `{details}` (the description of the references) and `{shot}` (the VLM's
+description of the shot).
+
+### 2. Select the person
+
+Open a shot and click **🎯 Points…**. The modal shows one frame of the shot; the slider below picks the frame.
+
+- **Click on the person's body** (torso), not only the face. A click on the face selects the head, and the
+  description then misses the clothes.
+- **Right-click** (or shift+click) puts an *exclude* point, e.g. on a second person standing close.
+- **👁 Segment** shows what SAM 3 picked (red). Add or remove points until only that person is red.
+- Instead of points you can type what to segment (`woman in pink`, `man with glasses`). Points win when both are set.
+
+Then save:
+
+| Button | What it does |
+|---|---|
+| **Save (this shot)** | keeps the selection on this shot only |
+| **Save → all shots** | applies the same points to every shot, each on its frame at the same relative position as the frame you clicked on (e.g. clicked in the middle of this shot → every shot uses its middle frame) |
+
+**Save → all shots** is for a person who stays in the same place across shots (a sequential video, a fixed camera).
+
+### 3. Describe the person
+
+Click **🧑 Describe target** in the shot's card:
+- SAM 3 cuts the person out of the selected frame, and a thumbnail of the cut-out appears next to the field.
+- The VLM writes a short phrase into the **`{target}`** field.
+- The field stays editable: correct it or write your own. Keep it short and visual (who, hair, main clothes with
+  colours) and start it with "the".
+- **Target → all** copies the description to every shot. Use it when the same person is replaced throughout;
+  otherwise describe shot by shot.
+
+### 4. Check and fix
+
+- **👁 Preview mask** on a few shots shows the selection on several frames of each shot.
+- In a shot where the selection picked the wrong thing, **✕ Clear mask** removes its points, text and crop. Select
+  again in that shot only (**Save (this shot)**) and describe again.
+- **Points → all** (in a shot's card) copies that shot's points to every shot without opening the modal.
+
+### What happens when the workflow runs
+
+Every shot's prompt gets its own `{target}` text. A shot without a description gets "the person". The selection is
+only used to make the description: it does not crop or mask anything unless **✂ Crop to mask** is also ticked.
+
+### Examples
+
+- **Two people, swap only one:** in the first shot, click on the woman's torso, put an exclude point on the man,
+  then **Save → all shots** and **🧑 Describe target** → "the young woman with long black hair in a white blouse".
+  **Target → all**.
+- **The person changes between shots:** describe shot by shot, e.g. shot 1 "the man in the grey suit", shot 2
+  "the woman in the red dress". Each shot keeps its own text.
+- **Animals:** it works the same way, e.g. "the small black dog in front".
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "No VLM yet" | connect the `vlm` input and run the workflow once, or type the description |
+| "Select the person first" | the shot has no points or mask text: use **🎯 Points…** |
+| "SAM 3 found nothing" | click again on the person (on the torso), or try another frame with the slider |
+| Only the face or the hair is described | the click was on the head: click the body |
+| The other person is described | add an exclude point (right-click) on the other person, **👁 Segment**, save, describe again |
+| The swap still hits the wrong person | make the description more specific (position: "on the left", clothing colours) |
 
