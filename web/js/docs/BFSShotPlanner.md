@@ -171,6 +171,12 @@ result back, feathered by the mask (or the whole box). **BFS Shot Unpack** also 
 e.g. for an inpainting model. In **BFS Shot Join**'s comparison video, cropped shots show their mask (red) and crop
 box (yellow) over the original column (`comparison_mask`, on by default).
 
+**Mask strength** (mask modes, per shot, slider under the modes): 1 regenerates the masked area completely. Lower
+values keep part of the original there: the area starts less noisy (H3 puts those rows at *strength* × the noise
+level), like an opacity. 0.8-0.9 keeps pose, outline and lighting while still swapping; too low copies the original
+person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
+the motion either way. (Not applied with the duet panel.)
+
 ### Masks from a video (rotoscoping) instead of SAM 3
 
 A mask made elsewhere (After Effects Roto Brush, DaVinci Resolve Magic Mask, another ComfyUI workflow…) can replace

@@ -18,7 +18,7 @@ function shotCard(c, s, i) {
     h("div", { class: "badges" }, [
       { video: bdg("🎞 mask video", "", s.mask.video), global: bdg("🎞 global mask", "", "the plan's mask video for the whole video"),
         sam: bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) }[maskSource(s)] || null,
-      s.crop || s.inpaint ? bdg({ mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)], "on", c.modeName(s)) : null,
+      s.crop || s.inpaint ? bdg({ mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)] + (s.inpaint && s.strength < 1 ? ` ${Number(s.strength).toFixed(2)}` : ""), "on", c.modeName(s)) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
       i > 0 && s.chain !== "off" ? bdg("⛓", "on", `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
       warnN ? bdg(`⚠ ${warnN}`, "warn", issues.map(x => x.text).join("\n")) : null,
@@ -160,6 +160,14 @@ function editor(c, cur) {
       ["cropmask", "✂🎭 Crop + mask", "Inside the crop, only the mask is regenerated: the most detail with the background kept."],
     ].map(([k, t, d]) => mode(c.modeOf(cur) === k, t, d, () => c.setMode(i, k)))),
     (cur.crop || cur.inpaint) && !hasMask(cur) ? h("div", { class: "err" }, `${c.modeName(cur)} needs a mask on this shot: a mask text, points or a mask video (or the planner's mask input).`) : null,
+    cur.inpaint ? h("div", { class: "row", style: "margin-bottom:6px;align-items:center",
+      title: "How much of the masked area is regenerated. 1 = all of it (the default). Lower keeps part of the original there (the area starts less noisy, like an opacity): 0.8-0.9 keeps pose, outline and lighting while still swapping; too low copies the original person." }, [
+      h("span", { style: "white-space:nowrap" }, `Mask strength ${Number(cur.strength).toFixed(2)}`),
+      h("input", { type: "range", min: 0.3, max: 1, step: 0.01, value: cur.strength, style: "flex:1;max-width:320px",
+        onInput: e => { c.meta(i).strength = parseFloat(e.target.value); }, onChange: c.save }),
+      h("button", { class: "ghost", disabled: cur.strength >= 1, onClick: () => c.setMeta(i, "strength", 1) }, "reset"),
+      hint(cur.strength >= 1 ? "regenerates the masked area completely" : `keeps ~${Math.round(100 - cur.strength * 100)}% of the original inside the mask`),
+    ]) : null,
     cur.inpaint ? h("div", { class: "note", style: "margin-bottom:6px" }, [h("b", "Mask only / Crop + mask: "),
       "set BFS Shot H3 Conditioning → inpaint to ", h("b", "per shot (planner)"), " (the default). Raise Expand (People & masks tab) when the new person is bigger than the old one."]) : null,
     h("div", { class: "row", style: "margin-top:4px;align-items:center" }, [
@@ -201,7 +209,7 @@ function editor(c, cur) {
         ref: "reference + ref 2", prompt: "this shot's prompt", mask_text: "the mask text (shots keep their own points)",
         points: "the points, on each shot's frame at the same relative position (a subject that stays in place)",
         mask_video: "the shot's mask video (it covers only its own shot: usually you want a different one per shot)",
-        crop: "the generation mode: Full frame / Mask only / Crop / Crop + mask (shots with a mask)", target: "the {target} description",
+        crop: "the generation mode (Full frame / Mask only / Crop / Crop + mask) and its mask strength (shots with a mask)", target: "the {target} description",
         chain: "continuity (not on the first shot)" }[f]))),
     h("div", { class: "row", style: "margin-top:6px" }, [
       h("div", { class: "seg-btns" }, [["all", "all shots"], ["after", "shots after this"]].map(([v, l]) =>

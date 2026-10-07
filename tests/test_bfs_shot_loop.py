@@ -484,6 +484,10 @@ class InpaintInCropTest(unittest.TestCase):
         self.assertEqual(float(vm[0, 0, 3, 0, 0]), 0.0)                   # the rest of the crop: kept
         self.assertEqual(float(vm[0, 0, 3, 2, 4]), 1.0)                   # grown by one latent cell
         self.assertTrue(bool((am == 1).all()))                            # audio fully generated
+        _, out2 = SL.inpaint_latent(lat, [], VAE(), frames, mask, strength=0.8)
+        vm2 = out2["noise_mask"].tensors[0]
+        self.assertAlmostEqual(float(vm2[0, 0, 3, 4, 4]), 0.8, places=5)     # partly regenerated inside the mask
+        self.assertEqual(float(vm2[0, 0, 3, 0, 0]), 0.0)                       # still kept outside
 
 
     def test_generation_mask_with_and_without_crop(self):

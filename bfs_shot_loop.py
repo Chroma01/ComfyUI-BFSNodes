@@ -460,6 +460,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["chain_frame"] = m.get("chain_frame") or "first"
         s["crop"] = bool(m.get("crop"))
         s["inpaint"] = bool(m.get("inpaint"))
+        s["strength"] = min(1.0, max(0.05, float(m.get("strength") or 1.0)))
         s["mask"] = m.get("mask") or {}
         s["target"] = m.get("target") or ""
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
@@ -1819,7 +1820,7 @@ class BFSShotPlanner:
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
-                "inpaint": bool(s.get("inpaint")),
+                "inpaint": bool(s.get("inpaint")), "inpaint_strength": float(s.get("strength") or 1.0),
                 "ref": ref, "ref2": ref2,
                 "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
@@ -2070,10 +2071,12 @@ def overlay_of(shot: dict) -> dict | None:
         return None
 
 
-def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torch.Tensor):
+def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torch.Tensor, strength: float = 1.0):
     """H3 AV latent whose video starts from `frames` (VAE-encoded) and whose generation mask is `mask` (1 = regenerate)
-    on H3's latent grid (grown by one cell); the audio stays fully generated. Per-row mixed-timestep masking for H3:
-    credit to Neko (Nekodificador) and AbleJones, whose workflow and nodes this follows."""
+    on H3's latent grid (grown by one cell); the audio stays fully generated. strength < 1 puts the masked rows at
+    strength x the noise level, so they keep some of the original (H3 reads fractional mask rows natively).
+    Per-row mixed-timestep masking for H3: credit to Neko (Nekodificador) and AbleJones, whose workflow and nodes this
+    follows."""
     import comfy.nested_tensor
     try:
         from .bfs_h3_side_panel import _encode, latent_mask
@@ -2088,7 +2091,7 @@ def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torc
     enc = _encode(vae, frames[..., :3]).to(video)
     if enc.shape[2] != T:
         raise ValueError(f"inpaint: the shot encodes to {enc.shape[2]} latent frames, the video has {T}")
-    vmask = latent_mask(mask, T, h, w, grow=1).to(video.device)
+    vmask = latent_mask(mask, T, h, w, grow=1).to(video.device) * float(min(1.0, max(0.0, strength)))
     out = dict(latent)
     out["samples"] = comfy.nested_tensor.NestedTensor((enc, audio))
     out["noise_mask"] = comfy.nested_tensor.NestedTensor((vmask, torch.ones_like(audio)))
@@ -2261,10 +2264,12 @@ class BFSShotH3Conditioning:
             keep_mask, keep_video = generation_mask(shot, log=tag), shot["frames"]
             print(f"{tag}: generation mask {mask_report(keep_mask)}, ready in {time.time() - t0:.1f}s", flush=True)
         if keep_mask is not None and not on_canvas:
-            positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask)
+            strength = float(shot.get("inpaint_strength") or 1.0)
+            positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask, strength)
             nm = latent["noise_mask"].tensors[0]
-            print(f"{tag}: {float(nm.mean()) * 100:.1f}% of the latent is regenerated, the rest is kept "
-                  f"({int(nm.shape[2])} latent frames)", flush=True)
+            print(f"{tag}: {float((nm > 0).float().mean()) * 100:.1f}% of the latent is regenerated"
+                  + (f" at strength {strength:.2f} (keeps {100 - strength * 100:.0f}% of the original there)" if strength < 1 else "")
+                  + f", the rest is kept ({int(nm.shape[2])} latent frames)", flush=True)
         if on_canvas:
             try:
                 from .bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
