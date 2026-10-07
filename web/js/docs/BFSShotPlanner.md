@@ -225,3 +225,13 @@ its own description of the person being replaced, so the model knows WHICH perso
    cut-out shows what was described.
 3. Edit the text if needed; **Target → all** copies it to every shot. An empty description becomes "the person".
 
+## One selection for the whole video
+
+When the subject stays in the same place across shots (a sequential video), select them once:
+
+- In **🎯 Points…**, **Save → all shots** applies the points to every shot, each on its frame at the same relative
+  position as the frame you clicked on. **Save (this shot)** keeps them on the current shot only.
+- **Points → all** (in the shot's card) does the same from the points already saved on that shot.
+- **✕ Clear mask** removes a shot's segmentation (points, text and crop), for the shots where it picked the wrong thing.
+  Use **👁 Preview mask** on a few shots to check.
+

@@ -395,6 +395,23 @@ function Panel(io) {
     if (modal.prev) maskPrev.value = { ...maskPrev.value, [segKey(segs.value[modal.idx])]: modal.prev };
     modal.open = false;
   };
+  // the same selection on every shot (a subject that stays in place): each shot gets the points on its frame at the same
+  // relative position as the key frame here
+  const pointsToAll = (points, key, text, fromIdx) => {
+    const src = segs.value[fromIdx]; const rel = src ? key / Math.max(1, src.len - 1) : 0.5;
+    segs.value.forEach((x, i) => {
+      const m = meta(i);
+      m.mask = { ...(m.mask || {}), points: points.map(p => ({ ...p })), key: Math.round(rel * Math.max(0, x.len - 1)), text: text ?? (m.mask || {}).text };
+    });
+    maskPrev.value = {}; save();
+  };
+  const savePointsAll = () => { pointsToAll(modal.points, modal.key, modal.text, modal.idx); modal.open = false; };
+  const clearMask = i => {
+    const m = meta(i); m.mask = {}; m.crop = false;
+    const k = segs.value[i] ? segKey(segs.value[i]) : null;
+    if (k) { const mp = { ...maskPrev.value }; delete mp[k]; maskPrev.value = mp; }
+    save();
+  };
   const mergeSug = list => { const o = { ...vlmSug.value }; for (const x of list || []) o[`${x.start}-${x.end}`] = x; vlmSug.value = o; };
   async function analyseVLM() {
     busy.value = "Asking the VLM about every shot…"; error.value = "";
@@ -956,6 +973,11 @@ function Panel(io) {
         h("button", { title: "Pick positive / negative points on a frame of this shot", onClick: () => openPoints(sel.value) },
           (cur.mask.points || []).length ? `🎯 Points (${cur.mask.points.length})` : "🎯 Points…"),
         h("button", { disabled: !!busy.value || !(cur.mask.text || (cur.mask.points || []).length), onClick: () => previewMask(sel.value) }, "👁 Preview mask"),
+        h("button", { disabled: !(cur.mask.points || []).length, title: "Copy this shot's points to every shot (same place in the frame, same relative frame)",
+          onClick: () => pointsToAll(cur.mask.points || [], cur.mask.key ?? Math.floor(cur.len / 2), undefined, sel.value) }, "Points → all"),
+        h("button", { disabled: !(cur.mask.text || (cur.mask.points || []).length || cur.crop),
+          title: "Remove this shot's segmentation (points, text, crop) - for shots where it picked the wrong thing",
+          onClick: () => clearMask(sel.value) }, "✕ Clear mask"),
         h("button", { title: "Use this text prompt for every shot (points stay per shot)", onClick: () => {
           const t = cur.mask.text || ""; segs.value.forEach((_, i) => { const m = meta(i); m.mask = { ...(m.mask || {}), text: t }; }); save();
         } }, "Mask → all"),
@@ -1044,7 +1066,9 @@ function Panel(io) {
           h("span", { class: "hint" }, modal.prev.empty ? "nothing found" : `covers ${(modal.prev.coverage * 100).toFixed(1)}%`)]) : null,
         h("div", { class: "row", style: "margin-top:8px;justify-content:flex-end" }, [
           h("button", { onClick: () => { modal.open = false; } }, "Cancel"),
-          h("button", { class: "pri", onClick: savePoints }, "Save"),
+          h("button", { title: "Apply these points to EVERY shot, each on its frame at the same relative position (a subject that stays in place)",
+            onClick: savePointsAll }, "Save → all shots"),
+          h("button", { class: "pri", onClick: savePoints }, "Save (this shot)"),
         ]),
       ]),
     ]))) : null;
