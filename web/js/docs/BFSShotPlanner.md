@@ -23,6 +23,25 @@ every shot inside that range.
 | **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. With *comparison* on it also returns a side-by-side video (original shot \| references \| result) with the shot's info and your *label* on top and its prompt below, ready for Create Video. |
 | **BFS Shot H3 Duet** | Renders one shot with H3: the shot's clip pinned beside the video (duet, no LoRA), the shot as an aligned guide (for body-swap LoRAs), or both. |
 
+## The panel
+
+The planner's panel has five tabs, in the order you work. The timeline stays on top of every tab.
+
+| tab | what is there |
+|---|---|
+| 🎞 **Video** | pick or upload the video, audio, how it is split into shots (cuts or fixed length), generation size |
+| 🎬 **Shots** | one card per shot (scroll sideways, **← →** move between shots), the preview player and the selected shot's editor: reference & prompt, who is replaced (mask, generation mode, `{target}`), continuity, **Copy to other shots** |
+| 👥 **People & masks** | the cast found by face (a reference per person) and the global mask settings |
+| 📝 **Prompts & refs** | the global reference and prompt, the VLM and the reference descriptions (`{details}`) |
+| ▶ **Run** | **Checks** (what to fix before running, with a button to each shot), auto / queue loop, filters, test limits |
+
+Shot cards show badges for what each shot has: 🎯 mask, 🎭 / ✂ generation mode, 🧑 `{target}`, ⛓ continuity and ⚠ problems.
+The header's ⚠ count opens the checks.
+
+**Copy to other shots** (in the shot editor) copies the chosen parts of the selected shot to all shots, or to the
+shots after it: references, prompt, mask text, mask points (each shot gets them on its frame at the same relative
+position), generation mode, `{target}`, continuity. It replaces the old "→ all" buttons.
+
 ## How the loop works
 
 ComfyUI runs any node that receives a list once per item and pairs several lists by index. The
@@ -56,7 +75,7 @@ camera cuts.
   into equal parts.
 - **Fixed length**: equal parts no longer than the maximum.
 - **By hand**: drag the white handles on the timeline to move a boundary, double-click the
-  shot bar to split, *Merge with next* to join, or select a shot and press **Delete** to remove the cut at its
+  shot bar to split, *⇥ Merge* to join, or select a shot and press **Delete** to remove the cut at its
   start (it merges into the previous shot). Your edits are what runs.
 
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
@@ -122,7 +141,7 @@ A reference set on the shot itself always wins; the global reference is the last
 
 Every shot can have its own reference, second reference and prompt; shots without them use the
 global ones. Click an empty reference slot to upload an image straight from your computer; a filled
-slot has **✕** to remove it and, on a shot, **→ all** to use it for every shot. The last ten
+slot has **✕** to remove it; **Copy to other shots** gives a shot's references to every shot. The last ten
 references you picked are shown under the shot editor for one-click reuse (click = reference,
 shift+click = second reference). Connected `ref_image`, `ref_image_2` and `prompt` inputs override
 the panel's global values, so an edited first frame or a prompt from another node can drive the
@@ -133,15 +152,24 @@ without repeats, so a plan where every shot shares one reference returns a singl
 
 ## Mask & crop (SAM 3)
 
-Generate only part of the frame. In a shot's editor, type what to segment in English (`person in white`,
-`woman with red hair`, `red car`; up to 32 tokens, commas for several things) or click **🎯 Points** to pick
-positive / negative points on any frame of the shot, then **👁 Preview mask** (red = mask, yellow = crop box).
-Tick **✂ Crop to mask** and the shot is cropped to one box around the mask (the union over all its frames, so
-the crop does not shake), at the source resolution, and sent to the model at the generation size; **BFS Shot
-Join** pastes the result back into the full frame, feathered by the mask (or the whole box). **BFS Shot
-Unpack** also outputs the shot's mask (`mask`), e.g. for an inpainting model. In **BFS Shot Join**'s comparison
-video, cropped shots show their mask (red) and crop box (yellow) over the original column (`comparison_mask`, on by
-default), so you can check what was selected next to the result.
+Generate only part of the frame. In a shot's editor (*Who is replaced*), type what to segment in English
+(`person in white`, `woman with red hair`, `red car`; up to 32 tokens, commas for several things) or click
+**🎯 Points** to pick positive / negative points on any frame of the shot, then **👁 Preview** (red = mask,
+yellow = crop box). Then pick how the shot is generated:
+
+| mode | what is generated | crop / uncrop |
+|---|---|---|
+| **Full frame** | the whole frame; the mask only feeds `{target}` and the setting picture | no |
+| **🎭 Mask only** | only the mask, on the whole frame; everything else stays exactly as it was | no |
+| **✂ Crop** | a box around the mask (more pixels for a small person); BFS Shot Join pastes it back | yes |
+| **✂🎭 Crop + mask** | only the mask, inside the crop: the most detail with the background kept | yes |
+
+The two mask modes need **BFS Shot H3 Conditioning → inpaint = per shot (planner)** (the default; *only the mask*
+forces it on every shot, *off* never). The crop is one box around the mask (the union over all its frames, so it
+does not shake), at the source resolution, sent to the model at the generation size; **BFS Shot Join** pastes the
+result back, feathered by the mask (or the whole box). **BFS Shot Unpack** also outputs the shot's mask (`mask`),
+e.g. for an inpainting model. In **BFS Shot Join**'s comparison video, cropped shots show their mask (red) and crop
+box (yellow) over the original column (`comparison_mask`, on by default).
 
 **Stitch finishing** (BFS Shot Join, cropped shots only; adapted from Neko (Nekodificador)'s *NKD Inpaint Stitch*, MIT, built on AbleJones's workflow and nodes):
 
@@ -152,24 +180,19 @@ default), so you can check what was selected next to the result.
 | `match_region` | *around the subject (swap)*: measured on a ring of background around the mask, so a new person keeps their own colours. *inside the subject*: measured inside the mask, for retouching the same content |
 | `seamless_edges` | Poisson blend (OpenCV) for stubborn seams; slower |
 
-**Mask, crop or both.** A generation mask alone (MiniMax H3 per-row noise mask) keeps the background exact but
-generates the person at the frame's own size, so a small person gets few pixels. A crop alone gives the person much
-more resolution, but the whole box is regenerated and has to be pasted back (that is what the finishing above is for).
-Set **inpaint → only the mask** on BFS Shot H3 Conditioning to regenerate only the person: the latent starts from
-the shot's own frames and its SAM 3 mask (grown by *expand* plus one latent cell) becomes the H3 generation mask, so
-everything else stays identical.
+**Which mode.** A generation mask alone keeps the background exact but generates the person at the frame's own size,
+so a small person gets few pixels; a crop alone gives the person more resolution, but the whole box is regenerated
+and pasted back (that is what the finishing above is for). *Mask only* is the simplest when the person fills a good
+part of the frame; *Crop + mask* is best for small people. In the mask modes the latent starts from the shot's own
+frames and its SAM 3 mask (grown by *expand* plus one latent cell) becomes the H3 generation mask. Raise *expand*
+when the new person is bigger than the old one (longer hair, wider body): the generated area cannot go past the
+grown mask; their shadow or reflection outside the mask stays from the original.
 
-- **Mask only** (shot has a mask, *Crop to mask* off): the whole frame, no crop and no uncrop. Simplest, the
-  background is untouched; best when the person fills a good part of the frame.
-- **Crop + mask** (*Crop to mask* on): the same inside the crop, so a small person gets more pixels; BFS Shot Join
-  pastes it back with no seam. Works with the duet panel too.
-
-Raise *expand* when the new person is bigger than the old one (longer hair, wider body): the generated area cannot
-go past the grown mask. Credit to **Neko (Nekodificador)** and **AbleJones**, whose workflow and nodes this follows.
+Credit to **Neko (Nekodificador)** and **AbleJones**, whose workflow and nodes the crop + generation mask follows.
 ComfyUI builds without native H3 generation masks need a per-row mask patch on the model
 (e.g. ComfyUI-MiniMaxH3-PerRowMasking).
 
-The **Mask & crop** card holds the global settings, with defaults that work as they are: fill holes on,
+The **People & masks** tab holds the global mask settings, with defaults that work as they are: fill holes on,
 temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off
 (16 aligns the mask to H3's latent grid), threshold 0.5, 4 objects. *Show masks on shots* overlays the preview
 on the shot cards. SAM 3 uses the official `sam3.1_multiplex_fp16.safetensors` in `models/checkpoints`,
@@ -179,14 +202,14 @@ downloaded from Comfy-Org/sam3.1 the first time.
 
 Connect a vision-language model to the planner's `vlm` input (CLIPLoader with `qwen3vl_4b` or `qwen3vl_8b`).
 It looks at a few frames of every shot and suggests what to segment, a description of the shot (camera,
-framing, action) and whether to run it. In the **VLM** card: *Use the VLM when the workflow runs* applies the
+framing, action) and whether to run it. In the **Prompts & refs** tab: *Use the VLM when the workflow runs* applies the
 suggestions at run time (mask text for shots without one; `{shot}` in a prompt becomes that shot's
 description), *Analyse shots* asks from the panel (after one run with the VLM connected), and each shot's
 editor shows its suggestion with buttons to apply it. The summary output lists them too.
 
 ## Describe references ({details})
 
-The VLM can describe the references, for any task (not tied to swaps). In the **VLM** card pick an instruction
+The VLM can describe the references, for any task (not tied to swaps). In the **Prompts & refs** tab pick an instruction
 preset: *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
 short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
 description per reference set: the global references, every shot's and every cast person's. They are saved in
@@ -223,7 +246,7 @@ Each shot (after the first) can continue from the **previous shot's generated re
 *Continuity* = *previous shot as reference* adds a frame of it as one more `<Picture n>` after the shot's own
 references (good across camera cuts, keeps the person consistent), and *previous shot as first frame* anchors it
 at frame 0 of the shot (for continuous action without a cut). Pick which frame: the previous result's first,
-middle or last. *Continuity → all* applies the setting to every shot after the first.
+middle or last. **Copy to other shots** with *continuity* ticked applies it to every shot after the first.
 
 It needs the previous result to exist: it works in the **queue loop** (the planner reads the stored result) and in
 the **auto loop with BFS Shot H3 Duet** (it renders shot by shot and keeps the last result). BFS Shot Unpack also
@@ -281,8 +304,8 @@ Open a shot and click **🎯 Points…**. The modal shows one frame of the shot;
 - **👁 Segment** shows what SAM 3 picked (red). Add or remove points until only that person is red.
 - Instead of points you can just type what to segment (`woman in pink`, `man with glasses`, `dog`): no clicking is
   needed, SAM 3 finds and tracks it through the shot. Points are for when the text is ambiguous (two similar people).
-  Points win when both are set. **Mask text → all** copies the text to every shot; **Crop → all** sets *✂ Crop to
-  mask* on every shot that has a mask.
+  Points win when both are set. **Copy to other shots** with *mask text* (and *mode*) ticked gives the text (and
+  the generation mode) to every shot.
 
 Then save:
 
@@ -295,31 +318,32 @@ Then save:
 
 ### 3. Describe the person
 
-Click **🧑 Describe target** in the shot's card:
+Click **🧑 Describe target** in the shot's editor:
 - SAM 3 cuts the person out of the selected frame, and a thumbnail of the cut-out appears next to the field.
 - The VLM writes a short phrase into the **`{target}`** field.
 - The field stays editable: correct it or write your own. Keep it short and visual (who, hair, main clothes with
   colours) and start it with "the".
-- **Target → all** copies the description to every shot. Use it when the same person is replaced throughout;
+- **Copy to other shots** with *{target}* ticked copies the description to every shot. Use it when the same person is replaced throughout;
   otherwise describe shot by shot.
 
 ### 4. Check and fix
 
-- **👁 Preview mask** on a few shots shows the selection on several frames of each shot.
-- In a shot where the selection picked the wrong thing, **✕ Clear mask** removes its points, text and crop. Select
+- **👁 Preview** on a few shots shows the selection on several frames of each shot.
+- In a shot where the selection picked the wrong thing, **✕ Clear** removes its points, text and mode. Select
   again in that shot only (**Save (this shot)**) and describe again.
-- **Points → all** (in a shot's card) copies that shot's points to every shot without opening the modal.
+- **Copy to other shots** with *mask points* ticked copies that shot's points to every shot without opening the modal.
 
 ### What happens when the workflow runs
 
 Every shot's prompt gets its own `{target}` text. A shot without a description gets "the person". The selection is
-only used to make the description: it does not crop or mask anything unless **✂ Crop to mask** is also ticked.
+only used to make the description: it does not crop or mask anything unless the shot's mode is *Mask only*, *Crop*
+or *Crop + mask*.
 
 ### Examples
 
 - **Two people, swap only one:** in the first shot, click on the woman's torso, put an exclude point on the man,
   then **Save → all shots** and **🧑 Describe target** → "the young woman with long black hair in a white blouse".
-  **Target → all**.
+  **Copy to other shots** with *{target}* ticked.
 - **The person changes between shots:** describe shot by shot, e.g. shot 1 "the man in the grey suit", shot 2
   "the woman in the red dress". Each shot keeps its own text.
 - **Animals:** it works the same way, e.g. "the small black dog in front".

@@ -458,6 +458,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["chain"] = m.get("chain") or "off"
         s["chain_frame"] = m.get("chain_frame") or "first"
         s["crop"] = bool(m.get("crop"))
+        s["inpaint"] = bool(m.get("inpaint"))
         s["mask"] = m.get("mask") or {}
         s["target"] = m.get("target") or ""
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
@@ -1721,6 +1722,7 @@ class BFSShotPlanner:
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
+                "inpaint": bool(s.get("inpaint")),
                 "ref": ref, "ref2": ref2,
                 "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
@@ -1879,6 +1881,10 @@ def setting_picture(shot: dict, mode: str, mask: torch.Tensor | None = None) -> 
     elif shot.get("crop") is not None:
         cm = shot["crop"]["mask"]
         m = cm[min(k, cm.shape[0] - 1)]
+    elif shot.get("mask_src"):                      # the person marked on the shot (mask without crop)
+        ms = shot["mask_src"]
+        sm = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])["masks"]
+        m = sm[min(k, sm.shape[0] - 1)]
     else:
         spec = dict(DEFAULT_MASK, text="person", max_objects=8)
         small = torch.nn.functional.interpolate(img.movedim(-1, 1), size=_fit_size(img.shape[1:3], 640),
@@ -1910,6 +1916,9 @@ def add_setting(text: str, k: int, swap: bool) -> str:
         b = len(text) if b < 0 else b
         return text[:b].rstrip() + " " + line + text[b:]
     return (text.rstrip() + "\n\n" + line).strip()
+
+
+INPAINT_MODES = ["per shot (planner)", "off", "only the mask"]
 
 
 def generation_mask(shot: dict) -> torch.Tensor:
@@ -2011,11 +2020,12 @@ class BFSShotH3Conditioning:
                     "TSC's trick: one more reference picture, the shot's middle frame with the person covered in TV "
                     "static, so the model sees the place in full detail (the panel / guide is often small). It is "
                     "the last <Picture n>; a sentence about it is added to subject_definitions (or write {setting} "
-                    "where you want its tag). Mask: setting_mask, else the shot's SAM 3 crop mask, else SAM 3 "
-                    "'person' on that frame. 'source size' uses the video's own resolution (up to 2048 short edge): "
+                    "where you want its tag). Mask: setting_mask, else the shot's SAM 3 mask (crop or not), "
+                    "else SAM 3 'person' on that frame. 'source size' uses the video's own resolution (up to 2048 short edge): "
                     "sharper, slower."}),
                 "setting_mask": ("MASK", {"tooltip": "Optional mask of the person to cover in the setting picture."}),
-                "inpaint": (["off", "only the mask"], {"default": "off", "tooltip":
+                "inpaint": (INPAINT_MODES, {"default": INPAINT_MODES[0], "tooltip":
+                    "per shot (planner): each shot's mode in the Shot Planner decides (Full frame / Mask only / Crop / Crop + mask). only the mask: every shot. off: never. "
                     "Regenerate ONLY the person. The latent starts from the shot's own frames and the shot's SAM 3 "
                     "mask (grown by the mask's expand + one latent cell) becomes H3's generation mask; everything else "
                     "stays exactly as it was. With 'Crop to mask' on the shot it works inside the crop (more pixels "
@@ -2111,7 +2121,7 @@ class BFSShotH3Conditioning:
                                                  image=prev).args[0]
         shot.pop("panel", None)
         keep_mask = keep_video = None
-        if inpaint and inpaint != "off":
+        if inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint")):
             keep_mask, keep_video = generation_mask(shot), shot["frames"]
         if keep_mask is not None and not on_canvas:
             positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask)
