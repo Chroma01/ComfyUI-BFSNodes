@@ -32,6 +32,7 @@ const store = {   // per-browser UI conveniences (never the plan itself)
   get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
+const DEFAULT_W = 1180, MIN_W = 1040, MIN_H = 1000;   // node size: wide enough for the four-column settings
 const TABS = [["video", "🎞 Video"], ["shots", "🎬 Shots"], ["people", "👥 People & masks"], ["prompts", "📝 Prompts & refs"], ["run", "▶ Run"]];
 
 function Panel(io) {
@@ -570,7 +571,7 @@ app.registerExtension({
     const host = document.createElement("div");
     // the panel is absolutely positioned inside the host and scrolls by itself, so switching tabs never resizes the
     // node (Vue nodes mode sizes widgets by their content); min-width keeps it from collapsing to its content width
-    host.style.cssText = "position:relative;width:100%;height:100%;min-width:600px;min-height:600px";
+    host.style.cssText = "position:relative;width:100%;height:100%;min-width:900px;min-height:640px";
     node.addDOMWidget("bfs_shot_planner", "div", host, { serialize: false, hideOnZoom: false });
     const handle = {};
     createApp({
@@ -589,8 +590,9 @@ app.registerExtension({
     node.onConfigure = function () {
       const r = prev?.apply(this, arguments);
       setTimeout(() => handle.reload?.(), 0);
+      if (this.size[0] < MIN_W) this.setSize([MIN_W, Math.max(this.size[1], MIN_H)]);   // older workflows: too narrow
       return r;
     };
-    node.size = [Math.max(node.size[0], 780), Math.max(node.size[1], 860)];
+    node.size = [Math.max(node.size[0], DEFAULT_W), Math.max(node.size[1], MIN_H)];
   },
 });
