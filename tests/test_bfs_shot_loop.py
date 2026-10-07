@@ -505,5 +505,23 @@ class InpaintInCropTest(unittest.TestCase):
         self.assertTrue(torch.equal(full, m))
 
 
+    def test_comparison_overlay_for_mask_only_shots(self):
+        m = torch.zeros(5, 32, 32); m[:, 8:24, 8:24] = 1
+        ms = {"path": __file__, "analysis": {"fps": 24.0}, "start": 0, "length": 5, "spec": dict(SL.DEFAULT_MASK, expand=0)}
+        shot = {"crop": None, "frames": torch.zeros(5, 64, 64, 3), "mask_src": ms, "inpaint": True}
+        orig = SL.shot_mask
+        SL.shot_mask = lambda *a: {"masks": m.to(torch.uint8)}
+        try:
+            ov = SL.overlay_of(shot)
+            self.assertEqual(tuple(ov["mask"].shape), (5, 64, 64))
+            self.assertIsNone(SL.overlay_of(dict(shot, inpaint=False)))      # not used and not segmented yet: no SAM 3
+            self.assertIsNone(SL.overlay_of({"crop": None, "frames": shot["frames"]}))
+        finally:
+            SL.shot_mask = orig
+        o = SL._mask_overlay(torch.full((5, 32, 32, 3), 0.5), ov, 5)
+        self.assertGreater(float(o[0, 16, 16, 0]), float(o[0, 16, 16, 1]))     # red inside the mask
+        self.assertAlmostEqual(float(o[0, 2, 2, 0]), 0.5)                        # untouched outside
+
+
 if __name__ == "__main__":
     unittest.main()

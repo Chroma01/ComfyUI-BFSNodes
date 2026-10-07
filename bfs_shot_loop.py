@@ -870,10 +870,14 @@ def segment_frames(imgs: torch.Tensor, spec: dict) -> torch.Tensor:
     return torch.cat([back[:-1], fwd], 0)
 
 
+def _mask_key(path: str, analysis: dict, start: int, length: int, spec: dict) -> tuple:
+    return (path, os.path.getmtime(path), float(analysis["fps"]), int(start), int(length),
+            json.dumps({k: spec[k] for k in ("text", "points", "key", "threshold", "max_objects")}, sort_keys=True))
+
+
 def shot_mask(path: str, analysis: dict, start: int, length: int, spec: dict) -> dict:
     """Masks of one shot (timeline frames start..start+length) at a working size, cached; plus the crop box."""
-    key = (path, os.path.getmtime(path), float(analysis["fps"]), int(start), int(length),
-           json.dumps({k: spec[k] for k in ("text", "points", "key", "threshold", "max_objects")}, sort_keys=True))
+    key = _mask_key(path, analysis, start, length, spec)
     if key not in _MASK_CACHE:
         src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
         idx = np.clip(np.arange(start, start + length), 0, analysis["n"] - 1)
@@ -1939,6 +1943,23 @@ def generation_mask(shot: dict) -> torch.Tensor:
     return grow_blur(m, grow, 0) if grow > 0 else m.float()
 
 
+def overlay_of(shot: dict) -> dict | None:
+    """What the comparison draws over the original column: a cropped shot's mask and box, or the generation mask of a
+    mask-only shot (segmented already when it ran; never runs SAM 3 just for the picture unless the shot uses it)."""
+    if shot.get("crop"):
+        return shot["crop"]
+    ms = shot.get("mask_src")
+    if not ms:
+        return None
+    try:
+        if not shot.get("inpaint") and _mask_key(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"]) not in _MASK_CACHE:
+            return None
+        return {"mask": generation_mask(shot)}
+    except Exception as e:   # the picture is optional
+        print(f"[BFS Shot Join] no mask overlay for shot {shot.get('index', 0) + 1}: {e}")
+        return None
+
+
 def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torch.Tensor):
     """H3 AV latent whose video starts from `frames` (VAE-encoded) and whose generation mask is `mask` (1 = regenerate)
     on H3's latent grid (grown by one cell); the audio stays fully generated. Per-row mixed-timestep masking for H3:
@@ -2182,8 +2203,8 @@ class BFSShotJoin:
                              "(OpenCV seamlessClone) for stubborn seams. Slower; can shift colours near the edge. From "
                              "NKD Inpaint Stitch."}),
                          "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
-                             "'Crop to mask' show their SAM 3 mask (red) and crop box (yellow) over the original "
-                             "column, to check what was selected."})},
+                             "a crop or a generation mask (Mask only / Crop + mask) show the mask (red, as grown by "
+                             "expand) and the crop box (yellow) over the original column, to check what was selected."})},
         }
 
     INPUT_IS_LIST = True
@@ -2465,7 +2486,7 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
                      show_mask: bool = True) -> torch.Tensor:
     """original | references | result for every output frame, with shot info on top and the prompt below.
     Built at `height` px per column (0 = full size) so long videos stay light. With show_mask, cropped shots show
-    their mask (red) and crop box (yellow) over the original column."""
+    their mask (red) and crop box (yellow) over the original column, mask-only shots their generation mask."""
     vH, vW = video.shape[1:3]
     s = min(1.0, height / vH) if height and height > 0 else 1.0
     H, W = max(16, int(vH * s) // 2 * 2), max(16, int(vW * s) // 2 * 2)
@@ -2504,8 +2525,9 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
             idx = torch.clamp(torch.arange(L), max=orig.shape[0] - 1)
             o = orig[idx]
             o = _scale_batch(o.float() / 255.0 if o.dtype == torch.uint8 else o, H, W)
-            if show_mask and shot.get("crop"):
-                o = _mask_overlay(o, shot["crop"], L)
+            ov = overlay_of(shot) if show_mask else None
+            if ov is not None:
+                o = _mask_overlay(o, ov, L)
         else:
             o = torch.full((L, H, W, 3), 0.1)
         body = torch.cat([o, col[None].expand(L, -1, -1, -1), res], 2)
