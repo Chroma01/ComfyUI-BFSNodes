@@ -486,5 +486,24 @@ class InpaintInCropTest(unittest.TestCase):
         self.assertTrue(bool((am == 1).all()))                            # audio fully generated
 
 
+    def test_generation_mask_with_and_without_crop(self):
+        m = torch.zeros(5, 64, 64); m[:, 20:40, 20:40] = 1
+        cropped = SL.generation_mask({"crop": {"crop_mask": m, "expand": 4}, "frames": torch.zeros(5, 64, 64, 3)})
+        self.assertEqual(float(cropped[0, 17, 30]), 1.0)                  # grown by expand
+        self.assertEqual(float(cropped[0, 10, 30]), 0.0)
+        with self.assertRaises(ValueError):
+            SL.generation_mask({"crop": None, "mask_src": None, "frames": torch.zeros(5, 64, 64, 3)})
+        orig = SL.shot_mask
+        SL.shot_mask = lambda *a: {"masks": torch.nn.functional.interpolate(m[:, None], size=(32, 32))[:, 0].to(torch.uint8)}
+        try:
+            full = SL.generation_mask({"crop": None, "frames": torch.zeros(5, 64, 64, 3),
+                                       "mask_src": {"path": "", "analysis": {}, "start": 0, "length": 5,
+                                                    "spec": {"expand": 0}}})
+        finally:
+            SL.shot_mask = orig
+        self.assertEqual(tuple(full.shape), (5, 64, 64))
+        self.assertTrue(torch.equal(full, m))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -155,11 +155,18 @@ default), so you can check what was selected next to the result.
 **Mask, crop or both.** A generation mask alone (MiniMax H3 per-row noise mask) keeps the background exact but
 generates the person at the frame's own size, so a small person gets few pixels. A crop alone gives the person much
 more resolution, but the whole box is regenerated and has to be pasted back (that is what the finishing above is for).
-Both together is best: crop around the person and regenerate only the masked part inside the crop. — set **inpaint → only
-the mask (crop)** on BFS Shot H3 Conditioning. The latent starts from the cropped shot and the shot's SAM 3 mask
-(grown by one latent cell) becomes the H3 generation mask, so the rest of the crop stays identical and the paste
-has no seam. Works with the duet panel too. Credit to **Neko (Nekodificador)** and **AbleJones**, whose workflow
-and nodes this follows. ComfyUI builds without native H3 generation masks need a per-row mask patch on the model
+Set **inpaint → only the mask** on BFS Shot H3 Conditioning to regenerate only the person: the latent starts from
+the shot's own frames and its SAM 3 mask (grown by *expand* plus one latent cell) becomes the H3 generation mask, so
+everything else stays identical.
+
+- **Mask only** (shot has a mask, *Crop to mask* off): the whole frame, no crop and no uncrop. Simplest, the
+  background is untouched; best when the person fills a good part of the frame.
+- **Crop + mask** (*Crop to mask* on): the same inside the crop, so a small person gets more pixels; BFS Shot Join
+  pastes it back with no seam. Works with the duet panel too.
+
+Raise *expand* when the new person is bigger than the old one (longer hair, wider body): the generated area cannot
+go past the grown mask. Credit to **Neko (Nekodificador)** and **AbleJones**, whose workflow and nodes this follows.
+ComfyUI builds without native H3 generation masks need a per-row mask patch on the model
 (e.g. ComfyUI-MiniMaxH3-PerRowMasking).
 
 The **Mask & crop** card holds the global settings, with defaults that work as they are: fill holes on,

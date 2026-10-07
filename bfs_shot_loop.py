@@ -1695,7 +1695,11 @@ class BFSShotPlanner:
                 suggestions.append(dict(sug, start=s["start"], end=s["end"]))
                 if vcfg["auto_segment"] and sug["segment"] and not (s["mask"].get("text") or s["mask"].get("points")):
                     s["mask"] = dict(s["mask"], text=sug["segment"])
-            crop, full_frames = None, None
+            crop, full_frames, mask_src = None, None, None
+            if not s.get("crop") and (s["mask"].get("text") or s["mask"].get("points")):
+                # mask without crop: segmented only if the conditioning asks for it (inpaint "only the mask")
+                mask_src = {"path": path, "analysis": a, "start": s["start"], "length": s["gen_len"],
+                            "spec": mask_spec(s.get("mask"), p.get("mask_cfg"))}
             if s.get("crop"):
                 spec = mask_spec(s.get("mask"), p.get("mask_cfg"))
                 r = shot_mask(path, a, s["start"], s["gen_len"], spec)
@@ -1716,7 +1720,7 @@ class BFSShotPlanner:
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
-                "crop": crop, "full_frames": full_frames,
+                "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
                 "ref": ref, "ref2": ref2,
                 "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
@@ -1908,6 +1912,24 @@ def add_setting(text: str, k: int, swap: bool) -> str:
     return (text.rstrip() + "\n\n" + line).strip()
 
 
+def generation_mask(shot: dict) -> torch.Tensor:
+    """The shot's person mask [F,H,W] at the generation size, grown by the mask's `expand`: the crop's own mask for a
+    cropped shot, otherwise the whole frame's (segmented here, cached)."""
+    crop = shot.get("crop") or {}
+    if crop.get("crop_mask") is not None:
+        m, grow = crop["crop_mask"], int(crop.get("expand") or 0)
+    elif shot.get("mask_src"):
+        ms = shot["mask_src"]
+        r = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
+        H, W = shot["frames"].shape[1:3]
+        m = torch.nn.functional.interpolate(r["masks"][:, None].float(), size=(H, W), mode="nearest")[:, 0]
+        grow = int(ms["spec"].get("expand") or 0)
+    else:
+        raise ValueError(f"shot {shot.get('index', 0) + 1}: inpaint 'only the mask' needs a SAM 3 mask on the shot "
+                         "(mask text or points in the Planner)")
+    return grow_blur(m, grow, 0) if grow > 0 else m.float()
+
+
 def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torch.Tensor):
     """H3 AV latent whose video starts from `frames` (VAE-encoded) and whose generation mask is `mask` (1 = regenerate)
     on H3's latent grid (grown by one cell); the audio stays fully generated. Per-row mixed-timestep masking for H3:
@@ -1993,11 +2015,12 @@ class BFSShotH3Conditioning:
                     "'person' on that frame. 'source size' uses the video's own resolution (up to 2048 short edge): "
                     "sharper, slower."}),
                 "setting_mask": ("MASK", {"tooltip": "Optional mask of the person to cover in the setting picture."}),
-                "inpaint": (["off", "only the mask (crop)"], {"default": "off", "tooltip":
-                    "Cropped shots: regenerate ONLY the person inside the crop. The latent starts from the shot's own "
-                    "frames and the shot's SAM 3 mask (grown by one latent cell) becomes H3's generation mask, so the "
-                    "rest of the crop stays exactly as it was and BFS Shot Join pastes it back with no seam. Needs "
-                    "'Crop to mask' on the shot. Crop + H3 generation mask: credit to Neko (Nekodificador) and AbleJones, "
+                "inpaint": (["off", "only the mask"], {"default": "off", "tooltip":
+                    "Regenerate ONLY the person. The latent starts from the shot's own frames and the shot's SAM 3 "
+                    "mask (grown by the mask's expand + one latent cell) becomes H3's generation mask; everything else "
+                    "stays exactly as it was. With 'Crop to mask' on the shot it works inside the crop (more pixels "
+                    "for the person, BFS Shot Join pastes it back); without crop it works on the whole frame (no "
+                    "crop / uncrop at all). Needs a mask (text or points) on the shot. Crop + H3 generation mask: credit to Neko (Nekodificador) and AbleJones, "
                     "whose workflow and nodes this follows. On ComfyUI builds without native H3 generation masks, add "
                     "a per-row mask patch to the model (e.g. ComfyUI-MiniMaxH3-PerRowMasking)."}),
             },
@@ -2089,11 +2112,7 @@ class BFSShotH3Conditioning:
         shot.pop("panel", None)
         keep_mask = keep_video = None
         if inpaint and inpaint != "off":
-            crop = shot.get("crop") or {}
-            keep_mask = crop.get("crop_mask")
-            if keep_mask is None:
-                raise ValueError("inpaint 'only the mask (crop)' needs 'Crop to mask' on the shot (with a SAM 3 mask)")
-            keep_video = shot["frames"]
+            keep_mask, keep_video = generation_mask(shot), shot["frames"]
         if keep_mask is not None and not on_canvas:
             positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask)
         if on_canvas:
