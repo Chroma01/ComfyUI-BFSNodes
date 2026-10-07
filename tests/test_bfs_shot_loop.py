@@ -611,6 +611,20 @@ class MaskGuideTest(unittest.TestCase):
         self.assertAlmostEqual(float(g[0, 16, 16, 0]), 0.9)      # the masked region
         self.assertAlmostEqual(float(g[0, 2, 2, 0]), 0.5)        # grey elsewhere
         self.assertEqual(SL.MASK_GUIDES[0], "off")
+        fr2 = torch.rand(3, 64, 64, 3)
+        m2 = torch.zeros(3, 64, 64); m2[:, 10:50, 10:50] = 1
+        old_det = dict(SL._DET); SL._DET["pose"] = None                  # no YOLO pose model: a clear error
+        try:
+            with self.assertRaisesRegex(ValueError, "YOLO pose model"):
+                SL.masked_only(fr2, m2, look="pose (people)")
+        finally:
+            SL._DET.clear(); SL._DET.update(old_det)
+        for look in [x for x in SL.MASK_GUIDE_LOOKS if not x.startswith("pose")]:
+            g2 = SL.masked_only(fr2, m2, look=look)
+            self.assertEqual(tuple(g2.shape), (3, 64, 64, 3), look)
+            self.assertAlmostEqual(float(g2[0, 2, 2, 0]), 0.5, msg=look)                 # grey outside, every look
+            if look != "colour":                                                       # no colour inside
+                self.assertLess(float((g2[..., 0] - g2[..., 1]).abs().max()), 1e-5, look)
         t = SL.add_mask_video("x subject_definitions: <Subject 1> is ...", 2)
         self.assertIn("<Video 2> shows only the region", t)
         self.assertEqual(SL.add_mask_video("follow {mask_video}", 1), "follow <Video 1>")
@@ -685,7 +699,8 @@ class ConditionFlowTest(unittest.TestCase):
 
     def test_reference_video_of_the_masked_region(self):
         shot, m = self._shot()
-        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3], mask_ref_size="full")
+        self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3], mask_ref_size="full",
+                      mask_guide_look="colour")
         kw = self.calls["r2v"][0]
         v = kw["ref_videos"]["ref_video_1"]
         self.assertAlmostEqual(float(v[0, 2, 2, 0]), 0.5)          # grey outside the mask

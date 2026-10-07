@@ -501,7 +501,7 @@ def _yolo(kind: str):
         from ultralytics import YOLO
         root = os.path.join(folder_paths.models_dir, "ultralytics")
         cands = []
-        for sub in ("bbox", "segm", ""):
+        for sub in ("bbox", "segm", "pose", ""):
             d = os.path.join(root, sub)
             if os.path.isdir(d):
                 cands += [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.endswith(".pt") and kind in f.lower()]
@@ -2076,12 +2076,86 @@ MASK_GUIDES = ["off", "+ extra guide (masked region only)", "instead of the full
                "+ reference video (masked region only)"]
 
 
-def masked_only(frames: torch.Tensor, mask: torch.Tensor, grey: float = 0.5) -> torch.Tensor:
-    """The shot's frames with everything outside the mask grey: what the mask guide shows."""
+MASK_GUIDE_LOOKS = ["grey blurred", "colour", "silhouette", "edges", "pose (people)"]
+# COCO-17 skeleton, coloured per limb like OpenPose drawings
+_LIMBS = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+          (0, 1), (0, 2), (1, 3), (2, 4), (0, 5), (0, 6)]
+_LIMB_RGB = [(255, 0, 0), (255, 85, 0), (255, 170, 0), (255, 255, 0), (170, 255, 0), (85, 255, 0), (0, 255, 0),
+             (0, 255, 85), (0, 255, 170), (0, 255, 255), (0, 170, 255), (0, 85, 255), (0, 0, 255), (85, 0, 255),
+             (170, 0, 255), (255, 0, 255), (255, 0, 170), (255, 0, 85)]
+
+
+def pose_frames(frames: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    """The skeleton (COCO-17, OpenPose colours) of the people inside the mask on black, [F,H,W,3]. Uses a YOLO pose
+    model from models/ultralytics (e.g. pose/yolov8m-pose.pt), the same place and package as the planner's filters."""
+    import cv2
+    model = _yolo("pose")
+    if model is None:
+        raise ValueError("mask_guide_look 'pose' needs ultralytics and a YOLO pose model in models/ultralytics (e.g. "
+                         "models/ultralytics/pose/yolov8m-pose.pt from the ultralytics releases)")
+    F, H, W = frames.shape[:3]
+    imgs = [cv2.cvtColor((f[..., :3].numpy() * 255).astype(np.uint8), cv2.COLOR_RGB2BGR) for f in frames]
+    m = None
+    if mask is not None:
+        m = torch.nn.functional.interpolate(mask[:, None].float(), size=(H, W), mode="nearest")[:, 0].numpy() > 0.5
+    th = max(2, int(min(H, W) / 90))
+    out = np.zeros((F, H, W, 3), np.uint8)
+    for i in range(0, F, 16):
+        res = model(imgs[i:i + 16], verbose=False)
+        for j, r in enumerate(res):
+            k = i + j
+            if r.keypoints is None or r.keypoints.xy is None:
+                continue
+            xy, cf = r.keypoints.xy.cpu().numpy(), r.keypoints.conf
+            cf = cf.cpu().numpy() if cf is not None else np.ones(xy.shape[:2])
+            for p in range(xy.shape[0]):
+                pts, ok = xy[p], cf[p] > 0.3
+                if m is not None:                       # only the people in the shot's mask
+                    vis = [(int(x), int(y)) for (x, y), o in zip(pts, ok) if o and 0 <= int(x) < W and 0 <= int(y) < H]
+                    if not vis or sum(m[min(k, m.shape[0] - 1), y, x] for x, y in vis) < max(1, len(vis) // 3):
+                        continue
+                for (a, b), col in zip(_LIMBS, _LIMB_RGB):
+                    if ok[a] and ok[b]:
+                        cv2.line(out[k], tuple(int(v) for v in pts[a]), tuple(int(v) for v in pts[b]), col, th, cv2.LINE_AA)
+                for q in range(17):
+                    if ok[q]:
+                        cv2.circle(out[k], tuple(int(v) for v in pts[q]), th + 1, (255, 255, 255), -1, cv2.LINE_AA)
+    return torch.from_numpy(out.astype(np.float32) / 255.0)
+
+
+def guide_look(frames: torch.Tensor, look: str, mask: torch.Tensor | None = None) -> torch.Tensor:
+    """What the mask guide shows of the subject: its colours, or only its shape and motion (no clothes / face to
+    copy): luminance blurred, a flat silhouette, its edges, or its pose skeleton (people)."""
+    fr = frames[..., :3].float()
+    if look == "colour":
+        return fr
+    if look.startswith("pose"):
+        return pose_frames(fr, mask)
+    H, W = fr.shape[1:3]
+    lum = (fr * torch.tensor([0.299, 0.587, 0.114])).sum(-1)                 # [F,H,W]
+    if look == "silhouette":
+        return torch.full_like(fr, 0.15)
+    if look == "edges":
+        import cv2
+        out = []
+        for f in lum.numpy():
+            g = cv2.GaussianBlur((f * 255).astype(np.uint8), (5, 5), 0)
+            e = cv2.dilate(cv2.Canny(g, 40, 120), np.ones((2, 2), np.uint8))
+            out.append(np.where(e > 0, 0.95, 0.1).astype(np.float32))
+        return torch.from_numpy(np.stack(out))[..., None].expand(-1, -1, -1, 3).contiguous()
+    r = max(2, int(min(H, W) * 0.02))                                        # grey blurred: volume and light only
+    b = grow_blur(lum, 0, r)
+    return b[..., None].expand(-1, -1, -1, 3).contiguous()
+
+
+def masked_only(frames: torch.Tensor, mask: torch.Tensor, grey: float = 0.5, look: str = "colour") -> torch.Tensor:
+    """The shot's frames with everything outside the mask grey: what the mask guide shows (`look`: see guide_look)."""
     m = torch.nn.functional.interpolate(mask[:, None].float(), size=frames.shape[1:3], mode="nearest")[:, 0]
     idx = torch.clamp(torch.arange(frames.shape[0]), max=m.shape[0] - 1)
     m = m[idx][..., None]
-    return frames[..., :3] * m + grey * (1 - m)
+    if look.startswith("pose"):                       # the skeleton on black inside the (grown) mask
+        return guide_look(frames, look, mask) * m + grey * (1 - m)
+    return guide_look(frames, look) * m + grey * (1 - m)
 
 
 def mask_report(m: torch.Tensor) -> str:
@@ -2244,6 +2318,13 @@ class BFSShotH3Conditioning:
                     "video': enters as a native reference video (<Video n>, after the shot's own if guide_mode uses "
                     "it). The LoRAs were trained with one full guide, so test against off; it can also pull the old "
                     "subject's look."}),
+                "mask_guide_look": (MASK_GUIDE_LOOKS, {"default": MASK_GUIDE_LOOKS[0], "tooltip":
+                    "What the mask guide shows of the subject. grey blurred: its volume, light and head direction "
+                    "without colours or a face (default). colour: as it is (can make the model copy the old subject). "
+                    "silhouette: only its flat shape. edges: only its outlines. pose (people): the skeleton of the "
+                    "people in the mask (OpenPose colours), from a YOLO pose model in models/ultralytics (e.g. "
+                    "pose/yolov8m-pose.pt; uses ultralytics like the planner's filters). The less it shows, the less "
+                    "the model can copy the old subject; the more, the better it follows the pose."}),
                 "mask_ref_size": (list(MASK_REF_SIZES), {"default": "1/2", "tooltip":
                     "mask_guide '+ reference video' only: size of that reference video (fraction of the generation "
                     "size). The native reference channel keeps a smaller video as it is, so 1/2 costs ~1/4 of the "
@@ -2261,7 +2342,7 @@ class BFSShotH3Conditioning:
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
                   panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
-                  setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2"):
+                  setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, layout_text, make_info
@@ -2327,8 +2408,8 @@ class BFSShotH3Conditioning:
         guide_px = None
         if pg:
             pmask = generation_mask(shot, log=gtag)
-            guide_px = masked_only(shot["frames"], pmask)
-            print(f"{gtag}: mask guide ({pg}), {mask_report(pmask)}", flush=True)
+            guide_px = masked_only(shot["frames"], pmask, look=mask_guide_look)
+            print(f"{gtag}: mask guide ({pg}, look: {mask_guide_look}), {mask_report(pmask)}", flush=True)
         if native or pg == MASK_GUIDES[3]:
             vids = {}
             if native:

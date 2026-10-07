@@ -183,7 +183,7 @@ the motion either way. (Not applied with the duet panel.)
 masked region visible, the rest grey, so the model looks at the subject's pose and outline on its own while the mask
 limits where it generates. *+ extra guide* adds it as a second aligned guide next to the normal one (the model sees
 both); *instead of the full guide* replaces the normal one; *+ reference video* gives it as a native reference video
-(`<Video n>`, after the shot's own one when guide_mode uses it; write `{mask_video}` in the prompt where its tag goes, otherwise a sentence is added). `mask_ref_size` makes that reference video smaller (default 1/2, ~1/4 of the tokens): it only has to show the pose and outline. Compare with
+(`<Video n>`, after the shot's own one when guide_mode uses it; write `{mask_video}` in the prompt where its tag goes, otherwise a sentence is added). `mask_guide_look` sets what it shows of the subject: *grey blurred* (default: volume, light and head direction, no colours or face, so the model follows the motion without copying the old subject), *colour* (as it is; can make the model copy the old subject), *silhouette* (flat shape), *edges* (outlines) or *pose (people)* (the skeleton of the people in the mask, OpenPose colours; needs ultralytics and a YOLO pose model in `models/ultralytics`, e.g. `pose/yolov8m-pose.pt`). `mask_ref_size` makes that reference video smaller (default 1/2, ~1/4 of the tokens): it only has to show the pose and outline. Compare with
 *off*: the LoRAs were trained with one full guide, and it can also pull the old subject's look.
 
 ### Masks from a video (rotoscoping) instead of SAM 3
