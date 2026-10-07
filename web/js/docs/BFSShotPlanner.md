@@ -160,20 +160,22 @@ yellow = crop box). Then pick how the shot is generated:
 | mode | what is generated | crop / uncrop |
 |---|---|---|
 | **Full frame** | the whole frame; the mask only feeds `{target}` and the setting picture | no |
+| **🧩 Frame + paste** | the whole frame (so the model follows the guide's pose freely and the new person may be bigger); BFS Shot Join then pastes only the person onto the original frame: the shot's mask plus the new person's outline (SAM 3 on the result, `paste_new_outline`) | no crop; paste in the Join |
 | **🎭 Mask only** | only the mask, on the whole frame; everything else stays exactly as it was | no |
 | **✂ Crop** | a box around the mask (more pixels for a small person); BFS Shot Join pastes it back | yes |
 | **✂🎭 Crop + mask** | only the mask, inside the crop: the most detail with the background kept | yes |
 
-The two mask modes need **BFS Shot H3 Conditioning → inpaint = per shot (planner)** (the default; *only the mask*
+*Frame + paste* is the safest for a different body (e.g. a woman in profile replaced by a man facing the camera):
+*Mask only* binds the new person to the old outline, *Frame + paste* does not. The two mask modes need **BFS Shot H3 Conditioning → inpaint = per shot (planner)** (the default; *only the mask*
 forces it on every shot, *off* never). The crop is one box around the mask (the union over all its frames, so it
 does not shake), at the source resolution, sent to the model at the generation size; **BFS Shot Join** pastes the
 result back, feathered by the mask (or the whole box). **BFS Shot Unpack** also outputs the shot's mask (`mask`),
 e.g. for an inpainting model. In **BFS Shot Join**'s comparison video, cropped shots show their mask (red) and crop
 box (yellow) over the original column (`comparison_mask`, on by default).
 
-**Mask strength** (mask modes, per shot, slider under the modes): 1 regenerates the masked area completely. Lower
-values keep part of the original there: the area starts less noisy (H3 puts those rows at *strength* × the noise
-level), like an opacity. 0.8-0.9 keeps pose, outline and lighting while still swapping; too low copies the original
+**Mask opacity** (mask modes, per shot, slider under the modes): the value of the white inside the generation mask.
+1 regenerates the masked area completely. A grey mask (e.g. 0.85) keeps part of the original there: H3 puts those
+rows at *opacity* × the noise level, so they start from the original partly visible. 0.8-0.9 keeps pose, outline and lighting while still swapping; too low copies the original
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
 the motion either way. (Not applied with the duet panel.)
 

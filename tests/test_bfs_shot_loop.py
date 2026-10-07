@@ -580,5 +580,27 @@ class ExternalMaskTest(unittest.TestCase):
             SL._EXT_MASK.pop(path, None)
 
 
+class FramePasteTest(unittest.TestCase):
+    def test_paste_back_keeps_the_background_and_takes_the_new_outline(self):
+        base = torch.full((5, 64, 64, 3), 0.2)                       # the original frames
+        result = torch.full((5, 64, 64, 3), 0.9)                     # generated: everything changed
+        old = torch.zeros(5, 64, 64); old[:, 20:44, 20:36] = 1       # the original person
+        new = torch.zeros(5, 64, 64); new[:, 16:48, 18:44] = 1       # the new one is bigger
+        ms = {"path": "", "analysis": {}, "start": 0, "length": 5, "spec": dict(SL.DEFAULT_MASK, expand=0, feather=0)}
+        shot = {"index": 0, "frames": base, "mask_src": ms, "paste": True}
+        o1, o2 = SL.shot_mask, SL.segment_frames
+        SL.shot_mask = lambda *a: {"masks": old.to(torch.uint8)}
+        SL.segment_frames = lambda imgs, sp: torch.nn.functional.interpolate(new[:, None], size=imgs.shape[1:3])[:, 0]
+        try:
+            out = SL.paste_back(result, shot, True)
+            only_old = SL.paste_back(result, shot, False)
+        finally:
+            SL.shot_mask, SL.segment_frames = o1, o2
+        self.assertAlmostEqual(float(out[0, 2, 2, 0]), 0.2, places=4)      # background: the original
+        self.assertAlmostEqual(float(out[0, 30, 28, 0]), 0.9, places=4)    # the person: generated
+        self.assertAlmostEqual(float(out[0, 30, 41, 0]), 0.9, places=4)    # the bigger new outline is pasted too
+        self.assertAlmostEqual(float(only_old[0, 30, 41, 0]), 0.2, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()

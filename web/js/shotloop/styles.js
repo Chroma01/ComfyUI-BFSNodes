@@ -143,7 +143,7 @@ const CSS = `
 .bsl .recent img{width:30px;height:30px;border-radius:5px;object-fit:cover;cursor:pointer;border:1px solid #3a3a45}
 .bsl .recent img:hover{border-color:var(--acc)}
 .bsl .recent.sm img{width:22px;height:22px}
-.bsl .modes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:6px}
+.bsl .modes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-bottom:6px}
 .bsl .mode{border:1px solid var(--line2);border-radius:7px;padding:6px 8px;cursor:pointer;background:#18181d}
 .bsl .mode:hover{border-color:#55556a}
 .bsl .mode.on{border-color:var(--acc);background:#1a2034}

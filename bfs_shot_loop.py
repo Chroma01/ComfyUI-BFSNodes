@@ -460,6 +460,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["chain_frame"] = m.get("chain_frame") or "first"
         s["crop"] = bool(m.get("crop"))
         s["inpaint"] = bool(m.get("inpaint"))
+        s["paste"] = bool(m.get("paste")) and not s["crop"] and not s["inpaint"]
         s["strength"] = min(1.0, max(0.05, float(m.get("strength") or 1.0)))
         s["mask"] = m.get("mask") or {}
         s["target"] = m.get("target") or ""
@@ -1090,6 +1091,37 @@ def _seamless(orig: np.ndarray, gen: np.ndarray, alpha: np.ndarray) -> np.ndarra
 
 
 MATCH_REGIONS = ["around the subject (swap)", "inside the subject (same content)"]
+
+
+def paste_back(result: torch.Tensor, shot: dict, new_outline: bool = True, **finish) -> torch.Tensor:
+    """'Frame + paste' shots: the whole frame was generated (so the model followed the guide freely); paste only the
+    person onto the original frame. The pasted area is the shot's mask, plus (new_outline) the new person found by
+    SAM 3 ('person') on the result near the original one, so a bigger silhouette is not cut."""
+    base = shot["frames"]
+    H, W = base.shape[1:3]
+    ms = shot["mask_src"]
+    tag = f"[BFS Shot Join] shot {shot.get('index', 0) + 1}"
+    sm = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])["masks"]
+    n = min(result.shape[0], base.shape[0], sm.shape[0])
+    m = torch.nn.functional.interpolate(sm[:n, None].float(), size=(H, W), mode="nearest")[:, 0]
+    if new_outline and bool(m.any()):
+        x0, y0, x1, y1 = box_px(crop_box(m, 0.5), W, H)              # where the new person may be
+        s = 640 / max(H, W)
+        small = torch.nn.functional.interpolate(result[:n, ..., :3].movedim(-1, 1).float(), size=(max(32, int(H * s) // 2 * 2),
+                    max(32, int(W * s) // 2 * 2)), mode="bilinear", align_corners=False).movedim(1, -1).clamp(0, 1)
+        t0 = time.time()
+        new = segment_frames(small, dict(DEFAULT_MASK, text="person", max_objects=8))
+        _node_boundary()
+        new = torch.nn.functional.interpolate(new[:, None].float(), size=(H, W), mode="nearest")[:, 0]
+        near = torch.zeros(H, W); near[y0:y1, x0:x1] = 1
+        m = torch.maximum(m, new * near)
+        print(f"{tag}: Frame + paste, new outline by SAM 3 in {time.time() - t0:.1f}s", flush=True)
+    sp = ms["spec"]
+    crop = {"box": [0.0, 0.0, 1.0, 1.0], "mask": m, "paste": "mask",
+            "expand": int(sp["expand"] if sp.get("expand") is not None else 16),
+            "feather": int(sp["feather"] if sp.get("feather") is not None else 12)}
+    print(f"{tag}: pasting the person onto the original frame: {mask_report(m)}", flush=True)
+    return uncrop(result, {"crop": crop, "full_frames": base[:n]}, **finish)
 
 
 def uncrop(result: torch.Tensor, shot: dict, edge_hardness: float = 0.0, match_colors: float = 0.0,
@@ -1821,6 +1853,7 @@ class BFSShotPlanner:
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
                 "inpaint": bool(s.get("inpaint")), "inpaint_strength": float(s.get("strength") or 1.0),
+                "paste": bool(s.get("paste")),
                 "ref": ref, "ref2": ref2,
                 "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
@@ -2257,7 +2290,8 @@ class BFSShotH3Conditioning:
         keep_mask = keep_video = None
         use_mask = inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint"))
         tag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
-        mode = ("Crop + mask" if shot.get("crop") else "Mask only") if use_mask else ("Crop" if shot.get("crop") else "Full frame")
+        mode = ("Crop + mask" if shot.get("crop") else "Mask only") if use_mask else \
+            ("Crop" if shot.get("crop") else "Frame + paste (BFS Shot Join pastes the person back)" if shot.get("paste") else "Full frame")
         print(f"{tag}: {mode}" + (f" (inpaint = {inpaint})" if use_mask else ""), flush=True)
         if use_mask:
             t0 = time.time()
@@ -2268,7 +2302,7 @@ class BFSShotH3Conditioning:
             positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask, strength)
             nm = latent["noise_mask"].tensors[0]
             print(f"{tag}: {float((nm > 0).float().mean()) * 100:.1f}% of the latent is regenerated"
-                  + (f" at strength {strength:.2f} (keeps {100 - strength * 100:.0f}% of the original there)" if strength < 1 else "")
+                  + (f" at mask opacity {strength:.2f} (keeps ~{100 - strength * 100:.0f}% of the original there)" if strength < 1 else "")
                   + f", the rest is kept ({int(nm.shape[2])} latent frames)", flush=True)
         if on_canvas:
             try:
@@ -2314,18 +2348,21 @@ class BFSShotJoin:
                              "Height of each column in the comparison (0 = full size). Smaller is much lighter "
                              "for long videos."}),
                          "edge_hardness": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip":
-                             "Cropped shots: harden the soft edge of the paste (0 = as feathered, 1 = hard cut). Raise it "
+                             "Cropped / Frame + paste shots: harden the soft edge of the paste (0 = as feathered, 1 = hard cut). Raise it "
                              "when a faint ghost of the original person shows around the new one. From NKD Inpaint Stitch."}),
                          "match_colors": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip":
-                             "Cropped shots: correct the colour / brightness drift of the generated patch (Reinhard in "
+                             "Cropped / Frame + paste shots: correct the colour / brightness drift of the generated patch (Reinhard in "
                              "LAB, statistics over the whole shot, so no flicker). 0.5-1 typical. From NKD Inpaint Stitch."}),
                          "match_region": (MATCH_REGIONS, {"default": MATCH_REGIONS[0], "tooltip":
                              "Where the colour statistics are measured. 'around the subject (swap)': a ring of background "
                              "around the mask, so a new person keeps their own colours and only the scene's light drift "
                              "is fixed. 'inside the subject': inside the mask (retouching the same person/content)."}),
-                         "seamless_edges": ("BOOLEAN", {"default": False, "tooltip": "Cropped shots: Poisson blend "
+                         "seamless_edges": ("BOOLEAN", {"default": False, "tooltip": "Cropped / Frame + paste shots: Poisson blend "
                              "(OpenCV seamlessClone) for stubborn seams. Slower; can shift colours near the edge. From "
                              "NKD Inpaint Stitch."}),
+                         "paste_new_outline": ("BOOLEAN", {"default": True, "tooltip": "'Frame + paste' shots: also paste "
+                             "where the NEW person is (SAM 3 'person' on the result, near the original one), so a "
+                             "bigger silhouette (hair, body) is not cut. Off = only the original mask (+ expand)."}),
                          "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
                              "a crop or a generation mask (Mask only / Crop + mask) show the mask (red, as grown by "
                              "expand) and the crop box (yellow) over the original column, to check what was selected."})},
@@ -2340,7 +2377,7 @@ class BFSShotJoin:
 
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
              comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
-             seamless_edges=None):
+             seamless_edges=None, paste_new_outline=None):
         tl = timeline[0] if timeline else None
         fin = dict(edge_hardness=float(edge_hardness[0]) if edge_hardness else 0.0,
                    match_colors=float(match_colors[0]) if match_colors else 0.0,
@@ -2353,7 +2390,9 @@ class BFSShotJoin:
         lab = (label[0] if label else "") or ""
         self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
         images = [crop_panel(img, sh) for img, sh in zip(images, shots)]
-        images = [uncrop(img, sh, **fin) if sh.get("crop") and sh.get("full_frames") is not None else img
+        outline = bool(paste_new_outline[0]) if paste_new_outline else True
+        images = [uncrop(img, sh, **fin) if sh.get("crop") and sh.get("full_frames") is not None
+                  else paste_back(img, sh, outline, **fin) if sh.get("paste") and sh.get("mask_src") else img
                   for img, sh in zip(images, shots)]
         if shots and shots[0].get("queue"):
             out = self._join_queue(images, shots, crossfade, audio, tl)

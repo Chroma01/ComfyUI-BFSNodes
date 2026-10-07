@@ -101,7 +101,7 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first",
-                 crop: !!m.crop, inpaint: !!m.inpaint, strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "", extMask: !!plan.mask_video });
+                 crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "", extMask: !!plan.mask_video });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -137,8 +137,11 @@ function Panel(io) {
 
   // how a shot is generated: crop (the planner crops, the join pastes back) x inpaint (only the mask is regenerated,
 // read by BFS Shot H3 Conditioning with inpaint = per shot)
-const MODES = [["frame", "Full frame", false, false], ["mask", "Mask only", false, true], ["crop", "Crop", true, false], ["cropmask", "Crop + mask", true, true]];
-const modeOf = s => MODES.find(m => m[2] === !!s.crop && m[3] === !!s.inpaint)[0];
+// [key, name, crop, inpaint, paste]; paste = the whole frame is generated and BFS Shot Join pastes only the person back
+const MODES = [["frame", "Full frame", false, false, false], ["paste", "Frame + paste", false, false, true], ["mask", "Mask only", false, true, false],
+               ["crop", "Crop", true, false, false], ["cropmask", "Crop + mask", true, true, false]];
+const modeOf = s => (MODES.find(m => m[2] === !!s.crop && m[3] === !!s.inpaint && m[4] === (!!s.paste && !s.crop && !s.inpaint))
+                     || MODES[0])[0];
 const modeName = s => MODES.find(m => m[0] === modeOf(s))[1];
 
 const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return plan.segs[i]; };
@@ -155,7 +158,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       const add = (lvl, text) => out.push({ lvl, shot: i, text });
       const p = promptOf(s);
       if (s.len > maxLen.value) add("warn", `longer than ${maxLen.value} frames: split it`);
-      if ((s.crop || s.inpaint) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text, points or a mask video; or the planner's mask input)`);
+      if ((s.crop || s.inpaint || s.paste) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text, points or a mask video; or the planner's mask input)`);
       if (hasMask(s) && maskPrev.value[segKey(s)]?.empty) add("warn", "the mask preview found nothing");
       if (/\{target\}/.test(p) && !s.target) add("warn", "the prompt uses {target} but the shot has no target description");
       if (/\{details\}/.test(p) && !detailsOf(s) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its references have no description yet");
@@ -199,7 +202,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         plan.bounds = j.segs.slice(1).map(s => s.start);
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
           chain: keep[i]?.chain || "off", chain_frame: keep[i]?.chain_frame || "first",
-          crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "" }));
+          crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "" }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -285,7 +288,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   const savePointsAll = () => { pointsTo(modal.points, modal.key, modal.text, modal.idx); modal.open = false; };
   const clearMask = i => {
-    const m = meta(i); m.mask = {}; m.crop = false; m.inpaint = false;
+    const m = meta(i); m.mask = {}; m.crop = false; m.inpaint = false; m.paste = false;
     const k = segs.value[i] ? segKey(segs.value[i]) : null;
     if (k) { const mp = { ...maskPrev.value }; delete mp[k]; maskPrev.value = mp; }
     save();
@@ -302,7 +305,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (fields.prompt) m.prompt = src.prompt;
       if (fields.mask_text) m.mask = { ...(m.mask || {}), text: src.mask.text || "" };
       if (fields.mask_video) m.mask = { ...(m.mask || {}), video: src.mask.video || "" };
-      if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; m.strength = src.strength; }
+      if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; m.paste = src.paste; m.strength = src.strength; }
       if (fields.target) m.target = src.target;
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; }
     });
@@ -427,7 +430,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     removeCut(sel.value);
   };
   const setMeta = (i, k, v) => { meta(i)[k] = v; save(); };
-  const setMode = (i, mode) => { const m = MODES.find(x => x[0] === mode); Object.assign(meta(i), { crop: m[2], inpaint: m[3] }); save(); };
+  const setMode = (i, mode) => { const m = MODES.find(x => x[0] === mode); Object.assign(meta(i), { crop: m[2], inpaint: m[3], paste: m[4] }); save(); };
   const drag = (k, ev) => {
     ev.preventDefault(); ev.stopPropagation();
     const box = tlEl.value.getBoundingClientRect();

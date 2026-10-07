@@ -43,12 +43,12 @@ function maskSection(c) {
   const mnum = (k, step, label, help, scale = 1) => fld(label, h("input", { type: "number", step, min: 0, value: +(MC[k] * scale).toFixed(3),
     onChange: e => c.setMaskCfg(k, (parseFloat(e.target.value) || 0) / scale) }), help);
   const S = segs.value;
-  const counts = { mask: 0, crop: 0, cropmask: 0 };
+  const counts = { mask: 0, crop: 0, cropmask: 0, paste: 0 };
   S.forEach(s => { const m = c.modeOf(s); if (m in counts) counts[m]++; });
   const masked = S.filter(s => s.mask?.text || (s.mask?.points || []).length || s.mask?.video || s.extMask).length;
   return section("Mask & crop settings", [
     h("div", { class: "note", style: "margin-bottom:8px" }, [
-      "Each shot picks what it marks (🎯 text or points, or 🎞 its own mask video) and how it is generated (", h("b", "Full frame · Mask only · Crop · Crop + mask"),
+      "Each shot picks what it marks (🎯 text or points, or 🎞 its own mask video) and how it is generated (", h("b", "Full frame · Frame + paste · Mask only · Crop · Crop + mask"),
       ") in the Shots tab. Masks from a video (here, per shot, or the planner's ", h("b", "mask"), " input) replace SAM 3. These settings apply to every shot."]),
     h("div", { class: "row", style: "margin-bottom:8px;align-items:center" }, [
       h("span", { style: "white-space:nowrap", title: "A black/white video of the WHOLE source video (white = the subject), e.g. rotoscoped in another tool. Shots without their own mask (video, text or points) use it instead of SAM 3. The planner's optional mask input does the same from the graph and wins over this." }, "🎞 Mask video (whole video)"),
@@ -75,7 +75,7 @@ function maskSection(c) {
     ]),
     hint("Uses the official sam3.1_multiplex_fp16 checkpoint (models/checkpoints), downloaded from Comfy-Org/sam3.1 the first time.", "display:block;margin-top:6px"),
   ], { sub: "SAM 3",
-       right: h("span", { class: "row" }, [pill(`${masked} masked`), counts.mask ? pill(`${counts.mask} mask only`, "acc") : null,
+       right: h("span", { class: "row" }, [pill(`${masked} masked`), counts.mask ? pill(`${counts.mask} mask only`, "acc") : null, counts.paste ? pill(`${counts.paste} frame+paste`, "acc") : null,
          counts.crop + counts.cropmask ? pill(`${counts.crop + counts.cropmask} cropped`, "warn") : null]) });
 }
 
