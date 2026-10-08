@@ -13,6 +13,8 @@ on the conditioning (Add Guide for MiniMax H3) are re-encoded onto the canvas to
 """
 from __future__ import annotations
 
+import math
+
 import torch
 
 try:
@@ -641,6 +643,9 @@ if _io is not None:
                         input=_io.Audio.Input("ref_video_audio", tooltip="Soundtrack of the same-numbered reference video"), prefix="ref_video_audio_", min=0, max=3)),
                     _io.Autogrow.Input("ref_audios", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Audio.Input("ref_audio", tooltip="<Audio n> reference"), prefix="ref_audio_", min=0, max=3)),
+                    _io.Float.Input("megapixels", default=0.0, min=0.0, max=4.0, step=0.01, optional=True, tooltip=
+                        "Output size by area: > 0 sizes the video from the clip's aspect ratio at this many megapixels "
+                        "(multiples of 32), e.g. 0.3 for a 9:16 clip = 416x736. 0 = use width / height."),
                 ],
                 outputs=[_io.Image.Output(display_name="images"), _io.Audio.Output(display_name="audio"),
                          _io.Image.Output(display_name="canvas"), _io.String.Output(display_name="layout_text"),
@@ -651,9 +656,10 @@ if _io is not None:
         def execute(cls, model, clip, vae, task, instruction, prompt, width, height, length, position, size, fit, gap,
                     panel_noise, hold, rope_mode, rope_gap, ref_image_size, steps, sampler_name, scheduler, seed,
                     decode_canvas, audio_vae=None, panel=None, guide=None, guide_frame_idx=0, ref_images=None,
-                    ref_videos=None, ref_video_audios=None, ref_audios=None):
+                    ref_videos=None, ref_video_audios=None, ref_audios=None, megapixels=0.0):
             if panel is None and guide is None:
                 raise ValueError("BFS H3 Duet needs a panel, a guide, or both")
+            width, height = size_by_megapixels(guide if guide is not None else panel, width, height, megapixels)
             if length <= 0:
                 src = guide if guide is not None else panel
                 length = src.shape[0] if src.shape[0] >= 5 else 124
@@ -667,6 +673,15 @@ if _io is not None:
                                              sampler_name, scheduler, seed, panel, guide, guide_frame_idx, position,
                                              size, fit, gap, panel_noise, hold, ref_image_size, decode_canvas,
                                              rope_mode, rope_gap))
+
+
+def size_by_megapixels(src, width: int, height: int, megapixels: float, multiple: int = 32) -> tuple[int, int]:
+    """width / height from the clip's aspect ratio at `megapixels` (0 = keep width / height)."""
+    if not megapixels or megapixels <= 0 or src is None:
+        return width, height
+    h0, w0 = int(src.shape[1]), int(src.shape[2])
+    sc = math.sqrt(megapixels * 1e6 / max(1, w0 * h0))
+    return (max(multiple, int(round(w0 * sc / multiple)) * multiple), max(multiple, int(round(h0 * sc / multiple)) * multiple))
 
 
 if _io is not None:
@@ -723,6 +738,9 @@ if _io is not None:
                     _io.Image.Input("keep_video", optional=True, tooltip="The video kept outside the mask (default: the panel clip)."),
                     _io.Autogrow.Input("ref_images", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Image.Input("ref_image", tooltip="<Picture n>, in order"), prefix="ref_image_", min=0, max=9)),
+                    _io.Float.Input("megapixels", default=0.0, min=0.0, max=4.0, step=0.01, optional=True, tooltip=
+                        "Output size by area: > 0 sizes the video from the clip's aspect ratio at this many megapixels "
+                        "(multiples of 32), e.g. 0.3 for a 9:16 clip = 416x736. 0 = use width / height."),
                 ],
                 outputs=[_io.Conditioning.Output(display_name="positive"), _io.Latent.Output(display_name="latent"),
                          _io.Model.Output(display_name="model"), PANEL_INFO_T.Output(display_name="panel_info"),
@@ -732,8 +750,9 @@ if _io is not None:
         @classmethod
         def execute(cls, clip, vae, panel, task, instruction, prompt, width, height, length, position, size, panel_noise,
                     rope_mode, fit, gap, hold, rope_gap, ref_image_size, vlm_max_tokens, vlm=None, model=None,
-                    audio_vae=None, guide=None, ref_images=None, keep_mask=None, keep_video=None):
+                    audio_vae=None, guide=None, ref_images=None, keep_mask=None, keep_video=None, megapixels=0.0):
             from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
+            width, height = size_by_megapixels(guide if guide is not None else panel, width, height, megapixels)
             refs = [v for v in (ref_images or {}).values() if v is not None]
             if length <= 0:
                 length = panel.shape[0] if panel.shape[0] >= 5 else 124
