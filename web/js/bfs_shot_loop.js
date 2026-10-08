@@ -162,6 +162,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (hasMask(s) && maskPrev.value[segKey(s)]?.empty) add("warn", "the mask preview found nothing");
       if (/\{target\}/.test(p) && !s.target) add("warn", "the prompt uses {target} but the shot has no target description");
       if (/\{details\}/.test(p) && !detailsOf(s) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its references have no description yet");
+      if (/\{details\}/.test(p) && (plan.vlm_cfg?.describe_preset || "short") !== "short")
+        add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
       if (!refOf(s, "ref")) add("info", "no reference (fine when the node's ref_image input is connected)");
     });

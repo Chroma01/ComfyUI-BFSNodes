@@ -756,8 +756,16 @@ class FitPromptTest(unittest.TestCase):
         self.assertEqual(SL.tidy_slot("A golden retriever with a thick coat.", d), "golden retriever with a thick coat")
         t = SL.prompt_slot(self.P, "{target}")
         self.assertEqual(SL.tidy_slot("the young woman in a black corset.", t), "the young woman in a black corset")
-        self.assertIn("replaces the blank", SL.describe_instruction({"describe_preset": "short"}, d))
-        self.assertNotIn("replaces the blank", SL.describe_instruction({"describe_preset": "short", "fit_prompt": False}, d))
+        self.assertIn("goes into the blank", SL.describe_instruction({"describe_preset": "short"}, d))
+        self.assertNotIn("goes into the blank", SL.describe_instruction({"describe_preset": "short", "fit_prompt": False}, d))
+        self.assertNotIn("goes into the blank", SL.describe_instruction({"describe_preset": "full body"}, d))
+        # the VLM echoing the sentence (the bug the user hit)
+        echo = ("humanoid robot is the ___ shown in <Picture 1>, whose identity define the character. The robot has a sleek "
+                "body with a metallic silver torso.")
+        self.assertEqual(SL.tidy_slot(echo, d), "humanoid robot")
+        self.assertEqual(SL.tidy_slot("sleek silver humanoid robot with black joints shown in <Picture 1>", d),
+                         "sleek silver humanoid robot with black joints")
+        self.assertEqual(SL.tidy_slot("<Subject 1> is the green goblin in a vest", d), "green goblin in a vest")
 
 
 if __name__ == "__main__":

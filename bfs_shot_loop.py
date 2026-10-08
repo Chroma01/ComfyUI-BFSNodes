@@ -1245,13 +1245,33 @@ def prompt_slot(prompt: str, marker: str, limit: int = 360) -> str:
 
 
 def fit_note(slot: str) -> str:
-    return (f" Your answer replaces the blank (___) in this part of the video prompt: \"{slot}\". Write it so that "
-            "the sentence reads naturally with it in place.") if slot else ""
+    return (f" Your answer goes into the blank (___) of this part of the video prompt: \"{slot}\". Reply with ONLY the "
+            "words that go in the blank, so that the sentence reads naturally with them in place: do not repeat the "
+            "sentence, do not write '___', no full sentence.") if slot else ""
 
 
-def tidy_slot(text: str, slot: str) -> str:
-    """Match the words around the blank: no leading article when the prompt already has one before the blank."""
-    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'').rstrip(" .")
+def tidy_slot(text: str, slot: str, max_words: int = 25) -> str:
+    """Only the words for the blank: cut an echo of the sentence around it (the VLM sometimes rewrites the whole
+    sentence), drop a leading article when the prompt already has one before the blank, keep it short."""
+    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'')
+    if "___" in slot:
+        head, tail = slot.split("___", 1)
+        tail_key = " ".join(tail.split()[:2])                 # e.g. "shown in"
+        if "___" in t:                                         # "humanoid robot is the ___ shown in ..." -> before the echo
+            t = t.split("___", 1)[0]
+        if tail_key and tail_key.lower() in t.lower():
+            t = t[:t.lower().index(tail_key.lower())]
+        hw = head.strip().split()
+        for n in range(min(4, len(hw)), 0, -1):                # trailing "is the" copied from before the blank
+            end = " " + " ".join(hw[-n:])
+            if t.lower().rstrip().endswith(end.lower()):
+                t = t.rstrip()[: -len(end)]
+                break
+        lead = " ".join(hw[-2:]).lower()                       # a leading "<Subject 1> is the" copied from the prompt
+        k = t.lower().find(lead + " ") if lead else -1
+        if 0 <= k <= 20:
+            t = t[k + len(lead) + 1:]
+    t = " ".join(t.split()[:max_words]).strip(" ,;:.")
     before = slot.split("___")[0].rstrip().lower().split()[-1:] if "___" in slot else []
     if before and before[0] in ("the", "a", "an"):
         for art in ("the ", "a ", "an "):
@@ -1462,7 +1482,9 @@ def describe_instruction(cfg: dict, slot: str = "") -> str:
         base = str(cfg.get("describe_custom") or DESCRIBE_PRESETS["short"]).strip()
     else:
         base = DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["short"])
-    return base + (fit_note(slot) if cfg.get("fit_prompt", True) else "")
+    # only a short phrase fits a blank inside a sentence; the paragraph presets are written on their own
+    fits = cfg.get("fit_prompt", True) and preset == "short"
+    return base + (fit_note(slot) if fits else "")
 
 
 def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) -> str:
@@ -1875,7 +1897,7 @@ class BFSShotPlanner:
             if not d and vlm is not None:
                 slot = prompt_slot(text, "{details}") if vcfg.get("fit_prompt", True) else ""
                 d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"])), vcfg)
-                d = tidy_slot(d, slot) if slot else d
+                d = tidy_slot(d, slot) if slot and (vcfg.get("describe_preset") or "short") == "short" else d
             return text.replace("{details}", d)
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
@@ -3183,7 +3205,7 @@ try:
                     d = tidy_details(vlm_describe(
                         clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
                         describe_instruction(cfg, slot), int(cfg["max_tokens"])), cfg)
-                    out[ref_set_key(r1, r2)] = tidy_slot(d, slot) if slot else d
+                    out[ref_set_key(r1, r2)] = tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") == "short" else d
                 return out
             texts = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001
