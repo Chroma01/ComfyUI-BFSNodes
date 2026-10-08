@@ -730,5 +730,13 @@ class ConditionFlowTest(unittest.TestCase):
         self.assertNotIn("ref_videos", self.calls["r2v"][0])
 
 
+class DescribeShortTest(unittest.TestCase):
+    def test_short_details_fit_inside_the_prompt(self):
+        self.assertEqual(SL.tidy_details('"The green goblin in a torn leather vest."\nextra', {"describe_preset": "short"}),
+                         "green goblin in a torn leather vest")
+        self.assertEqual(SL.tidy_details("A young woman.", {"describe_preset": "full body"}), "A young woman.")
+        self.assertIn("ONE English noun phrase", SL.describe_instruction({}))
+
+
 if __name__ == "__main__":
     unittest.main()

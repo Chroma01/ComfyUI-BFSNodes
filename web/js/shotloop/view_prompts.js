@@ -51,7 +51,7 @@ function vlmSection(c) {
          right: h("span", { class: "row" }, [VC.enabled ? pill("on", "ok") : pill("off"), sugN ? pill(`${sugN} suggestions`) : null]) }),
     section("Describe references ({details})", [
       h("div", { class: "row", style: "gap:8px" }, [
-        select(VC.describe_preset, ["full body", "head / face", "face attributes", "outfit", "custom"], v => c.setVlmCfg("describe_preset", v), { style: "width:auto" }),
+        select(VC.describe_preset, ["short", "full body", "head / face", "face attributes", "outfit", "custom"], v => c.setVlmCfg("describe_preset", v), { style: "width:auto" }),
         h("button", { class: "pri", disabled: !!busy.value || !refSets.value.length, onClick: c.describeRefs }, "📝 Describe refs"),
         hint(`${refSets.value.length} reference set(s) · editable below`),
       ]),

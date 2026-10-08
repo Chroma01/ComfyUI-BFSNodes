@@ -1195,9 +1195,12 @@ def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict,
 
 # ---------------------------------------------------------------------------- {target}: who is replaced
 
-TARGET_Q = ("Describe the person in this picture as one short English noun phrase for a video prompt, at most 14 words: "
-            "apparent gender and age group, hair, and the main clothing with colours. Example: 'the young woman with long "
-            "black hair in a white T-shirt and denim shorts'. Start with 'the'. Reply with the phrase only.")
+TARGET_Q = ("Describe the main subject in this picture (a person, an animal, a creature, a robot or a cartoon character) as "
+            "one short English noun phrase for a video prompt, at most 14 words: what it is first, then for a person the "
+            "apparent gender and age group, hair and main clothing with colours, for anything else its kind and most "
+            "visible colours or features. Examples: 'the young woman with long black hair in a white T-shirt and denim "
+            "shorts', 'the brown dog with a red collar', 'the green goblin in a torn leather vest'. Start with 'the'. "
+            "Reply with the phrase only.")
 
 
 def target_crop(path: str, analysis: dict, start: int, length: int, spec: dict, pad: float = 0.12):
@@ -1237,7 +1240,7 @@ def fill_target(text: str, desc: str) -> str:
 # ---------------------------------------------------------------------------- VLM suggestions (optional)
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
-               "instruction": "", "describe_preset": "full body", "describe_custom": "",
+               "instruction": "", "describe_preset": "short", "describe_custom": "",
                "write_prompt": False, "write_task": "character swap", "write_change": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
@@ -1349,30 +1352,46 @@ def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -
 
 # ---------------------------------------------------------------------------- reference descriptions (VLM)
 
+# the subject can be a person, a creature, a robot, an animal or a cartoon character: say what it is first, then the
+# traits that apply to it (a goblin is not described as "a person with greenish skin")
+_WHAT = ("First say what the subject is in a few words (e.g. 'A young woman', 'A goblin', 'A humanoid robot', 'A golden "
+         "retriever', 'An anime girl'), then describe it with the traits that apply to that kind of subject: ")
 DESCRIBE_PRESETS = {
-    "full body": ("Describe the person in these reference pictures for a video-generation prompt: one paragraph of "
-                  "3 to 5 sentences in English. Only what is visible: apparent gender and age, skin tone and texture, "
-                  "face shape and distinctive facial features (eyes, eyebrows, nose, lips, facial hair, wrinkles, "
-                  "freckles), hair colour, length, texture and style (hairline, parting, bald areas), body build and "
-                  "proportions, then the clothing piece by piece with colours and materials, shoes and accessories. "
-                  "Describe only physical traits and clothing: never the pose, gesture, action, expression, "
-                  "camera, framing or background. Concrete words only: no negations, no names, no opinions."),
-    "head / face": ("Describe the head and face of the person in these reference pictures for a video-generation "
-                    "prompt: one paragraph of 3 to 4 sentences in English. Only what is visible: apparent gender and "
-                    "age, skin tone and texture, head and face shape, eyes, eyebrows, nose, lips, jawline, ears, "
-                    "facial hair, wrinkles, freckles or marks, glasses, and the hair: colour, length, texture, style, "
-                    "hairline. Describe only physical traits: never the pose, head angle, gaze, expression, action, "
-                    "camera or background. Concrete words only: no negations, no names, no opinions."),
+    # default: a noun phrase that fits inside the prompt, "<Subject 1> is the {details} shown in <Picture 1>"
+    "short": ("Describe the subject of these reference pictures as ONE English noun phrase of at most 20 words that fits "
+              "the sentence '<Subject 1> is the ___ shown in <Picture 1>': what it is first (a person, a creature, a robot, "
+              "an animal or a cartoon character), then its most distinctive visible features and clothing with colours. "
+              "Examples: 'young East Asian woman with a high ponytail in a white chef's uniform', 'green goblin with long "
+              "pointed ears in a torn brown leather vest', 'white humanoid robot with a black face plate and blue LED "
+              "eyes', 'golden retriever with a red collar'. No article at the start, no pose, no action, no background. "
+              "Reply with the phrase only."),
+    "full body": ("Describe the subject of these reference pictures for a video-generation prompt: one paragraph of 3 to 5 "
+                  "sentences in English. " + _WHAT + "for people and creatures the apparent gender and age, skin or fur "
+                  "colour and texture, face, head shape, ears, horns or other distinctive features, hair, body build and "
+                  "proportions, then the clothing piece by piece with colours and materials, shoes and accessories; for "
+                  "robots the design, materials, colours, head or face plate, panels, joints and lights; for animals the "
+                  "breed or species, fur colour, length and markings, ears, tail, build and any collar or accessory. Only "
+                  "what is visible. Describe only appearance: never the pose, gesture, action, expression, camera, framing "
+                  "or background. Concrete words only: no negations, no names, no opinions."),
+    "head / face": ("Describe the head and face of the subject of these reference pictures for a video-generation prompt: one "
+                    "paragraph of 3 to 4 sentences in English. " + _WHAT + "skin, fur or surface (colour and texture), "
+                    "head and face shape, eyes, eyebrows, nose or snout, mouth, jawline, ears, horns, facial hair, "
+                    "wrinkles, marks, glasses or face plate, and the hair or fur: colour, length, texture, style. Only "
+                    "what is visible. Describe only appearance: never the head angle, gaze, expression, action, camera or "
+                    "background. Concrete words only: no negations, no names, no opinions."),
     "face attributes": ("Describe this face in a short comma-separated attribute list, in exactly this style: \"Male, oval "
                         "face shape, average-sized head with strong jawline, light brown skin, dark eyes, black tousled "
-                        "hair, silver hoop earring.\" Cover, in order: gender, head/face shape and proportions (e.g. "
-                        "oval/round/square/heart-shaped, narrow/wide, jaw structure, whether the head reads as "
-                        "small/average/large relative to the shoulders), skin tone, eye color, hair color and style, and any "
-                        "distinctive features (facial hair, jewelry, makeup, glasses, etc.). Physical traits only, never "
-                        "the pose, expression or background. Only output the description, nothing else."),
-    "outfit": ("Describe only what the person in these reference pictures wears, piece by piece, for a "
-               "video-generation prompt: garments, colours, materials, fit, shoes and accessories, in 2 or 3 "
-               "sentences in English. Never the pose, action or background. No negations, no names."),
+                        "hair, silver hoop earring.\" For anything that is not a person, start with what it is instead of "
+                        "the gender (e.g. \"Goblin, long narrow face, ...\" or \"Robot, ...\" or \"Dog, ...\"). Cover, "
+                        "in order: gender or kind, head/face shape and proportions (e.g. oval/round/square/heart-shaped, "
+                        "narrow/wide, jaw structure, whether the head reads as small/average/large relative to the "
+                        "shoulders), skin, fur or surface colour, eye color, hair or fur color and style, and any distinctive "
+                        "features (ears, horns, facial hair, jewelry, makeup, glasses, etc.). Physical traits only, never the "
+                        "pose, expression or background. Only output the description, nothing else."),
+    "outfit": ("Describe only what the subject of these reference pictures wears, piece by piece, for a video-generation "
+               "prompt: garments, armour or accessories, colours, materials, fit and shoes, in 2 or 3 sentences in "
+               "English. Start with what the subject is in two or three words (e.g. 'The goblin wears...'). Never the "
+               "pose, action or background. No negations, no names."),
 }
 _DESCRIBE_CACHE: dict[tuple, str] = {}
 
@@ -1384,11 +1403,24 @@ def _image_key(img: torch.Tensor | None) -> str:
     return hashlib.sha1((x * 255).round().to(torch.uint8).numpy().tobytes()).hexdigest()[:16]
 
 
+def tidy_details(text: str, cfg: dict) -> str:
+    """The 'short' preset goes inside a sentence ('<Subject 1> is the {details} shown in ...'): one line, no quotes,
+    no leading article, no final full stop."""
+    if (cfg.get("describe_preset") or "short") != "short":
+        return text
+    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'').strip()
+    for art in ("the ", "a ", "an "):
+        if t.lower().startswith(art):
+            t = t[len(art):]
+            break
+    return t.rstrip(" .").strip('"\'').rstrip(" .")
+
+
 def describe_instruction(cfg: dict) -> str:
-    preset = cfg.get("describe_preset", "full body")
+    preset = cfg.get("describe_preset", "short")
     if preset == "custom":
-        return str(cfg.get("describe_custom") or DESCRIBE_PRESETS["full body"]).strip()
-    return DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["full body"])
+        return str(cfg.get("describe_custom") or DESCRIBE_PRESETS["short"]).strip()
+    return DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["short"])
 
 
 def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) -> str:
@@ -1799,7 +1831,7 @@ class BFSShotPlanner:
                 return text
             d = details.get(ref_set_key(rname, r2name), "")
             if not d and vlm is not None:
-                d = vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg), int(vcfg["max_tokens"]))
+                d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg), int(vcfg["max_tokens"])), vcfg)
             return text.replace("{details}", d)
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
@@ -3081,8 +3113,9 @@ try:
             def work():
                 out = {}
                 for r1, r2 in sets:
-                    out[ref_set_key(r1, r2)] = vlm_describe(clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
-                                                            describe_instruction(cfg), int(cfg["max_tokens"]))
+                    out[ref_set_key(r1, r2)] = tidy_details(vlm_describe(
+                        clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
+                        describe_instruction(cfg), int(cfg["max_tokens"])), cfg)
                 return out
             texts = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001

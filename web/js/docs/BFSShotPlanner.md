@@ -239,8 +239,10 @@ editor shows its suggestion with buttons to apply it. The summary output lists t
 
 ## Describe references ({details})
 
-The VLM can describe the references, for any task (not tied to swaps). In the **Prompts & refs** tab pick an instruction
-preset: *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
+The VLM can describe the references, for any task (not tied to swaps), and any subject: a person, a creature, a robot,
+an animal or a cartoon character (it says what the subject is first). In the **Prompts & refs** tab pick an instruction
+preset: *short* (the default: one noun phrase of at most ~20 words that fits inside a sentence, e.g. `green goblin with
+long pointed ears in a torn brown leather vest`, for `<Subject 1> is the {details} shown in <Picture 1>`), *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
 short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
 description per reference set: the global references, every shot's and every cast person's. They are saved in
 the plan and editable. Write **`{details}`** anywhere in a prompt and every shot gets the description of its own
