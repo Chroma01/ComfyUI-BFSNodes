@@ -1224,10 +1224,48 @@ def target_crop(path: str, analysis: dict, start: int, length: int, spec: dict, 
     return fr[max(0, ys.min() - py):min(H, ys.max() + py), max(0, xs.min() - px):min(W, xs.max() + px)]
 
 
-def describe_target(clip, crop: np.ndarray, max_tokens: int = 64) -> str:
+def prompt_slot(prompt: str, marker: str, limit: int = 360) -> str:
+    """The sentence of `prompt` that holds `marker`, with the marker as a blank ('___') and the other placeholders
+    made readable: what the VLM fills in, so the description fits the prompt (and not the other way round)."""
+    text = str(prompt or "")
+    if marker not in text:
+        return ""
+    i = text.index(marker)
+    starts = [text.rfind(sep, 0, i) for sep in (". ", "; ", ":  ", "\n")]
+    a = max(starts)
+    a = 0 if a < 0 else a + 2
+    ends = [x for x in (text.find(sep, i + len(marker)) for sep in (". ", "; ", "\n")) if x >= 0]
+    b = min(ends) + 1 if ends else len(text)
+    snippet = text[a:b].strip()
+    snippet = snippet.replace(marker, "___", 1)
+    for other, plain in (("{target}", "the guide subject"), ("{details}", "the character"), ("{shot}", ""), ("{setting}", "")):
+        snippet = snippet.replace(other, plain)
+    return snippet[:limit]
+
+
+def fit_note(slot: str) -> str:
+    return (f" Your answer replaces the blank (___) in this part of the video prompt: \"{slot}\". Write it so that "
+            "the sentence reads naturally with it in place.") if slot else ""
+
+
+def tidy_slot(text: str, slot: str) -> str:
+    """Match the words around the blank: no leading article when the prompt already has one before the blank."""
+    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'').rstrip(" .")
+    before = slot.split("___")[0].rstrip().lower().split()[-1:] if "___" in slot else []
+    if before and before[0] in ("the", "a", "an"):
+        for art in ("the ", "a ", "an "):
+            if t.lower().startswith(art):
+                t = t[len(art):]
+                break
+    return t
+
+
+def describe_target(clip, crop: np.ndarray, max_tokens: int = 64, slot: str = "") -> str:
     img = torch.from_numpy(crop.astype(np.float32) / 255.0)[None]
-    t = vlm_generate(clip, TARGET_Q, img, max_tokens).strip().strip('"\'').split("\n")[0].strip().rstrip(".")
-    if t and not t.lower().startswith("the "):
+    t = vlm_generate(clip, TARGET_Q + fit_note(slot), img, max_tokens).strip().strip('"\'').split("\n")[0].strip().rstrip(".")
+    if slot:
+        t = tidy_slot(t, slot)
+    elif t and not t.lower().startswith("the "):
         t = "the " + t[0].lower() + t[1:]
     return " ".join(t.split()[:16]) or "the person"
 
@@ -1240,7 +1278,7 @@ def fill_target(text: str, desc: str) -> str:
 # ---------------------------------------------------------------------------- VLM suggestions (optional)
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
-               "instruction": "", "describe_preset": "short", "describe_custom": "",
+               "instruction": "", "describe_preset": "short", "describe_custom": "", "fit_prompt": True,
                "write_prompt": False, "write_task": "character swap", "write_change": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
@@ -1416,11 +1454,14 @@ def tidy_details(text: str, cfg: dict) -> str:
     return t.rstrip(" .").strip('"\'').rstrip(" .")
 
 
-def describe_instruction(cfg: dict) -> str:
+def describe_instruction(cfg: dict, slot: str = "") -> str:
+    """The describe instruction; with fit_prompt and the prompt sentence that holds {details}, the VLM writes for it."""
     preset = cfg.get("describe_preset", "short")
     if preset == "custom":
-        return str(cfg.get("describe_custom") or DESCRIBE_PRESETS["short"]).strip()
-    return DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["short"])
+        base = str(cfg.get("describe_custom") or DESCRIBE_PRESETS["short"]).strip()
+    else:
+        base = DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["short"])
+    return base + (fit_note(slot) if cfg.get("fit_prompt", True) else "")
 
 
 def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) -> str:
@@ -1831,7 +1872,9 @@ class BFSShotPlanner:
                 return text
             d = details.get(ref_set_key(rname, r2name), "")
             if not d and vlm is not None:
-                d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg), int(vcfg["max_tokens"])), vcfg)
+                slot = prompt_slot(text, "{details}") if vcfg.get("fit_prompt", True) else ""
+                d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"])), vcfg)
+                d = tidy_slot(d, slot) if slot else d
             return text.replace("{details}", d)
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
@@ -1843,6 +1886,24 @@ class BFSShotPlanner:
                     written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"],
                                                   [ref_for(segs[i]["ref"], g_ref), ref_for(segs[i]["ref2"], g_ref2)],
                                                   vcfg["write_task"], vcfg["write_change"], int(vcfg["max_tokens"]))
+        # {target} with no description of its own: the shot's selection is cut out (SAM 3 for every shot first) and the
+        # VLM describes it (written for the prompt's {target} sentence with fit_prompt)
+        auto_target = {}
+        if vlm is not None:
+            need = [i for i in todo if not segs[i].get("target")
+                    and "{target}" in (segs[i]["prompt"] or written.get(i) or g_prompt or "")]
+            crops = {}
+            for i in need:
+                tspec = plan_spec(p, segs[i].get("mask"), path)
+                if spec_has_mask(tspec):
+                    crops[i] = target_crop(path, a, segs[i]["start"], segs[i]["end"] - segs[i]["start"], tspec)
+            for i, crop in crops.items():
+                if crop is None:
+                    continue
+                text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
+                slot = prompt_slot(text, "{target}") if vcfg.get("fit_prompt", True) else ""
+                auto_target[i] = describe_target(vlm, crop, slot=slot)
+                print(f"[BFS Shot Planner] shot {i + 1}: {{target}} = {auto_target[i]!r} (described automatically)", flush=True)
         shots = []
         for i, s in enumerate(segs):
             if i not in todo:
@@ -1896,7 +1957,8 @@ class BFSShotPlanner:
                 "ref": ref, "ref2": ref2,
                 "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
                     "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
-                    s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2), s.get("target", "")),
+                    s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
+                    s.get("target", "") or auto_target.get(i, "")),
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
@@ -3086,7 +3148,9 @@ try:
                 crop = target_crop(path, a, seg["start"], seg["end"] - seg["start"], spec)
                 if crop is None:
                     raise ValueError("SAM 3 found nothing at that selection.")
-                desc = describe_target(clip, crop) if clip is not None else ""
+                tcfg = vlm_cfg(p.get("vlm_cfg"))
+                tslot = prompt_slot(seg.get("prompt") or p.get("global_prompt", ""), "{target}") if tcfg.get("fit_prompt", True) else ""
+                desc = describe_target(clip, crop, slot=tslot) if clip is not None else ""
                 ok, buf = cv2.imencode(".jpg", cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 82])
                 return {"desc": desc, "crop": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(),
                         "no_vlm": clip is None}
@@ -3108,14 +3172,17 @@ try:
                                  "VLM buttons use it.")
             p = _load_plan(json.dumps(body.get("plan", {})))
             cfg = vlm_cfg(p.get("vlm_cfg"))
+            # fit_prompt: the descriptions are written for the global prompt's {details} sentence
+            slot = prompt_slot(body.get("prompt") or p.get("global_prompt", ""), "{details}") if cfg.get("fit_prompt", True) else ""
             sets = [tuple(x) for x in body.get("sets", []) if any(x)]
 
             def work():
                 out = {}
                 for r1, r2 in sets:
-                    out[ref_set_key(r1, r2)] = tidy_details(vlm_describe(
+                    d = tidy_details(vlm_describe(
                         clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
-                        describe_instruction(cfg), int(cfg["max_tokens"])), cfg)
+                        describe_instruction(cfg, slot), int(cfg["max_tokens"])), cfg)
+                    out[ref_set_key(r1, r2)] = tidy_slot(d, slot) if slot else d
                 return out
             texts = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001

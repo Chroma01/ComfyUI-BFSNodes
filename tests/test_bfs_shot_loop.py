@@ -738,5 +738,27 @@ class DescribeShortTest(unittest.TestCase):
         self.assertIn("ONE English noun phrase", SL.describe_instruction({}))
 
 
+class FitPromptTest(unittest.TestCase):
+    P = ("body_swap:  subject_definitions: <Subject 1> is the {details} shown in <Picture 1>, whose identity define the "
+         "character. The guide video provides the scene; only {target} is replaced: their face become <Subject 1>.  "
+         "summary: Replace {target} in the guide video with <Subject 1>.")
+
+    def test_slot_is_the_sentence_with_a_blank(self):
+        d = SL.prompt_slot(self.P, "{details}")
+        self.assertIn("<Subject 1> is the ___ shown in <Picture 1>", d)
+        self.assertNotIn("{target}", d)
+        t = SL.prompt_slot(self.P, "{target}")
+        self.assertIn("only ___ is replaced", t)
+        self.assertEqual(SL.prompt_slot("no marker here", "{details}"), "")
+
+    def test_answer_matches_the_blank(self):
+        d = SL.prompt_slot(self.P, "{details}")
+        self.assertEqual(SL.tidy_slot("A golden retriever with a thick coat.", d), "golden retriever with a thick coat")
+        t = SL.prompt_slot(self.P, "{target}")
+        self.assertEqual(SL.tidy_slot("the young woman in a black corset.", t), "the young woman in a black corset")
+        self.assertIn("replaces the blank", SL.describe_instruction({"describe_preset": "short"}, d))
+        self.assertNotIn("replaces the blank", SL.describe_instruction({"describe_preset": "short", "fit_prompt": False}, d))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,8 @@ function vlmSection(c) {
         select(VC.describe_preset, ["short", "full body", "head / face", "face attributes", "outfit", "custom"], v => c.setVlmCfg("describe_preset", v), { style: "width:auto" }),
         h("button", { class: "pri", disabled: !!busy.value || !refSets.value.length, onClick: c.describeRefs }, "📝 Describe refs"),
         hint(`${refSets.value.length} reference set(s) · editable below`),
+        check(VC.fit_prompt !== false, v => c.setVlmCfg("fit_prompt", v), "fit the prompt",
+          "The VLM gets the global prompt's sentence that holds {details} (and the shot prompt's {target} sentence for 🧑 Describe target) with a blank in its place, and writes the description to fit it: the description adapts to the prompt, not the other way round."),
       ]),
       VC.describe_preset === "custom" ? h("textarea", { style: "margin-top:6px;min-height:52px", value: VC.describe_custom || "",
         placeholder: "Your instruction for the VLM, e.g. 'Describe the character's costume and props piece by piece…'",

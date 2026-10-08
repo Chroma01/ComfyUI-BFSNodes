@@ -246,7 +246,12 @@ long pointed ears in a torn brown leather vest`, for `<Subject 1> is the {detail
 short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
 description per reference set: the global references, every shot's and every cast person's. They are saved in
 the plan and editable. Write **`{details}`** anywhere in a prompt and every shot gets the description of its own
-references; a set without a description is described by the VLM at run time.
+references; a set without a description is described by the VLM at run time (no click needed).
+
+**Fit the prompt** (on by default, next to 📝 Describe refs): the VLM gets the sentence of the prompt that holds the
+marker, with a blank in its place (e.g. `<Subject 1> is the ___ shown in <Picture 1>`), and writes the description for
+it, so the description adapts to the prompt and not the other way round (no "the A goblin", no paragraph inside a
+sentence). The panel buttons use the global prompt (or the shot's own); at run time the prompt the shot really uses.
 
 The VLM buttons in the panel work after the workflow has run once with the VLM connected (ComfyUI only hands
 models to nodes when they run). Tested with Qwen3-VL 8B; some smaller or modified models return empty answers
@@ -367,7 +372,9 @@ Click **🧑 Describe target** in the shot's editor:
 
 ### What happens when the workflow runs
 
-Every shot's prompt gets its own `{target}` text. A shot without a description gets "the person". The selection is
+Every shot's prompt gets its own `{target}` text: the one you wrote or made with 🧑 Describe target; when the field is
+empty but the shot has a selection (mask text, points or a mask video) and the VLM is connected, the subject is cut out
+and described automatically (written for the prompt's `{target}` sentence). A shot with neither gets "the person". The selection is
 only used to make the description: it does not crop or mask anything unless the shot's mode is *Mask only*, *Crop*
 or *Crop + mask*.
 
