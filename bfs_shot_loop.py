@@ -364,22 +364,34 @@ def detect_cuts(score: list[float], raw: list[float], sensitivity: float, fps: f
 
 # ---------------------------------------------------------------------------- planning
 
+def plan_range(n: int, fps: float, start_s: float = 0.0, end_s: float = 0.0, max_total_s: float = 0.0) -> tuple[int, int]:
+    """The part of the video the plan works on, in timeline frames [lo, hi): start / end (0 = the end of the video),
+    then 'max total seconds' counted from the start."""
+    lo = max(0, min(n - 1, int(round(float(start_s or 0) * fps))))
+    hi = n if not end_s or float(end_s) <= 0 else max(lo + 1, min(n, int(round(float(end_s) * fps))))
+    if max_total_s and float(max_total_s) > 0:
+        hi = min(hi, lo + max(1, int(round(float(max_total_s) * fps))))
+    return lo, hi
+
+
 def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int,
-                  max_parts: int = 0, max_total: int = 0, manual: list[int] | None = None) -> list[dict]:
-    """Split [0, n) into shots. Returns [{start, end, cut_before}]. Lengths are in frames."""
+                  max_parts: int = 0, max_total: int = 0, manual: list[int] | None = None, start: int = 0) -> list[dict]:
+    """Split [start, n) into shots (n = the end frame). Returns [{start, end, cut_before}]. Lengths are in frames."""
+    lo = max(0, int(start or 0))
     if max_total and max_total > 0:
-        n = min(n, int(max_total))
+        n = min(n, lo + int(max_total))
+    lo = min(lo, n - 1)
     max_len = max(1, int(max_len))
     min_len = max(1, min(int(min_len), max_len))
-    cuts = sorted(c for c in set(cuts or []) if 0 < c < n)
+    cuts = sorted(c for c in set(cuts or []) if lo < c < n)
     cutset = set(cuts)
     if mode == "manual" and manual:
-        bounds = sorted(set([0, n] + [b for b in manual if 0 < b < n]))
+        bounds = sorted(set([lo, n] + [b for b in manual if lo < b < n]))
     elif mode == "fixed":
-        k = max(1, math.ceil(n / max_len))
-        bounds = sorted(set(round(n * j / k) for j in range(k + 1)))
+        k = max(1, math.ceil((n - lo) / max_len))
+        bounds = sorted(set(lo + round((n - lo) * j / k) for j in range(k + 1)))
     else:  # shots
-        bounds = [0] + cuts + [n]
+        bounds = [lo] + cuts + [n]
         # merge shots that are too short into a neighbour, as long as the merge still fits
         changed = True
         while changed:
@@ -397,7 +409,7 @@ def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int
                 changed = True
                 break
         # split shots that are too long into equal parts
-        out = [0]
+        out = [lo]
         for a, b in zip(bounds[:-1], bounds[1:]):
             k = max(1, math.ceil((b - a) / max_len))
             out += [a + round((b - a) * j / k) for j in range(1, k + 1)]
@@ -410,7 +422,7 @@ def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int
 
 DEFAULT_PLAN = {
     "video": "", "fps": 24.0, "grid": DEFAULT_GRID, "mode": "shots", "max_s": 4.5, "min_s": 1.0,
-    "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "bounds": [], "segs": [],
+    "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "start_s": 0.0, "end_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
@@ -433,7 +445,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
     grid = plan["grid"]
     max_len = snap_down(int(round(float(plan["max_s"]) * fps)), grid)
     min_len = max(1, int(round(float(plan["min_s"]) * fps)))
-    max_total = int(round(float(plan.get("max_total_s") or 0) * fps))
+    lo, hi = plan_range(analysis["n"], fps, plan.get("start_s", 0), plan.get("end_s", 0), plan.get("max_total_s", 0))
     if path:
         cuts, _ = find_cuts(path, analysis, plan.get("detector", "adaptive"), float(plan["sensitivity"]))
     else:
@@ -447,8 +459,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         for a, b in zip(bounds[:-1], bounds[1:]):
             extra += person_change_points(cast, a, b, max(min_len, int(round(fps))))
         cuts = sorted(set(cuts) | set(extra))
-    segs = plan_segments(analysis["n"], cuts, mode, max_len, min_len,
-                         int(plan.get("max_parts") or 0), max_total, manual)
+    segs = plan_segments(hi, cuts, mode, max_len, min_len, int(plan.get("max_parts") or 0), 0, manual, start=lo)
     meta = plan.get("segs") or []
     for i, s in enumerate(segs):
         m = meta[i] if i < len(meta) and isinstance(meta[i], dict) else {}

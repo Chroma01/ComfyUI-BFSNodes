@@ -29,6 +29,21 @@ export function videoTab(c) {
       "It is split into shots the model can generate; every shot then gets its own reference, prompt and mask."]),
   ]);
 
+  const R = c.range.value, N = c.n.value;
+  const playF = Math.min(N - 1, Math.max(0, c.play.frame || 0));
+  const rng = section("Range", [
+    h("div", { class: "row", style: "align-items:flex-end;gap:10px" }, [
+      fld("Start at (s)", h("input", { type: "number", step: 0.1, min: 0, value: plan.start_s || 0, onChange: e => c.setRange("start_s", e.target.value) }),
+        `frame ${R.lo}`),
+      h("button", { title: "start where the player is", onClick: () => c.setRange("start_s", +(playF / fps).toFixed(3)) }, "⇤ from player"),
+      fld("End at (s, 0 = end)", h("input", { type: "number", step: 0.1, min: 0, value: plan.end_s || 0, onChange: e => c.setRange("end_s", e.target.value) }),
+        `frame ${R.hi}`),
+      h("button", { title: "end where the player is", onClick: () => c.setRange("end_s", +(playF / fps).toFixed(3)) }, "⇥ from player"),
+      (plan.start_s || plan.end_s) ? h("button", { class: "ghost", onClick: () => { plan.start_s = 0; c.setRange("end_s", 0); } }, "✕ whole video") : null,
+      hint(`${((R.hi - R.lo) / fps).toFixed(2)} s of ${(N / fps).toFixed(2)} s · only this part is split, analysed, generated and joined`),
+    ]),
+  ], { sub: "work on a part of the video" });
+
   const split = section("Split into shots", [
     h("div", { class: "grid" }, [
       fld("Mode", sel_("mode", [["shots", "Camera cuts"], ["fixed", "Fixed length"]])),
@@ -53,5 +68,5 @@ export function videoTab(c) {
     fld("Size multiple", num("multiple", 8, 8)),
   ]), { sub: "cropped shots use it for the crop" });
 
-  return h("div", { class: "card" }, [source, an.value ? split : null, an.value ? gen : null]);
+  return h("div", { class: "card" }, [source, an.value ? rng : null, an.value ? split : null, an.value ? gen : null]);
 }

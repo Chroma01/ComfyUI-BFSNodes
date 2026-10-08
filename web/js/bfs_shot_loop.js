@@ -84,15 +84,20 @@ function Panel(io) {
   };
   const save = () => io.setPlan(JSON.stringify(plan));
 
-  const n = computed(() => {
-    if (!an.value) return 0;
-    const cap = plan.max_total_s > 0 ? Math.round(plan.max_total_s * plan.fps) : Infinity;
-    return Math.min(an.value.n, cap);
+  const n = computed(() => (an.value ? an.value.n : 0));      // the whole video on the timeline
+  // the part the plan works on [lo, hi): start / end (0 = the end), then "max total seconds" counted from the start
+  const range = computed(() => {
+    const N = n.value; if (!N) return { lo: 0, hi: 0 };
+    const lo = Math.max(0, Math.min(N - 1, Math.round((+plan.start_s || 0) * plan.fps)));
+    let hi = +plan.end_s > 0 ? Math.max(lo + 1, Math.min(N, Math.round(+plan.end_s * plan.fps))) : N;
+    if (+plan.max_total_s > 0) hi = Math.min(hi, lo + Math.max(1, Math.round(+plan.max_total_s * plan.fps)));
+    return { lo, hi };
   });
   const maxLen = computed(() => snapDown(Math.round(plan.max_s * plan.fps), plan.grid));
   const segs = computed(() => {
     const N = n.value; if (!N) return [];
-    const b = [0, ...plan.bounds.filter(x => x > 0 && x < N), N].sort((a, c) => a - c);
+    const { lo, hi } = range.value;
+    const b = [lo, ...plan.bounds.filter(x => x > lo && x < hi), hi].sort((a, c) => a - c);
     const cs = new Set(cuts.value);
     let out = [];
     for (let i = 0; i < b.length - 1; i++) {
@@ -364,6 +369,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const setCastOpt = (k, v) => { plan[k] = v; save(); if (k === "cast_split") autoSplit(true); };
   const setFilter = (k, v) => { plan.filters = { ...plan.filters, [k]: v }; save(); if (stats.value.length) analyzeContent(); };
   const setPlan = (k, v, after) => { plan[k] = v; save(); after && after(); };
+  // the range changed: split again inside it (the per-shot settings stay with the shot at the same position)
+  const setRange = (k, v) => { plan[k] = Math.max(0, +v || 0); save(); autoSplit(true); };
   const setGlobalMaskVideo = v => { plan.mask_video = v; save(); maskPrev.value = {}; };
   // XHR instead of fetch: big videos show how much has been sent
   const postWithProgress = (url, body, onPct) => new Promise((resolve, reject) => {
@@ -401,8 +408,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   // ---- editing
   const setVideo = v => { plan.video = v; plan.bounds = []; plan.segs = []; save(); analyze(); if (v) tab.value = "shots"; };
   const splitAt = f => {
-    const N = n.value; f = Math.round(f);
-    if (f <= 0 || f >= N || plan.bounds.includes(f)) return;
+    const { lo, hi } = range.value; f = Math.round(f);
+    if (f <= lo || f >= hi || plan.bounds.includes(f)) return;
     const i = segs.value.findIndex(s => f > s.start && f < s.end);
     plan.bounds = [...plan.bounds, f].sort((a, c) => a - c);
     plan.segs.splice(i + 1, 0, { ...(plan.segs[i] || {}) });
@@ -439,7 +446,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const move = e => {
       const x = e.clientX - box.left + tlEl.value.scrollLeft;
       const f = Math.round(x / pxPerFrame.value);
-      const lo = (plan.bounds[k - 1] ?? 0) + 1, hi = (plan.bounds[k + 1] ?? n.value) - 1;
+      const lo = (plan.bounds[k - 1] ?? range.value.lo) + 1, hi = (plan.bounds[k + 1] ?? range.value.hi) - 1;
       plan.bounds[k] = Math.max(lo, Math.min(hi, f));
       hover.value = { frame: plan.bounds[k], x };
     };
@@ -527,7 +534,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent,
-    n, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks,
+    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, savePoints, savePointsAll, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
@@ -541,7 +548,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const guideUrl = new URL("./docs/BFSShotPlanner.md", import.meta.url).href;
     const header = h("div", { class: "hdr" }, [
       h("span", { class: "ttl" }, "🎬 Shot Planner"),
-      an.value ? pill(`${active.value.length}/${S.length} shots · ${(N / fps).toFixed(1)}s`, "ok") : null,
+      an.value ? pill(`${active.value.length}/${S.length} shots · ${((range.value.hi - range.value.lo) / fps).toFixed(1)}s`
+        + (range.value.lo > 0 || range.value.hi < N ? " (range)" : ""), "ok") : null,
       warns ? h("span", { class: "pill warn", style: "cursor:pointer", title: "open the checks (Run tab)", onClick: () => { tab.value = "run"; } }, `⚠ ${warns}`) : null,
       h("span", { class: "grow" }),
       pill(plan.run === "queue" ? "queue loop" : "auto loop"),

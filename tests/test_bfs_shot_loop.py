@@ -768,5 +768,21 @@ class FitPromptTest(unittest.TestCase):
         self.assertEqual(SL.tidy_slot("<Subject 1> is the green goblin in a vest", d), "green goblin in a vest")
 
 
+class RangeTest(unittest.TestCase):
+    def test_start_end_and_max_total_from_the_start(self):
+        self.assertEqual(SL.plan_range(1000, 24.0, 10, 20), (240, 480))
+        self.assertEqual(SL.plan_range(1000, 24.0, 10, 0), (240, 1000))
+        self.assertEqual(SL.plan_range(1000, 24.0, 10, 0, 5), (240, 360))       # max total counted from the start
+        segs = SL.plan_segments(480, [100, 300], "shots", 107, 10, start=240)
+        self.assertEqual(segs[0]["start"], 240)
+        self.assertEqual(segs[-1]["end"], 480)
+        self.assertTrue(all(240 <= s["start"] < s["end"] <= 480 for s in segs))
+        self.assertTrue(any(s["start"] == 300 for s in segs))                    # the cut inside the range is kept
+        fixed = SL.plan_segments(480, [], "fixed", 107, 10, start=240)
+        self.assertEqual((fixed[0]["start"], fixed[-1]["end"]), (240, 480))
+        manual = SL.plan_segments(480, [], "manual", 107, 10, manual=[100, 350], start=240)
+        self.assertEqual([(s["start"], s["end"]) for s in manual], [(240, 350), (350, 480)])
+
+
 if __name__ == "__main__":
     unittest.main()

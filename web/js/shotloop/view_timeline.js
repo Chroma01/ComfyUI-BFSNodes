@@ -26,6 +26,9 @@ export function timelineCard(c) {
       onClick: e => { if (e.target.classList.contains("hdl")) return; c.seek(c.frameAt(e).frame); } }, [
       h("div", { class: "tlin", style: `width:${tlWidth.value}px` }, [
         h("div", { class: "strip" }, thumbs.map(t => h("img", { src: t.src, style: `width:${thumbW}px` }))),
+        // outside the start / end range: dimmed, not planned
+        c.range.value.lo > 0 ? h("div", { class: "outr", style: `left:0;width:${c.range.value.lo * ppf}px`, title: "before the start: not planned" }) : null,
+        c.range.value.hi < N ? h("div", { class: "outr", style: `left:${c.range.value.hi * ppf}px;width:${(N - c.range.value.hi) * ppf}px`, title: "after the end: not planned" }) : null,
         ...cuts.value.filter(x => x < N).map(x => h("div", { class: "cut", style: `left:${x * ppf}px`, title: `cut @ ${x}` })),
         h("svg", { class: "spark", viewBox: `0 0 ${tlWidth.value} 26`, preserveAspectRatio: "none" },
           [h("polyline", { points: sparkPts, fill: "none", stroke: "#ff7a90", "stroke-width": 1, "vector-effect": "non-scaling-stroke" })]),

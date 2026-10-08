@@ -29,7 +29,7 @@ function loopSection(c) {
       fld("Run", select(plan.run, [["auto", "Auto loop (one run)"], ["queue", "Queue loop (one shot per run)"]], v => c.setPlan("run", v, c.progress))),
       fld("Skipped shots in the output", select(plan.skip_fill, [["original", "Keep original video"], ["drop", "Remove them"]], v => c.setPlan("skip_fill", v))),
       fld("Max shots (0 = all)", num("max_parts", 1, 0), "quick tests"),
-      fld("Max total seconds (0 = all)", num("max_total_s", 0.5, 0), "quick tests"),
+      fld("Max total seconds (0 = all)", num("max_total_s", 0.5, 0), "from the start of the range"),
     ]),
     plan.run === "queue" ? h("div", { style: "margin-top:8px" }, [
       h("div", { class: "row", style: "margin-bottom:4px" }, [h("b", "Queue loop"), h("span", { class: "grow" }),
