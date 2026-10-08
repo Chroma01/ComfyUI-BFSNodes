@@ -786,5 +786,26 @@ class RangeTest(unittest.TestCase):
         self.assertEqual([(s["start"], s["end"]) for s in manual], [(240, 350), (350, 480)])
 
 
+class TrackModeTest(unittest.TestCase):
+    def test_track_is_used_by_shots_without_their_own_selection_and_sliced_per_shot(self):
+        p = {"track": {"points": [{"x": 0.5, "y": 0.5, "label": 1}], "frame": 120, "text": "woman"}, "fps": 24}
+        self.assertIn("track", SL.plan_spec(p, {}, "v.mp4")["ext"])
+        self.assertNotIn("ext", SL.plan_spec(p, {"text": "man"}, "v.mp4"))             # the shot's own text wins
+        self.assertEqual(SL.plan_spec(p, {"video": "m.mp4"}, "v.mp4")["ext"]["scope"], "shot")
+        whole = torch.zeros(200, 36, 64, dtype=torch.uint8)
+        whole[100:150, 10:20, 10:20] = 1                                                # the subject only in frames 100-149
+        orig = SL.track_video
+        SL.track_video = lambda path, a, t: (whole, 50)                                 # the track covers frames 50-249
+        try:
+            spec = SL.plan_spec(p, {}, "v.mp4")
+            an = {"n": 300, "fps": 24.0}
+            m = SL.ext_masks(spec["ext"], an, 140, 20, 64, 36)                          # shot 140-159
+            self.assertEqual(tuple(m.shape), (20, 36, 64))
+            self.assertFalse(bool(m[0].any()))                                          # frame 140 = track index 90
+            self.assertTrue(bool(m[-1].any()))                                          # frame 159 = index 109
+        finally:
+            SL.track_video = orig
+
+
 if __name__ == "__main__":
     unittest.main()

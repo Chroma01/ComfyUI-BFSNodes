@@ -846,6 +846,11 @@ def plan_spec(p: dict, m: dict | None, path: str = "") -> dict:
         spec["ext"] = {"file": m["video"], "scope": "shot"}
     elif (m or {}).get("points") or str((m or {}).get("text") or "").strip():
         pass                                                    # the shot's own SAM 3 selection
+    elif path and (p.get("track") or {}).get("points"):         # one selection tracked through the whole video
+        fps = float(p.get("fps") or 24)
+        spec["ext"] = {"track": {**p["track"], "start_s": p.get("start_s", 0), "end_s": p.get("end_s", 0),
+                                 "start_f": p.get("start_f"), "end_f": p.get("end_f"), "max_total_s": p.get("max_total_s", 0),
+                                 "fps": fps}, "path": path}
     elif path and path in _EXT_MASK:
         spec["ext"] = {"tensor": path}
     elif p.get("mask_video"):
@@ -860,6 +865,11 @@ def spec_has_mask(spec: dict) -> bool:
 def ext_masks(ext: dict, analysis: dict, start: int, length: int, w: int, h: int) -> torch.Tensor:
     """[length,h,w] uint8 from an external mask (white = the subject) for timeline frames start..start+length."""
     idx = np.clip(np.arange(start, start + length), 0, analysis["n"] - 1)
+    if "track" in ext:
+        tm, lo = track_video(ext["path"], analysis, ext["track"])
+        sel = torch.from_numpy(np.clip(idx - lo, 0, tm.shape[0] - 1).astype(np.int64))
+        m = torch.nn.functional.interpolate(tm[sel][:, None].float(), size=(h, w), mode="nearest")[:, 0]
+        return (m > 0.5).to(torch.uint8)
     if "tensor" in ext:
         t = _EXT_MASK[ext["tensor"]].float()
         if t.ndim == 4:                                    # an IMAGE batch (e.g. Load Video of a black/white video)
@@ -882,6 +892,9 @@ def ext_masks(ext: dict, analysis: dict, start: int, length: int, w: int, h: int
 
 
 def _ext_name(ext: dict) -> str:
+    if "track" in ext:
+        t = ext["track"]
+        return f"the whole-video track ({len(t.get('points') or [])} points at frame {t.get('frame')})"
     if "tensor" in ext:
         t = _EXT_MASK.get(ext["tensor"])
         return f"the planner's mask input ({tuple(t.shape) if t is not None else 'gone'})"
@@ -910,6 +923,64 @@ def shape_mask(masks: torch.Tensor, spec: dict) -> torch.Tensor:
         cov = torch.nn.functional.avg_pool2d(x[:, None], b, b, ceil_mode=True)[:, 0]
         x = (cov >= 0.5).float().repeat_interleave(b, 1).repeat_interleave(b, 2)[:, :H, :W]
     return (x > 0.5).to(torch.uint8)
+
+
+_TRACK_CACHE: dict[tuple, tuple] = {}
+TRACK_CHUNK = 150   # frames tracked at once; each chunk starts from the previous one's last mask
+
+
+def track_video(path: str, analysis: dict, t: dict) -> tuple[torch.Tensor, int]:
+    """One selection (points on one frame, optional text) tracked by SAM 3 through the plan's whole range, forward and
+    backward from that frame, in chunks that hand their last mask to the next (the text, when given, finds the subject
+    again after a camera cut). Returns (masks [hi-lo, h, w] uint8 at a 640 px working size, lo)."""
+    fps = float(analysis["fps"])
+    lo, hi = plan_range(analysis["n"], fps, t.get("start_s", 0), t.get("end_s", 0), t.get("max_total_s", 0),
+                        t.get("start_f"), t.get("end_f"))
+    key = (path, os.path.getmtime(path), fps, lo, hi, json.dumps({k: t.get(k) for k in ("points", "frame", "text", "threshold")},
+                                                                 sort_keys=True))
+    if key in _TRACK_CACHE:
+        return _TRACK_CACHE[key]
+    from comfy_extras.nodes_sam3 import SAM3_Detect
+    model, clip = _sam3()
+    sw, sh = analysis["width"], analysis["height"]
+    sc = 640 / max(sw, sh)
+    w, h = max(32, int(sw * sc) // 2 * 2), max(32, int(sh * sc) // 2 * 2)
+    src = _timeline(analysis["n_src"], analysis["fps_src"], fps)
+    k = max(lo, min(hi - 1, int(t.get("frame") or lo)))
+    text = str(t.get("text") or "").strip()
+    cond = clip.encode_from_tokens_scheduled(clip.tokenize(text)) if text else None
+    spec = dict(DEFAULT_MASK, threshold=float(t.get("threshold") or DEFAULT_MASK["threshold"]), max_objects=1)
+    out = np.zeros((hi - lo, h, w), np.uint8)
+    t0 = time.time()
+    print(f"[BFS Shot] SAM 3: tracking {len(t.get('points') or [])} points from frame {k} through frames {lo}-{hi - 1}"
+          + (f" (re-found by '{text}')" if text else "") + "…", flush=True)
+    allf = _read_frames(path, src[np.arange(lo, hi)], (w, h), stage="Reading the video for the track")   # read once
+    key_img = torch.from_numpy(allf[k - lo][None].astype(np.float32) / 255.0)
+    pts = t.get("points") or []
+    pos = [{"x": q["x"] * w, "y": q["y"] * h} for q in pts if q.get("label", 1)]
+    neg = [{"x": q["x"] * w, "y": q["y"] * h} for q in pts if not q.get("label", 1)]
+    first = SAM3_Detect.execute(model=model, image=key_img, positive_coords=json.dumps(pos), negative_coords=json.dumps(neg),
+                                threshold=float(spec["threshold"]), refine_iterations=2).args[0][:1].float()
+    for direction in (1, -1):                       # forward from the key frame, then backward
+        frames = list(range(k, hi)) if direction == 1 else list(range(k, lo - 1, -1))
+        init, done = first, 0
+        while done < len(frames):
+            part = frames[max(0, done - 1): done + TRACK_CHUNK]       # one frame of overlap carries the mask on
+            seed = init if init is not None and bool(init.any()) else None
+            if seed is None and cond is None:
+                break                                   # the subject is lost and there is no text to find it again
+            imgs = torch.from_numpy(np.stack([allf[f - lo] for f in part]).astype(np.float32) / 255.0)
+            mk = (_track(model, imgs, seed, cond, spec) > 0.5).numpy().astype(np.uint8)
+            for j, f in enumerate(part):
+                out[f - lo] |= mk[j]
+            init = torch.from_numpy(mk[-1:]).float()
+            done += TRACK_CHUNK
+            _status(f"Tracking with SAM 3: {min(done, len(frames))}/{len(frames)} frames", min(done, len(frames)), len(frames))
+            _node_boundary()
+    res = (torch.from_numpy(out), lo)
+    _TRACK_CACHE[key] = res
+    print(f"[BFS Shot] SAM 3: track done in {time.time() - t0:.0f}s, {mask_report(res[0])}", flush=True)
+    return res
 
 
 def _track(model, imgs: torch.Tensor, init: torch.Tensor | None, cond, spec: dict) -> torch.Tensor:
@@ -947,7 +1018,9 @@ def segment_frames(imgs: torch.Tensor, spec: dict) -> torch.Tensor:
 
 def _mask_key(path: str, analysis: dict, start: int, length: int, spec: dict) -> tuple:
     ext = spec.get("ext")
-    if ext and "tensor" in ext:
+    if ext and "track" in ext:
+        e = ("track", json.dumps(ext["track"], sort_keys=True))
+    elif ext and "tensor" in ext:
         t = _EXT_MASK.get(ext["tensor"])
         e = ("tensor", id(t), tuple(t.shape) if t is not None else None)
     elif ext:

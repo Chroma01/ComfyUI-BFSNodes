@@ -359,6 +359,12 @@ Then save:
 
 **Save → all shots** is for a person who stays in the same place across shots (a sequential video, a fixed camera).
 
+**🎯 Track → whole video** (in the points window) is for a person who moves around: the selection is tracked by SAM 3
+through the whole video (or the range), forward and backward from the frame you clicked on, and every shot without
+its own selection takes its part of that track. Also type a short text (e.g. `woman in pink top`): after a camera cut
+the tracker uses it to find the subject again. The People & masks tab shows the track and removes it. The first run
+tracks the whole range (a minute or two per few hundred frames); the result is cached until the selection changes.
+
 ### 3. Describe the person
 
 Click **🧑 Describe target** in the shot's editor:

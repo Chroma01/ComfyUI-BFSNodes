@@ -109,7 +109,8 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "off", chainFrame: m.chain_frame || "first",
-                 crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "", extMask: !!plan.mask_video });
+                 crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "",
+                 extMask: !!plan.mask_video || !!(plan.track?.points?.length), trackMask: !!(plan.track?.points?.length) });
     }
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
@@ -297,6 +298,22 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     maskPrev.value = {}; save();
   };
   const savePointsAll = () => { pointsTo(modal.points, modal.key, modal.text, modal.idx); modal.open = false; };
+  // one selection tracked by SAM 3 through the whole video (or range): every shot without its own selection takes its
+  // part of that track, so the subject is found wherever it moves (copied points can fall on the background)
+  const saveTrack = () => {
+    const s0 = segs.value[modal.idx]; if (!s0 || !modal.points.length) return;
+    const own = segs.value.filter((x, i) => i !== modal.idx && (x.mask.text || (x.mask.points || []).length)).length;
+    if (own && !window.confirm(`${own} other shot(s) have their own mask text or points, which would win over the track. Clear them so every shot uses the track?`)) {
+      // keep them: those shots keep their own selection
+    } else {
+      segs.value.forEach((_, i) => { const m = meta(i); if (m.mask) { m.mask = { ...m.mask, points: [], text: "" }; } });
+    }
+    const m = meta(modal.idx); m.mask = { ...(m.mask || {}), points: [], text: "" };
+    plan.track = { points: modal.points.map(p => ({ ...p })), frame: s0.start + modal.key, text: modal.text || "",
+                   threshold: plan.mask_cfg?.threshold ?? 0.5 };
+    maskPrev.value = {}; save(); modal.open = false;
+  };
+  const clearTrack = () => { plan.track = null; maskPrev.value = {}; save(); };
   const clearMask = i => {
     const m = meta(i); m.mask = {}; m.crop = false; m.inpaint = false; m.paste = false;
     const k = segs.value[i] ? segKey(segs.value[i]) : null;
@@ -541,7 +558,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
-    openPoints, savePoints, savePointsAll, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
+    openPoints, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
     frameAt, thumbFor, playShot, playAll, stop, seek, setRef, uploadRef,
   };

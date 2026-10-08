@@ -57,6 +57,12 @@ function maskSection(c) {
       h("button", { onClick: () => c.pickFile("video/*", c.setGlobalMaskVideo) }, "⬆ Upload"),
       plan.mask_video ? h("button", { onClick: () => c.setGlobalMaskVideo("") }, "✕") : null,
     ]),
+    plan.track?.points?.length ? h("div", { class: "note", style: "margin-bottom:8px;display:flex;gap:8px;align-items:center" }, [
+      h("span", { class: "grow" }, [h("b", "🎯 Whole-video track: "), `${plan.track.points.length} point(s) at frame ${plan.track.frame}`,
+        plan.track.text ? ` · re-found by "${plan.track.text}" after cuts` : " · no text: after a cut the subject may be lost (add one in 🎯 Points…)",
+        ". Shots without their own selection use it."]),
+      h("button", { class: "ghost", onClick: c.clearTrack }, "✕ remove"),
+    ]) : null,
     h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
       check(MC.fill_holes, v => c.setMaskCfg("fill_holes", v), "Fill holes", "Fill enclosed gaps so each region is solid"),
       check(MC.invert, v => c.setMaskCfg("invert", v), "Invert", "Use everything except the segmented object"),

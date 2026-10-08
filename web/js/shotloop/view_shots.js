@@ -17,6 +17,7 @@ function shotCard(c, s, i) {
       why ? pill("skip", "warn", why) : pill("run", "ok"), s.force !== "auto" ? pill(s.force) : null]),
     h("div", { class: "badges" }, [
       { video: bdg("🎞 mask video", "", s.mask.video), global: bdg("🎞 global mask", "", "the plan's mask video for the whole video"),
+        track: bdg("🎯 track", "", "its part of the whole-video SAM 3 track"),
         sam: bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) }[maskSource(s)] || null,
       s.crop || s.inpaint || s.paste ? bdg({ paste: "🧩 frame+paste", mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)] + (s.inpaint && s.strength < 1 ? ` ${Number(s.strength).toFixed(2)}` : ""), "on", c.modeName(s)) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
@@ -148,7 +149,8 @@ function editor(c, cur) {
       cur.mask.video ? h("button", { title: "back to SAM 3 / the global mask", onClick: () => c.setMask(i, "video", "") }, "✕") : null,
     ]),
     maskSource(cur) === "video" ? hint("This shot uses its mask video: the text and points are ignored.", "display:block;margin-top:2px")
-      : maskSource(cur) === "global" ? hint("No mask of its own: this shot uses the global mask video (People & masks tab).", "display:block;margin-top:2px") : null,
+      : maskSource(cur) === "global" ? hint("No mask of its own: this shot uses the global mask video (People & masks tab).", "display:block;margin-top:2px")
+      : maskSource(cur) === "track" ? hint("No mask of its own: this shot uses its part of the whole-video track (People & masks tab).", "display:block;margin-top:2px") : null,
     mp ? h("div", { class: "mstrip" }, [
       ...mp.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
       hint(mp.empty ? "nothing found: the shot runs without a mask" : `mask covers ${(mp.coverage * 100).toFixed(1)}%${cur.crop ? " · yellow = crop box" : ""}`),
