@@ -807,5 +807,35 @@ class TrackModeTest(unittest.TestCase):
             SL.track_video = orig
 
 
+class DuetPromptTest(unittest.TestCase):
+    def test_fields_are_found_and_the_vlm_fills_them(self):
+        tpl = ("subject_definitions:\n<Subject 1> is the woman from <Picture 1>: {skin, face}.\n<Subject 2> is the {room} "
+               "from {setting}.\n\nsummary:\nx {layout}")
+        self.assertEqual(SL.template_slots(tpl), ["skin, face", "room"])
+        asked = []
+
+        def gen(clip, q, images, max_tokens, temperature=0.0, seed=0):
+            asked.append(q)
+            if images is None:
+                return tpl.replace("{skin, face}", "pale skin, oval face").replace("{room}", "kitchen")
+            return '{"medium": "phone footage", "actions": "the person waves"}'
+
+        old = SL.vlm_generate, SL.vlm_describe
+        SL.vlm_generate, SL.vlm_describe = gen, lambda clip, ims, q, mt=320, temperature=0.0, seed=0: "the kitchen with white cabinets"
+        try:
+            fr = torch.rand(9, 32, 32, 3)
+            out = SL.duet_prompt(object(), tpl, fr, [torch.rand(1, 32, 32, 3)], "character swap", "", 512,
+                                 setting=torch.rand(1, 32, 32, 3))
+            self.assertIn("pale skin, oval face", out); self.assertIn("{setting}", out); self.assertIn("{layout}", out)
+            self.assertIn("the person waves", asked[-1])
+            self.assertEqual(SL.duet_prompt(None, tpl, fr, [], "character swap", ""), tpl.strip())
+            self.assertEqual(SL.duet_prompt(object(), "a full prompt", fr, [], "character swap", ""), "a full prompt")
+            w = SL.duet_prompt(object(), "", fr, [torch.rand(1, 32, 32, 3)], "character swap", "", 512,
+                               setting=torch.rand(1, 32, 32, 3))
+            self.assertIn("<Subject 2> is the kitchen with white cabinets from {setting}.", w)
+        finally:
+            SL.vlm_generate, SL.vlm_describe = old
+
+
 if __name__ == "__main__":
     unittest.main()

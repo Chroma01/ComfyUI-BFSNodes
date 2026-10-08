@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import math
 import os
 import subprocess
@@ -1707,15 +1708,27 @@ def vlm_write_prompt(clip, path: str, analysis: dict, start: int, end: int, refs
     return write_duet_prompt(clip, fr, refs, task, change, max_tokens)
 
 
+PLACE_Q = ("This picture shows a place; the patch of black-and-white noise only hides a person, ignore it. Describe the "
+           "place in ONE short phrase of concrete seen words, at most 25 words: what kind of place, then two or three "
+           "details (furniture, walls, light). Start with 'the'. The phrase only.")
+
+
+def describe_place(clip, setting: torch.Tensor | None, max_tokens: int = 256) -> str:
+    if setting is None:
+        return ""
+    t = vlm_describe(clip, [setting], PLACE_Q, max_tokens).strip().strip('"').rstrip(".")
+    return t if not t or t.lower().startswith("the ") else "the " + t
+
+
 def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, max_tokens: int = 1024,
-                      mode: str = "canvas") -> str:
+                      mode: str = "canvas", setting: torch.Tensor | None = None) -> str:
     """A duet prompt from frames of the kept footage ([1,H,W,3] each) and the reference pictures. The VLM only fills
     a few fields (look, medium, camera and actions, sounds); the six REF2VA sections are assembled here, so a small
     model cannot break the format."""
     refs = [r for r in refs if r is not None]
     fr = [f for f in frames if f is not None]
     key = ("write2", tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change, id(clip),
-           int(max_tokens), mode)
+           int(max_tokens), mode, _image_key(setting))
     if key in _DESCRIBE_CACHE:
         return _DESCRIBE_CACHE[key]
     _status("Writing the prompt with the VLM", force=True)
@@ -1767,6 +1780,15 @@ def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, ma
         keep = f"The performance and camera: fully_preserved - every movement and expression in sync with the kept footage."
         restate = f" The same performance, {what}, in sync with the kept footage."
         style = (f"The target video is in {chg}." if task == "style" and chg else f"The target video is in a realistic style, as {medium}.")
+    place = describe_place(clip, setting)
+    if setting is not None:          # TSC's <Subject 2>: the place picture; {setting} becomes its <Picture n>
+        p = place or "the place"
+        if swap:
+            defs += f"\n<Subject 2> is {p} from {{setting}}."
+            summary = summary.replace(", in the same place.", f", in {p} from {{setting}}.")
+            keep += f"\n<Subject 2> (appears in [Shot 1]): fully_preserved - {p} is retained."
+        else:
+            defs += f" {{setting}} shows the place: {p}."
     out = "\n\n".join([
         "subject_definitions:\n" + defs,
         "summary:\n" + summary,
@@ -1777,6 +1799,91 @@ def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, ma
     ])
     _DESCRIBE_CACHE[key] = out
     return out
+
+
+RESERVED_SLOTS = ("layout", "setting", "target", "details")
+_SLOT = re.compile(r"\{([^{}\n]{2,200})\}")
+
+
+def template_slots(text: str) -> list[str]:
+    """The {...} fields of a hand-written prompt template that a VLM should fill ({layout}, {setting}, {target} and
+    {details} are filled by the nodes)."""
+    return [m for m in _SLOT.findall(text or "") if m.strip().lower() not in RESERVED_SLOTS]
+
+
+def fill_duet_template(clip, template: str, frames: list, refs: list, task: str, change: str, max_tokens: int = 1024,
+                       setting: torch.Tensor | None = None) -> str:
+    """A hand-written duet prompt with {...} fields (TSC's template) filled by the VLM. The facts are gathered with
+    separate questions (references, place, clip), then a text-only pass fills the fields and keeps every other word."""
+    refs = [r for r in refs if r is not None]
+    fr = [f for f in frames if f is not None]
+    key = ("fill1", template, tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change,
+           id(clip), int(max_tokens), _image_key(setting))
+    if key in _DESCRIBE_CACHE:
+        return _DESCRIBE_CACHE[key]
+    slots = template_slots(template)
+    if not slots:
+        return template
+    _status("Filling the prompt template with the VLM", force=True)
+    facts = []
+    if refs:
+        pics = " and ".join(f"<Picture {k + 1}>" for k in range(len(refs)))
+        look = vlm_describe(clip, refs, "Describe the subject of these reference pictures (a person, creature, robot or "
+                            "animal) in concrete seen words: what it is, apparent gender and age when it has them, skin, "
+                            "face shape, eye shape and colour, brows, nose, lips, hair colour, length and cut, and the "
+                            "clothing piece by piece with colours. Looks only: never the pose, camera or background.",
+                            max_tokens).strip()
+        facts.append(f"The new character ({pics}): {look}")
+    place = describe_place(clip, setting)
+    if place:
+        facts.append(f"The place ({{setting}}): {place}")
+    q = (f"These {len(fr)} images are frames, in time order, of one video. Answer with one JSON object only, no code "
+         "fence:\n{" + '"medium": "what the video is and how it was captured, e.g. handheld vertical smartphone footage '
+         'under warm lamp light", "camera": "camera distance, angle and movement", "light": "where the light comes from '
+         'and what it falls on", "actions": "what the person does, in time order, one short sentence per real action, '
+         'a time (MM:SS.mmm) only for the big moments; call them the person and never describe their looks", '
+         '"cuts": "the times of hard cuts as MM:SS.mmm, or none", "sounds": "the sounds of the scene and when"}')
+    d = _parse_json(vlm_generate(clip, q, _letterbox_batch(fr), max_tokens)) if fr else {}
+    for k in ("medium", "camera", "light", "actions", "cuts", "sounds"):
+        if d.get(k):
+            facts.append(f"The kept footage, {k}: {d[k]}")
+    if change.strip():
+        facts.append(f"The requested change: {change.strip()}")
+    fields = "\n".join(f"- {{{x}}}" for x in dict.fromkeys(slots))
+    ask = ("Fill a video prompt template. Replace every field written in curly braces with concrete seen words taken "
+           "from the facts below, matching what the field asks for, and keep every other character of the template "
+           "exactly as it is (section names, tags like <Subject 1>, <Picture 1>, {setting}, {layout}, line breaks). "
+           "Rules: never describe the performer of the kept footage (looks, clothes); the new character's looks come only "
+           "from the character facts; no negations, no quality words; write 'they' for a character with no clear gender. "
+           "If a field is an optional extra shot that the facts do not support, delete that [Shot n] paragraph. "
+           f"Task: {task}.\n\nFacts:\n" + "\n".join(facts) + f"\n\nFields to fill:\n{fields}\n\nTemplate:\n"
+           + template + "\n\nReply with the filled template only.")
+    out = _clean_written(vlm_generate(clip, ask, None, max(int(max_tokens), 1536)))
+    if "subject_definitions:" not in out or len(out) < len(template) * 0.5:
+        print("[BFS] the VLM did not return the template; the fields stay as written", flush=True)
+        out = template
+    _DESCRIBE_CACHE[key] = out
+    return out
+
+
+def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task: str, instruction: str,
+                max_tokens: int = 1024, mode: str = "canvas", setting: torch.Tensor | None = None) -> str:
+    """The prompt a duet node uses. Without a VLM: the prompt as written ('' = the node's template). With one:
+    a prompt with {...} fields gets them filled from the clip and the pictures; an empty prompt is written from the
+    task and the instruction; a prompt without fields is used as written."""
+    text = (prompt or "").strip()
+    if vlm is None or frames is None:
+        if text and template_slots(text):
+            print(f"[BFS H3 Duet] the prompt still has fields to fill ({', '.join(template_slots(text)[:3])}...): connect "
+                  "a VLM to fill them, or write them in", flush=True)
+        return text
+    idx = sorted(set(int(round(x)) for x in torch.linspace(0, frames.shape[0] - 1, min(4, frames.shape[0])).tolist()))
+    fr = [frames[i:i + 1, ..., :3].float() for i in idx]
+    if text and template_slots(text):
+        return fill_duet_template(vlm, text, fr, refs, task, instruction, max_tokens, setting)
+    if not text:
+        return write_duet_prompt(vlm, fr, refs, task, instruction, max_tokens, mode, setting)
+    return text
 
 
 # ---------------------------------------------------------------------------- continuity between shots

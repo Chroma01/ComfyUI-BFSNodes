@@ -657,6 +657,11 @@ if _io is not None:
                     _io.Image.Input("setting", optional=True, tooltip=
                         "The place picture (BFS Setting Picture: a frame of the clip with the person in static). It becomes "
                         "the last <Picture n> and the prompt says it shows the setting (write {setting} to place its tag)."),
+                    _io.Clip.Input("vlm", optional=True, tooltip=
+                        "Optional VLM (CLIPLoader with a Qwen3-VL text encoder) for the prompt. Empty prompt: it writes one "
+                        "from the task + instruction (TSC's rules). Prompt with {...} fields (TSC's template): it fills them "
+                        "from the clip and the pictures. Prompt without fields: used as written."),
+                    _io.Int.Input("vlm_max_tokens", default=1024, min=128, max=4096, optional=True, advanced=True),
                 ],
                 outputs=[_io.Image.Output(display_name="images"), _io.Audio.Output(display_name="audio"),
                          _io.Image.Output(display_name="canvas"), _io.String.Output(display_name="layout_text"),
@@ -669,7 +674,8 @@ if _io is not None:
         def execute(cls, model, clip, vae, task, instruction, prompt, width, height, length, position, size, fit, gap,
                     panel_noise, hold, rope_mode, rope_gap, ref_image_size, steps, sampler_name, scheduler, seed,
                     decode_canvas, audio_vae=None, panel=None, guide=None, guide_frame_idx=0, ref_images=None,
-                    ref_videos=None, ref_video_audios=None, ref_audios=None, panel_static="off", setting=None):
+                    ref_videos=None, ref_video_audios=None, ref_audios=None, panel_static="off", setting=None, vlm=None,
+                    vlm_max_tokens=1024):
             if panel is None and guide is None:
                 raise ValueError("BFS H3 Duet needs a panel, a guide, or both")
             raw_panel = panel
@@ -679,7 +685,9 @@ if _io is not None:
                 length = src.shape[0] if src.shape[0] >= 5 else 124
             ref_images = {k: v for k, v in (ref_images or {}).items() if v is not None}
             ref_videos = {k: v for k, v in (ref_videos or {}).items() if v is not None}
-            text = _resolve_prompt(prompt, task, instruction, len(ref_images), len(ref_videos))
+            text = _shot_loop().duet_prompt(vlm, prompt, guide if guide is not None else raw_panel, list(ref_images.values()),
+                                            task, instruction, int(vlm_max_tokens), rope_mode, setting)
+            text = _resolve_prompt(text, task, instruction, len(ref_images), len(ref_videos))
             if setting is not None:          # the place picture is the last <Picture n>
                 ref_images = {f"ref_image_{i}": v for i, v in enumerate([*ref_images.values(), setting])}
                 text = with_setting(text, len(ref_images), task == "character swap" or "<Subject 1>" in text)
@@ -804,7 +812,9 @@ if _io is not None:
                     _io.Float.Input("rope_gap", default=0.0, min=0.0, max=256.0, step=1.0, advanced=True),
                     _io.Combo.Input("ref_image_size", options=["match", "max"], default="match", advanced=True),
                     _io.Int.Input("vlm_max_tokens", default=1024, min=128, max=4096, advanced=True),
-                    _io.Clip.Input("vlm", optional=True, tooltip="Optional VLM (CLIPLoader with a Qwen3-VL text encoder) that writes the prompt."),
+                    _io.Clip.Input("vlm", optional=True, tooltip="Optional VLM (CLIPLoader with a Qwen3-VL text encoder). Empty prompt: "
+                                   "it writes one from the task + instruction. Prompt with {...} fields: it fills them from the "
+                                   "clip and the pictures. Prompt without fields: used as written."),
                     _io.Model.Input("model", optional=True, tooltip="Needed for rope_mode = shifted."),
                     _io.Vae.Input("audio_vae", optional=True),
                     _io.Image.Input("guide", optional=True, tooltip="Optional aligned latent guide in the video area."),
@@ -835,19 +845,12 @@ if _io is not None:
                     setting=None):
             from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
             refs = [v for v in (ref_images or {}).values() if v is not None]
+            raw_panel = panel
             panel = static_over_panel(panel, panel_static)
             if length <= 0:
                 length = panel.shape[0] if panel.shape[0] >= 5 else 124
-            text = prompt if prompt and prompt.strip() else ""
-            if not text and vlm is not None:
-                try:
-                    from .bfs_shot_loop import write_duet_prompt
-                except ImportError:
-                    write_duet_prompt = None
-                if write_duet_prompt:
-                    idx = sorted(set(int(round(x)) for x in torch.linspace(0, panel.shape[0] - 1, min(4, panel.shape[0])).tolist()))
-                    text = write_duet_prompt(vlm, [panel[i:i + 1] for i in idx], refs, task, instruction, int(vlm_max_tokens),
-                                             rope_mode)
+            text = _shot_loop().duet_prompt(vlm, prompt, raw_panel, refs, task, instruction, int(vlm_max_tokens),
+                                            rope_mode, setting)
             if not text:
                 text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
             if setting is not None:          # the place picture is the last <Picture n>

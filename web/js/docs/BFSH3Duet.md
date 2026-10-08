@@ -110,6 +110,20 @@ TSC's two fixes for a swap in the same room with the same clothes, without a VLM
   in full detail; the noise patch in it is where <Subject 1> stands."* (or write `{setting}` to place its tag yourself).
   This stops the background and framing from being taken from the character picture.
 
+## Prompt from a VLM (optional, 1.85.0)
+
+Plug a Qwen3-VL CLIP (the same CLIPLoader as `clip` works) into `vlm`:
+
+- **prompt empty**: the VLM writes it from the task + instruction (TSC's six sections; with a `setting` picture the
+  place becomes `<Subject 2> ... from <Picture n>`).
+- **prompt with `{...}` fields** (TSC's template): the VLM fills only the fields, from the clip's frames, the
+  reference pictures and the setting picture; every other word stays. `{layout}`, `{setting}`, `{target}` and
+  `{details}` are filled by the node, not the VLM.
+- **prompt without fields**: used as written (the VLM is not called).
+
+Without `vlm`, a prompt that still has `{...}` fields logs a warning. The prompt actually used is the `prompt` output
+and is printed under the comparison.
+
 ## Settings
 
 | setting | effect |
