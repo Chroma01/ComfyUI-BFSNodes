@@ -517,9 +517,18 @@ def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, 
     text = layout_text(make_info(width, height, position, size, gap * PATCH_PX), rope_mode) if panel is not None else ""
     prompt = prompt.replace("{layout}", text)
     refs = {k: v for k, v in (refs or {}).items() if v}
+    # with a panel the refs are sized for the whole canvas, as in TSC's duet (Reference to Video at the canvas size):
+    # 'match' scales refs to the generation's area, and sizing them for the video half alone shrinks them a lot
+    rw, rh = width, height
+    if panel is not None:
+        ci = make_info(width, height, position, size, gap * PATCH_PX)
+        rw, rh = width + ci["strip_w"] * 16, height + ci["strip_h"] * 16
     positive, latent = MiniMaxH3ReferenceToVideo.execute(
-        clip=clip, prompt=prompt, width=width, height=height, length=length, ref_image_size=ref_image_size,
+        clip=clip, prompt=prompt, width=rw, height=rh, length=length, ref_image_size=ref_image_size,
         vae=vae, audio_vae=audio_vae, **refs).args[:2]
+    if (rw, rh) != (width, height):
+        from comfy_extras.nodes_minimax_h3 import _empty_av_latent
+        latent = _empty_av_latent(width, height, length)[0]
     if first_frame is not None:   # anchored at frame 0; the panel step moves it onto the canvas
         positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                              image=first_frame[:1]).args[0]
@@ -846,9 +855,12 @@ if _io is not None:
                 text = with_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
             info = make_info(width, height, position, size, gap * PATCH_PX)
             text = text.replace("{layout}", layout_text(info, rope_mode))
-            positive, latent = MiniMaxH3ReferenceToVideo.execute(
-                clip=clip, prompt=text, width=width, height=height, length=length, ref_image_size=ref_image_size, vae=vae,
-                audio_vae=audio_vae, ref_images={f"ref_image_{i}": r for i, r in enumerate(refs)} or None).args[:2]
+            rw, rh = width + info["strip_w"] * 16, height + info["strip_h"] * 16     # refs sized for the canvas
+            positive = MiniMaxH3ReferenceToVideo.execute(
+                clip=clip, prompt=text, width=rw, height=rh, length=length, ref_image_size=ref_image_size, vae=vae,
+                audio_vae=audio_vae, ref_images={f"ref_image_{i}": r for i, r in enumerate(refs)} or None).args[0]
+            from comfy_extras.nodes_minimax_h3 import _empty_av_latent
+            latent = _empty_av_latent(width, height, length)[0]
             positive, latent, info, preview, _ = BFSH3SidePanel().apply(
                 positive, latent, vae, panel, position, size, fit, gap, hold, panel_noise, guide, 0,
                 keep_video=keep_video, keep_mask=keep_mask)
