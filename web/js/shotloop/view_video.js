@@ -1,6 +1,6 @@
 // 🎞 Video tab: the source video, how it is split into shots, and the generation size.
 import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { GRIDS, fld, select, section, pill, hint } from "./common.js";
+import { GRIDS, fld, select, section, pill, hint, fmtT } from "./common.js";
 
 export function videoTab(c) {
   const { plan, an, files, size, busy, detectorUsed, maxLen } = c;
@@ -31,16 +31,28 @@ export function videoTab(c) {
 
   const R = c.range.value, N = c.n.value;
   const playF = Math.min(N - 1, Math.max(0, c.play.frame || 0));
+  // a player right here, so the range is picked by watching (scrub it, or click the timeline above)
   const rng = section("Range", [
-    h("div", { class: "row", style: "align-items:flex-end;gap:10px" }, [
-      fld("Start at (s)", h("input", { type: "number", step: 0.1, min: 0, value: plan.start_s || 0, onChange: e => c.setRange("start_s", e.target.value) }),
-        `frame ${R.lo}`),
-      h("button", { title: "start where the player is", onClick: () => c.setRange("start_s", +(playF / fps).toFixed(3)) }, "⇤ from player"),
-      fld("End at (s, 0 = end)", h("input", { type: "number", step: 0.1, min: 0, value: plan.end_s || 0, onChange: e => c.setRange("end_s", e.target.value) }),
-        `frame ${R.hi}`),
-      h("button", { title: "end where the player is", onClick: () => c.setRange("end_s", +(playF / fps).toFixed(3)) }, "⇥ from player"),
-      (plan.start_s || plan.end_s) ? h("button", { class: "ghost", onClick: () => { plan.start_s = 0; c.setRange("end_s", 0); } }, "✕ whole video") : null,
-      hint(`${((R.hi - R.lo) / fps).toFixed(2)} s of ${(N / fps).toFixed(2)} s · only this part is split, analysed, generated and joined`),
+    h("div", { class: "player" }, [
+      h("video", { ref: c.vid, src: c.viewUrl(plan.video), preload: "metadata", controls: true, playsinline: true,
+        style: "max-height:240px" }),
+      h("div", { class: "pinfo" }, [
+        h("div", { class: "tc" }, [
+          h("div", ["now   ", h("b", fmtT(playF, fps)), `  (frame ${playF})`]),
+          h("div", ["start ", h("b", fmtT(R.lo, fps)), `  (frame ${R.lo})`]),
+          h("div", ["end   ", h("b", fmtT(R.hi, fps)), `  (frame ${R.hi})`]),
+        ]),
+        h("div", { class: "rgrid" }, [
+          h("button", { class: "pri", title: "the range starts at the player's frame", onClick: () => c.setRange("start_f", playF) }, "⇤ start here"),
+          fld("Start frame", h("input", { type: "number", step: 1, min: 0, max: N - 1, value: R.lo,
+            onChange: e => c.setRange("start_f", e.target.value) }), fmtT(R.lo, fps)),
+          h("button", { class: "pri", title: "the range ends after the player's frame", onClick: () => c.setRange("end_f", playF + 1) }, "⇥ end here"),
+          fld("End frame (0 = end)", h("input", { type: "number", step: 1, min: 0, max: N, value: R.hi >= N ? 0 : R.hi,
+            onChange: e => c.setRange("end_f", e.target.value) }), fmtT(R.hi, fps)),
+          (R.lo > 0 || R.hi < N) ? h("button", { class: "ghost", onClick: () => { plan.start_f = 0; c.setRange("end_f", 0); } }, "✕ whole video") : h("span"),
+        ]),
+        hint(`Play or scrub the video (or click the timeline), then ⇤ / ⇥. ${R.hi - R.lo} frames (${((R.hi - R.lo) / fps).toFixed(2)} s) of ${N}: only this part is split, analysed, generated and joined.`),
+      ]),
     ]),
   ], { sub: "work on a part of the video" });
 

@@ -5,7 +5,7 @@ import { h } from "../vendor/vue.esm-browser.prod.mjs";
 export const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 export const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
-  max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", mask_video: "",
+  max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", mask_video: "",
   megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
   skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,

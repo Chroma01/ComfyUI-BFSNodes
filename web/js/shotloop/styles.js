@@ -97,6 +97,9 @@ const CSS = `
 .bsl .hdl{position:absolute;top:-70px;bottom:0;width:9px;margin-left:-4px;cursor:ew-resize;z-index:3}
 .bsl .hdl::after{content:"";position:absolute;left:3px;top:0;bottom:0;width:3px;background:#fff;opacity:.85;border-radius:2px;box-shadow:0 0 4px #000}
 .bsl .hdl:hover::after{background:#ffd34d}
+.bsl .rgrid{display:grid;grid-template-columns:auto 130px auto 130px auto;gap:6px 10px;align-items:start;justify-content:start}
+.bsl .rgrid>button{margin-top:15px}
+.bsl .rgrid .fld .hint{margin-top:2px}
 .bsl .outr{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,#000a 0 6px,#0007 6px 12px);z-index:2;pointer-events:none}
 .bsl .cut{position:absolute;top:0;height:64px;width:2px;background:#ff4d6d;opacity:.9;pointer-events:none}
 .bsl .ph{position:absolute;top:0;bottom:0;width:1px;background:#ffd34d;pointer-events:none;z-index:4}

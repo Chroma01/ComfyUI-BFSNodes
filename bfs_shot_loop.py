@@ -364,11 +364,14 @@ def detect_cuts(score: list[float], raw: list[float], sensitivity: float, fps: f
 
 # ---------------------------------------------------------------------------- planning
 
-def plan_range(n: int, fps: float, start_s: float = 0.0, end_s: float = 0.0, max_total_s: float = 0.0) -> tuple[int, int]:
-    """The part of the video the plan works on, in timeline frames [lo, hi): start / end (0 = the end of the video),
-    then 'max total seconds' counted from the start."""
-    lo = max(0, min(n - 1, int(round(float(start_s or 0) * fps))))
-    hi = n if not end_s or float(end_s) <= 0 else max(lo + 1, min(n, int(round(float(end_s) * fps))))
+def plan_range(n: int, fps: float, start_s: float = 0.0, end_s: float = 0.0, max_total_s: float = 0.0,
+               start_f: int | None = None, end_f: int | None = None) -> tuple[int, int]:
+    """The part of the video the plan works on, in timeline frames [lo, hi): start / end frame (end 0 = the end of the
+    video; older plans give seconds), then 'max total seconds' counted from the start."""
+    a = int(start_f) if start_f is not None else int(round(float(start_s or 0) * fps))
+    b = int(end_f) if end_f is not None else (int(round(float(end_s) * fps)) if end_s and float(end_s) > 0 else 0)
+    lo = max(0, min(n - 1, a))
+    hi = n if b <= 0 else max(lo + 1, min(n, b))
     if max_total_s and float(max_total_s) > 0:
         hi = min(hi, lo + max(1, int(round(float(max_total_s) * fps))))
     return lo, hi
@@ -445,7 +448,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
     grid = plan["grid"]
     max_len = snap_down(int(round(float(plan["max_s"]) * fps)), grid)
     min_len = max(1, int(round(float(plan["min_s"]) * fps)))
-    lo, hi = plan_range(analysis["n"], fps, plan.get("start_s", 0), plan.get("end_s", 0), plan.get("max_total_s", 0))
+    lo, hi = plan_range(analysis["n"], fps, plan.get("start_s", 0), plan.get("end_s", 0), plan.get("max_total_s", 0),
+                        plan.get("start_f"), plan.get("end_f"))
     if path:
         cuts, _ = find_cuts(path, analysis, plan.get("detector", "adaptive"), float(plan["sensitivity"]))
     else:

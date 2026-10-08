@@ -88,8 +88,11 @@ function Panel(io) {
   // the part the plan works on [lo, hi): start / end (0 = the end), then "max total seconds" counted from the start
   const range = computed(() => {
     const N = n.value; if (!N) return { lo: 0, hi: 0 };
-    const lo = Math.max(0, Math.min(N - 1, Math.round((+plan.start_s || 0) * plan.fps)));
-    let hi = +plan.end_s > 0 ? Math.max(lo + 1, Math.min(N, Math.round(+plan.end_s * plan.fps))) : N;
+    // frames (older plans saved seconds)
+    const a = plan.start_f != null ? +plan.start_f : Math.round((+plan.start_s || 0) * plan.fps);
+    const b = plan.end_f != null ? +plan.end_f : (+plan.end_s > 0 ? Math.round(+plan.end_s * plan.fps) : 0);
+    const lo = Math.max(0, Math.min(N - 1, a));
+    let hi = b > 0 ? Math.max(lo + 1, Math.min(N, b)) : N;
     if (+plan.max_total_s > 0) hi = Math.min(hi, lo + Math.max(1, Math.round(+plan.max_total_s * plan.fps)));
     return { lo, hi };
   });
@@ -370,7 +373,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const setFilter = (k, v) => { plan.filters = { ...plan.filters, [k]: v }; save(); if (stats.value.length) analyzeContent(); };
   const setPlan = (k, v, after) => { plan[k] = v; save(); after && after(); };
   // the range changed: split again inside it (the per-shot settings stay with the shot at the same position)
-  const setRange = (k, v) => { plan[k] = Math.max(0, +v || 0); save(); autoSplit(true); };
+  // start / end in timeline frames (end 0 = the end of the video); the old seconds fields are cleared
+  const setRange = (k, v) => { plan[k] = Math.max(0, Math.round(+v || 0)); plan.start_s = 0; plan.end_s = 0; save(); autoSplit(true); };
   const setGlobalMaskVideo = v => { plan.mask_video = v; save(); maskPrev.value = {}; };
   // XHR instead of fetch: big videos show how much has been sent
   const postWithProgress = (url, body, onPct) => new Promise((resolve, reject) => {

@@ -78,8 +78,9 @@ camera cuts.
   shot bar to split, *⇥ Merge* to join, or select a shot and press **Delete** to remove the cut at its
   start (it merges into the previous shot). Your edits are what runs.
 
-**Range** (🎞 Video tab): *Start at* / *End at* (seconds; 0 = the end of the video) limit the plan to a part of the
-video, before anything is split, analysed or generated; *⇤ / ⇥ from player* take the player's current position. The
+**Range** (🎞 Video tab, with its own player): *Start frame* / *End frame* (timeline frames; end 0 = the end of the
+video) limit the plan to a part of the video, before anything is split, analysed or generated. Play or scrub the player
+(or click the timeline) and press *⇤ start here* / *⇥ end here* to take its exact frame. The
 timeline dims what is outside; the join and the soundtrack cover only the range. *Max total seconds* counts from the
 start of the range.
 

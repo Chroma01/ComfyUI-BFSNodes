@@ -773,6 +773,8 @@ class RangeTest(unittest.TestCase):
         self.assertEqual(SL.plan_range(1000, 24.0, 10, 20), (240, 480))
         self.assertEqual(SL.plan_range(1000, 24.0, 10, 0), (240, 1000))
         self.assertEqual(SL.plan_range(1000, 24.0, 10, 0, 5), (240, 360))       # max total counted from the start
+        self.assertEqual(SL.plan_range(1000, 24.0, 0, 0, 0, start_f=250, end_f=500), (250, 500))   # frames win
+        self.assertEqual(SL.plan_range(1000, 24.0, 0, 0, 0, start_f=250, end_f=0), (250, 1000))
         segs = SL.plan_segments(480, [100, 300], "shots", 107, 10, start=240)
         self.assertEqual(segs[0]["start"], 240)
         self.assertEqual(segs[-1]["end"], 480)
