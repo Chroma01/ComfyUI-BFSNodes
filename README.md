@@ -46,6 +46,10 @@ cd ComfyUI-BFSNodes
 pip install -r requirements.txt
 ```
 
+Optional, only for the features that use face recognition (Shot Planner *Find people* / Cast, LTX Identity): `pip install
+insightface` with `onnxruntime` or `onnxruntime-gpu`. They are not in the requirements because insightface pins packages
+that conflict with many environments; without them everything else works and those features say what to install.
+
 Restart ComfyUI after installation.
 
 ## LoRA Placement

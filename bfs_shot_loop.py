@@ -664,7 +664,8 @@ def analyze_cast(path: str, analysis: dict, step_s: float = 0.5, threshold: floa
         return _CAST_CACHE[key]
     app = _face_app()
     if app is None:
-        raise RuntimeError("Face analysis needs the insightface package and the buffalo_l models in models/insightface.")
+        raise RuntimeError("Find people needs the optional insightface package (pip install insightface, with onnxruntime or "
+                           "onnxruntime-gpu) and the buffalo_l models in models/insightface; restart ComfyUI after installing.")
     fps = float(analysis["fps"])
     step = max(1, int(round(step_s * fps)))
     frames_idx = np.arange(0, analysis["n"], step)

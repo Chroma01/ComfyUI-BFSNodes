@@ -67,7 +67,11 @@ def _dbg(*a):
 def _get_face_app():
     global _FACE_APP
     if _FACE_APP is None:
-        from insightface.app import FaceAnalysis
+        try:
+            from insightface.app import FaceAnalysis
+        except ImportError as e:
+            raise RuntimeError("This node needs the optional insightface package: pip install insightface (with onnxruntime "
+                               "or onnxruntime-gpu), then restart ComfyUI.") from e
         providers = (["CUDAExecutionProvider", "CPUExecutionProvider"] if _USE_GPU else ["CPUExecutionProvider"])
         app = FaceAnalysis(name="buffalo_l", providers=providers)
         app.prepare(ctx_id=0 if _USE_GPU else -1, det_size=(640, 640))
