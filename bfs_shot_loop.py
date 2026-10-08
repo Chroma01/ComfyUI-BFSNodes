@@ -2156,16 +2156,26 @@ class BFSShotPlanner:
         used_refs, used_refs2 = unique("ref", g_ref), unique("ref2", g_ref2)
         details = p.get("ref_details") or {}
 
+        auto_details = {}
+
+        def describe_refs(text, rimg, r2img):
+            """What 📝 Describe refs writes for these references (same preset, fit and clean-up as the button)."""
+            slot = prompt_slot(text, "{details}") if vcfg.get("fit_prompt", True) else ""
+            d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"]),
+                                          float(vcfg.get("temperature") or 0), int(vcfg.get("seed") or 0)), vcfg)
+            return tidy_slot(d, slot) if slot and (vcfg.get("describe_preset") or "short") == "short" else d
+
         def fill_details(text, rname, r2name, rimg, r2img):
-            """{details} = the description of this shot's references: edited in the panel, else from the VLM."""
+            """{details} = the description of this shot's references: edited in the panel, else the one the VLM wrote
+            before any SAM 3 work (auto_details), else a plain word so the sentence never has a hole."""
             if "{details}" not in text:
                 return text
-            d = details.get(ref_set_key(rname, r2name), "")
-            if not d and vlm is not None:
-                slot = prompt_slot(text, "{details}") if vcfg.get("fit_prompt", True) else ""
-                d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"]),
-                                              float(vcfg.get("temperature") or 0), int(vcfg.get("seed") or 0)), vcfg)
-                d = tidy_slot(d, slot) if slot and (vcfg.get("describe_preset") or "short") == "short" else d
+            k = ref_set_key(rname, r2name)
+            d = details.get(k, "") or auto_details.get(k, "")
+            if not d:
+                print(f"[BFS Shot Planner] {{details}} has no description for {k!r}: write it in 📝 Prompts & refs or "
+                      "connect the VLM", flush=True)
+                d = "character"
             return text.replace("{details}", d)
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
@@ -2177,6 +2187,21 @@ class BFSShotPlanner:
                     written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"],
                                                   [ref_for(segs[i]["ref"], g_ref), ref_for(segs[i]["ref2"], g_ref2)],
                                                   vcfg["write_task"], vcfg["write_change"], int(vcfg["max_tokens"]))
+        # {details} with no edited description: described now, before any SAM 3 work (switching between SAM 3 and the
+        # VLM mid-generation breaks the VLM: that is why the button worked and the run did not), once per reference set
+        if vlm is not None:
+            for i in todo:
+                text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
+                if "{details}" not in text:
+                    continue
+                rn, r2n = segs[i]["ref"] or g_names["ref"], segs[i]["ref2"] or g_names["ref2"]
+                k = ref_set_key(rn, r2n)
+                if details.get(k) or k in auto_details:
+                    continue
+                r1 = ref_for(segs[i]["ref"], g_ref)
+                r2 = ref_for(segs[i]["ref2"], g_ref2) if r2n else None
+                auto_details[k] = describe_refs(text, r1, r2)
+                print(f"[BFS Shot Planner] {{details}} = {auto_details[k]!r} (described automatically)", flush=True)
         # {target} with no description of its own: the shot's selection is cut out (SAM 3 for every shot first) and the
         # VLM describes it (written for the prompt's {target} sentence with fit_prompt)
         auto_target = {}
