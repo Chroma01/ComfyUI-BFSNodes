@@ -641,6 +641,13 @@ if _io is not None:
                         input=_io.Audio.Input("ref_video_audio", tooltip="Soundtrack of the same-numbered reference video"), prefix="ref_video_audio_", min=0, max=3)),
                     _io.Autogrow.Input("ref_audios", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Audio.Input("ref_audio", tooltip="<Audio n> reference"), prefix="ref_audio_", min=0, max=3)),
+                    _io.Combo.Input("panel_static", options=PANEL_STATIC, default="off", optional=True, tooltip=
+                        "TSC's fix for swaps in the same world: cover the face (or the whole person) of the pinned clip in TV "
+                        "static, every frame (SAM 3), so the generated half cannot copy it and takes the identity from the "
+                        "reference. The output is the generated half only, so the static never shows."),
+                    _io.Image.Input("setting", optional=True, tooltip=
+                        "The place picture (BFS Setting Picture: a frame of the clip with the person in static). It becomes "
+                        "the last <Picture n> and the prompt says it shows the setting (write {setting} to place its tag)."),
                 ],
                 outputs=[_io.Image.Output(display_name="images"), _io.Audio.Output(display_name="audio"),
                          _io.Image.Output(display_name="canvas"), _io.String.Output(display_name="layout_text"),
@@ -653,15 +660,20 @@ if _io is not None:
         def execute(cls, model, clip, vae, task, instruction, prompt, width, height, length, position, size, fit, gap,
                     panel_noise, hold, rope_mode, rope_gap, ref_image_size, steps, sampler_name, scheduler, seed,
                     decode_canvas, audio_vae=None, panel=None, guide=None, guide_frame_idx=0, ref_images=None,
-                    ref_videos=None, ref_video_audios=None, ref_audios=None):
+                    ref_videos=None, ref_video_audios=None, ref_audios=None, panel_static="off", setting=None):
             if panel is None and guide is None:
                 raise ValueError("BFS H3 Duet needs a panel, a guide, or both")
+            raw_panel = panel
+            panel = static_over_panel(panel, panel_static)
             if length <= 0:
                 src = guide if guide is not None else panel
                 length = src.shape[0] if src.shape[0] >= 5 else 124
             ref_images = {k: v for k, v in (ref_images or {}).items() if v is not None}
             ref_videos = {k: v for k, v in (ref_videos or {}).items() if v is not None}
             text = _resolve_prompt(prompt, task, instruction, len(ref_images), len(ref_videos))
+            if setting is not None:          # the place picture is the last <Picture n>
+                ref_images = {f"ref_image_{i}": v for i, v in enumerate([*ref_images.values(), setting])}
+                text = with_setting(text, len(ref_images), task == "character swap" or "<Subject 1>" in text)
             refs = {"ref_images": ref_images, "ref_videos": ref_videos,
                     "ref_video_audios": {k: v for k, v in (ref_video_audios or {}).items() if v is not None},
                     "ref_audios": {k: v for k, v in (ref_audios or {}).items() if v is not None}}
@@ -669,8 +681,59 @@ if _io is not None:
                             sampler_name, scheduler, seed, panel, guide, guide_frame_idx, position,
                             size, fit, gap, panel_noise, hold, ref_image_size, decode_canvas,
                             rope_mode, rope_gap)
-            return _io.NodeOutput(*out, side_by_side(guide if guide is not None else panel, out[0],
+            return _io.NodeOutput(*out, side_by_side(guide if guide is not None else raw_panel, out[0],
                                                      list(ref_images.values()), out[5]))
+
+
+def _shot_loop():
+    try:
+        from . import bfs_shot_loop as SL
+    except ImportError:
+        import bfs_shot_loop as SL
+    return SL
+
+
+PANEL_STATIC = ["off", "face", "person"]
+
+
+def _small(frames: torch.Tensor, side: int = 640) -> torch.Tensor:
+    H, W = frames.shape[1:3]
+    s = side / max(H, W)
+    if s >= 1:
+        return frames[..., :3].float()
+    return torch.nn.functional.interpolate(frames[..., :3].movedim(-1, 1).float(), size=(max(32, int(H * s) // 2 * 2),
+                                           max(32, int(W * s) // 2 * 2)), mode="bilinear", align_corners=False).movedim(1, -1)
+
+
+def static_over_panel(frames: torch.Tensor | None, what: str) -> torch.Tensor | None:
+    """TSC's fix for same-world swaps: the face (or the whole person) of the pinned clip covered in TV static, every
+    frame, so the generated half cannot copy it and takes the identity from the reference. Tracked by SAM 3."""
+    if frames is None or not what or what == "off":
+        return frames
+    SL = _shot_loop()
+    spec = dict(SL.DEFAULT_MASK, text=what, max_objects=4, threshold=0.4)
+    masks = SL.segment_frames(_small(frames), spec)
+    out = torch.cat([SL.tv_static(frames[i:i + 1, ..., :3].float(), masks[min(i, masks.shape[0] - 1)],
+                                  grow=0.05 if what == "face" else 0.03, seed=i) for i in range(frames.shape[0])], 0)
+    cov = float((masks > 0.5).float().mean())
+    print(f"[BFS H3 Duet] panel_static '{what}': covered {cov * 100:.1f}% of the panel (SAM 3, {frames.shape[0]} frames)",
+          flush=True)
+    return out
+
+
+def setting_from_clip(frames: torch.Tensor, position: float = 0.5, subject: str = "person") -> torch.Tensor:
+    """TSC's setting picture: one frame of the clip with the subject covered in TV static, so the generated half sees the
+    place (light, framing, background) in full detail and not the person."""
+    SL = _shot_loop()
+    k = int(round((frames.shape[0] - 1) * min(1.0, max(0.0, position))))
+    img = frames[k:k + 1, ..., :3].float()
+    m = SL.segment_frames(_small(img), dict(SL.DEFAULT_MASK, text=subject or "person", max_objects=8))[0]
+    return SL.tv_static(img, m)
+
+
+def with_setting(text: str, k: int, swap: bool) -> str:
+    """{setting} becomes <Picture k>; otherwise TSC's sentence goes at the end of subject_definitions."""
+    return _shot_loop().add_setting(text, k, swap)
 
 
 def side_by_side(source: torch.Tensor | None, result: torch.Tensor, refs: list | None = None, prompt: str = "",
@@ -743,6 +806,13 @@ if _io is not None:
                     _io.Image.Input("keep_video", optional=True, tooltip="The video kept outside the mask (default: the panel clip)."),
                     _io.Autogrow.Input("ref_images", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Image.Input("ref_image", tooltip="<Picture n>, in order"), prefix="ref_image_", min=0, max=9)),
+                    _io.Combo.Input("panel_static", options=PANEL_STATIC, default="off", optional=True, tooltip=
+                        "TSC's fix for swaps in the same world: cover the face (or the whole person) of the pinned clip in TV "
+                        "static, every frame (SAM 3), so the generated half cannot copy it and takes the identity from the "
+                        "reference. The output is the generated half only, so the static never shows."),
+                    _io.Image.Input("setting", optional=True, tooltip=
+                        "The place picture (BFS Setting Picture: a frame of the clip with the person in static). It becomes "
+                        "the last <Picture n> and the prompt says it shows the setting (write {setting} to place its tag)."),
                 ],
                 outputs=[_io.Conditioning.Output(display_name="positive"), _io.Latent.Output(display_name="latent"),
                          _io.Model.Output(display_name="model"), PANEL_INFO_T.Output(display_name="panel_info"),
@@ -752,9 +822,11 @@ if _io is not None:
         @classmethod
         def execute(cls, clip, vae, panel, task, instruction, prompt, width, height, length, position, size, panel_noise,
                     rope_mode, fit, gap, hold, rope_gap, ref_image_size, vlm_max_tokens, vlm=None, model=None,
-                    audio_vae=None, guide=None, ref_images=None, keep_mask=None, keep_video=None):
+                    audio_vae=None, guide=None, ref_images=None, keep_mask=None, keep_video=None, panel_static="off",
+                    setting=None):
             from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
             refs = [v for v in (ref_images or {}).values() if v is not None]
+            panel = static_over_panel(panel, panel_static)
             if length <= 0:
                 length = panel.shape[0] if panel.shape[0] >= 5 else 124
             text = prompt if prompt and prompt.strip() else ""
@@ -769,6 +841,9 @@ if _io is not None:
                                              rope_mode)
             if not text:
                 text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
+            if setting is not None:          # the place picture is the last <Picture n>
+                refs = refs + [setting]
+                text = with_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
             info = make_info(width, height, position, size, gap * PATCH_PX)
             text = text.replace("{layout}", layout_text(info, rope_mode))
             positive, latent = MiniMaxH3ReferenceToVideo.execute(
@@ -860,12 +935,38 @@ class BFSShotH3Duet:
         return out[:4] + (out[5],)
 
 
+class BFSSettingPicture:
+    """TSC's setting picture: a frame of the clip with the person covered in TV static (the place, not the person)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE", {"tooltip": "The source clip (or one frame)."}),
+            "position": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                                   "tooltip": "Which frame: 0 = first, 0.5 = middle, 1 = last."}),
+            "subject": ("STRING", {"default": "person", "tooltip": "What SAM 3 covers with static (e.g. person, man, dog)."}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("setting",)
+    FUNCTION = "make"
+    CATEGORY = "BFS/MiniMax H3"
+    DESCRIPTION = ("TSC's setting picture for a duet: one frame of the clip with the person covered in TV static. Give it "
+                   "to BFS H3 Duet's `setting` input: the generated half then takes the place, light and framing from "
+                   "it instead of from the character picture.")
+
+    def make(self, images, position, subject):
+        return (setting_from_clip(images, position, subject),)
+
+
 NODE_CLASS_MAPPINGS = {
+    "BFSSettingPicture": BFSSettingPicture,
     "BFSShotH3Duet": BFSShotH3Duet,
     "BFSH3SidePanel": BFSH3SidePanel,
     "BFSH3SidePanelCrop": BFSH3SidePanelCrop,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "BFSSettingPicture": "BFS Setting Picture (place, person in static)",
     "BFSShotH3Duet": "BFS Shot H3 Duet (render one shot)",
     "BFSH3SidePanel": "BFS H3 Side Panel (virtual reference panel)",
     "BFSH3SidePanelCrop": "BFS H3 Side Panel Crop",

@@ -121,6 +121,35 @@ class KeepMaskTest(unittest.TestCase):
         self.assertEqual(float(m[0, 0, 3, 30, 36 + 18]), 1.0)    # inside the mask: generated
         self.assertEqual(float(m[0, 0, 3, 30, 5]), 0.0)          # panel: pinned
 
+    def test_panel_static_covers_the_subject_every_frame(self):
+        seen = {}
+
+        def seg(imgs, spec):
+            seen["spec"] = spec
+            m = torch.zeros(imgs.shape[0], *imgs.shape[1:3]); m[:, 10:20, 10:20] = 1
+            return m
+
+        def tv(img, mask, grow=0.03, seed=0):
+            out = img.clone(); m = torch.nn.functional.interpolate(mask[None, None].float(), size=img.shape[1:3])[0, 0]
+            out[0][m > 0.5] = -1.0
+            return out
+
+        fake = types.SimpleNamespace(DEFAULT_MASK={"text": "", "threshold": 0.5}, segment_frames=seg, tv_static=tv,
+                                     add_setting=lambda text, k, swap: text + f" <Picture {k}> setting")
+        old, SP._shot_loop = SP._shot_loop, lambda: fake
+        try:
+            fr = torch.full((5, 64, 48, 3), 0.5)
+            self.assertIs(SP.static_over_panel(fr, "off"), fr)
+            out = SP.static_over_panel(fr, "face")
+            self.assertEqual(seen["spec"]["text"], "face")
+            self.assertEqual(tuple(out.shape), (5, 64, 48, 3))
+            self.assertTrue(bool((out[:, 15, 15] == -1).all()) and float(out[0, 40, 40, 0]) == 0.5)
+            st = SP.setting_from_clip(fr, 1.0, "dog")
+            self.assertEqual(tuple(st.shape), (1, 64, 48, 3)); self.assertEqual(seen["spec"]["text"], "dog")
+            self.assertTrue(SP.with_setting("x", 2, True).endswith("<Picture 2> setting"))
+        finally:
+            SP._shot_loop = old
+
 
 if __name__ == "__main__":
     unittest.main()

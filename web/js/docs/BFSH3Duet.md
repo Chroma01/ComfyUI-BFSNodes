@@ -96,6 +96,20 @@ non_diegetic_music:
 None.
 ```
 
+## Same-world swaps: static and setting picture (1.84.0)
+
+TSC's two fixes for a swap in the same room with the same clothes, without a VLM:
+
+- **`panel_static`** (`off` / `face` / `person`): SAM 3 tracks the face (or the whole person) of the pinned clip and
+  covers it in black-and-white TV static on every frame. The generated half can no longer copy the source face, so the
+  identity comes from the reference picture; motion, framing and camera still come from the panel. The static only
+  exists in the panel, which is cropped off, so it never shows in the output. `face` keeps the body (best when the
+  outfit should stay); `person` hides the whole performer (best when the build and outfit should change).
+- **`setting`** + **BFS Setting Picture**: one frame of the clip with the person in static. Plugged into `setting`, it
+  becomes the last `<Picture n>` and the prompt gets *"<Picture n> shows the setting, the same place as the kept footage
+  in full detail; the noise patch in it is where <Subject 1> stands."* (or write `{setting}` to place its tag yourself).
+  This stops the background and framing from being taken from the character picture.
+
 ## Settings
 
 | setting | effect |

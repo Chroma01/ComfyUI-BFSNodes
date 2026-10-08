@@ -160,7 +160,8 @@ Training-free split-screen generation for MiniMax H3 (TSC's latent pin): a panel
 or a reference) is pinned beside the video with a noise mask, the video is generated in sync with
 it, and the panel is cropped off before decoding. **BFS H3 Duet** does it all in one node, **BFS Shot H3 Duet** renders each shot of the Shot Loop that way (or with an aligned guide for body-swap LoRAs);
 **BFS H3 Side Panel** + **BFS H3 Side Panel Crop** are the building blocks. Optional aligned latent
-guide. See [`web/js/docs/BFSH3Duet.md`](web/js/docs/BFSH3Duet.md).
+guide. 1.84.0: `panel_static` (TV static over the face / person of the pinned clip, SAM 3) and a `setting`
+picture (**BFS Setting Picture**) for same-world swaps. See [`web/js/docs/BFSH3Duet.md`](web/js/docs/BFSH3Duet.md).
 
 ## Requirements
 
