@@ -1713,11 +1713,24 @@ PLACE_Q = ("This picture shows a place; the patch of black-and-white noise only 
            "details (furniture, walls, light). Start with 'the'. The phrase only.")
 
 
+def phrase(text: str) -> str:
+    """A VLM answer used inside a sentence: one line, no quotes, no final full stop, lower-case start
+    ('An elderly woman ...' -> 'an elderly woman ...')."""
+    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'').rstrip(".").strip()
+    if len(t) > 1 and t[0].isupper() and not t[1].isupper() and not t.startswith("<"):
+        t = t[0].lower() + t[1:]
+    return t
+
+
 def describe_place(clip, setting: torch.Tensor | None, max_tokens: int = 256) -> str:
     if setting is None:
         return ""
-    t = vlm_describe(clip, [setting], PLACE_Q, max_tokens).strip().strip('"').rstrip(".")
-    return t if not t or t.lower().startswith("the ") else "the " + t
+    t = phrase(vlm_describe(clip, [setting], PLACE_Q, max_tokens))
+    for verb in (" features ", " has ", " with ", " contains ", " is "):   # a sentence back into a noun phrase
+        if verb in t and verb != " with ":
+            t = t.replace(verb, " with ", 1)
+            break
+    return t if not t or t.lower().startswith(("the ", "a ", "an ")) else "the " + t
 
 
 # words that describe nothing on screen (TSC: H3 reads one description of one video and does not know what is pinned)
@@ -1785,7 +1798,8 @@ def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, ma
                             "animal) in ONE sentence of concrete seen words: what it is, apparent gender and age when it "
                             "has them, face, hair colour, length and style, skin, and the clothing piece by piece with "
                             "colours. Looks only: never the pose, expression, camera or background.",
-                            max_tokens).strip().rstrip(".")
+                            max_tokens)
+        look = phrase(look)
     d = video_facts(clip, fr, times, max_tokens)
     seen = d.get("seen") or "the original performance"
     medium = d.get("medium") or "real camera footage"
