@@ -72,10 +72,18 @@ class SidePanelTest(unittest.TestCase):
 
     def test_layout_text_follows_the_share(self):
         half = SP.layout_text({"position": "left", "h": 64, "w": 36, "strip_h": 0, "strip_w": 36})
-        self.assertIn("the LEFT half is the kept footage", half)
+        self.assertIn("the left half shows the original performance; the right half shows", half)
+        self.assertNotIn("kept", half)
         narrow = SP.layout_text({"position": "left", "h": 64, "w": 72, "strip_h": 0, "strip_w": 36})
-        self.assertIn("narrow strip", narrow)
-        self.assertIn("LARGER", narrow)
+        self.assertIn("the left third shows", narrow)
+        self.assertIn("the right two thirds show", narrow)
+        self.assertIn("a wider view of the same action", narrow)
+        top = {"position": "top", "h": 48, "w": 36, "strip_h": 16, "strip_w": 0}
+        txt = SP.fill_layout("{panel_region} shows a man dancing, and {video_region} shows <Subject 1>.", top)
+        self.assertEqual(txt, "the top quarter shows a man dancing, and the bottom three quarters show <Subject 1>.")
+        p = SP.build_prompt("character swap", "", 1, 0)
+        for w in ("kept footage", "kept exactly", "in sync", "generated"):
+            self.assertNotIn(w, SP.fill_layout(p, top))
 
     def test_apply_and_crop_round_trip(self):
         lat = _latent()

@@ -369,7 +369,7 @@ class ConditioningWriterTest(unittest.TestCase):
         out = self._run()
         self.assertEqual(out[3], "my own prompt")
         out = self._run(duet="canvas")
-        self.assertIn("LEFT half is the kept footage", out[3])
+        self.assertIn("the left half shows the original performance", out[3])
         self.assertEqual(self.seen["prompt"], out[3])
 
     def test_task_template_follows_the_duet_mode(self):

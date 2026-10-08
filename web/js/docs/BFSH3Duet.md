@@ -33,7 +33,7 @@ node's advanced settings, with defaults that work.
 
 - **The source clip** (TSC's duet): the new character copies its motion, camera and cuts frame for
   frame. Give the new character with `<Picture 1>` (and the place with `<Picture 2>`). The pinned clip
-  has no tag: the prompt calls it "the kept footage" (`layout_text` gives the sentence). See TSC's
+  has no tag: the prompt names its region by where it is and what is seen there (`{layout}` / `{panel_region}`). See TSC's
   prompting guide: never describe the source performer, restate the identity in every shot.
 - **A reference image**: a static picture of the person next to the video.
 
@@ -62,35 +62,68 @@ References work like the official Reference to Video node: up to 9 images (`<Pic
 
 ## Prompt
 
-The node's prompt box starts with a template. The side panel has **no tag**: it is not a `<Picture n>`
-or `<Video n>`, and the text encoder never sees it. Name it by its place ("the LEFT half is the kept
-footage"); `{layout}` inserts that sentence for the current side and size. Describe only the generated
-part: never the panel's performer, clothes or room, even to contrast them, because whatever you leave
-undescribed is copied from the panel. Restate the new identity in every shot ("her face from
-`<Picture 1>`" plus two or three face, hair or outfit words) and give exact times for cuts.
+TSC's newer strategy (2026-10): **H3 has no idea what is pinned and what is noised.** It reads one description of
+one video, so the prompt describes the finished split screen as plain footage. Never write "kept footage", "kept
+exactly", "generated", "preserved", "in sync with", "seamlessly": they describe nothing on screen and crowd out the
+action.
 
-Example (character swap, source clip pinned on the left, a face picture and a full-body picture):
+- **No tag and no retention line for the pinned clip.** It is not a reference input, only latents in the canvas. Name
+  its region by where it is plus what is seen there, in one clause: "the top quarter shows a man dancing in a small
+  bedroom". `{panel_region}` / `{video_region}` become the region names for the current side and size ("the top
+  quarter", "the bottom three quarters"), `{layout}` the whole split-screen sentence.
+- **Write the other region as its own scene**, doing the same movements at the same moments, in a real place with
+  concrete details.
+- **Spell out the motion** beat by beat, with times for the big moments (cuts, strikes, jumps, a line). The pinned
+  half alone does not carry the moves. Times are on the video's clock (the pinned clip starts at frame 0 here).
+- **Soundscape** = the sounds of the new scene.
+- Cuts: `[Shot 2] At MM:SS.mmm, both halves cut together to ...` with the new framing.
+
+The VLM writer and the template filler follow these rules, and a scrub removes the old meta words from what they
+return. Template (fill the `{...}`, or let the VLM fill them):
 
 ```
 subject_definitions:
-<Subject 1> is the woman whose appearance comes from <Picture 1> and <Picture 2>: fair skin, a narrow oval face, grey-green eyes, light brown hair in a low ponytail, wearing a white long-sleeved top under a navy denim apron.
+<Subject 1> is {name or plain description} whose appearance comes from <Picture 1>: {concrete look words}, wearing {outfit piece by piece}.
 
 summary:
-[reference generation] The target video is a split screen: the kept footage beside <Subject 1>, who moves in sync with it, in the same bedroom.
+[reference generation] The target video is a split screen: {panel_region} shows {what is seen in the source, one clause}, and {video_region} shows <Subject 1> doing the same movements at the same moments, in {place}.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - {key look words} are retained.
+
+detailed_description:
+The target video is in a {realistic / 3D CG / anime} style, as {the medium of the source clip}. A split screen divided by a thin straight {vertical / horizontal} line: {panel_region} shows {what is seen there, one clause}; {video_region} shows <Subject 1> performing the same movements at the same moments, in {place with concrete details}.
+
+[Shot 1] {Camera distance, angle and movement as the source shows it}. <Subject 1>, the face from <Picture 1>, {what they do, one sentence per real action}. At {00:01.500} {big beat}.
+
+overall_soundscape:
+{The sounds of the new scene and when they happen.}
+
+non_diegetic_music:
+None.
+```
+
+Example (character swap, source clip pinned on the left half, one face picture and one full-body picture):
+
+```
+subject_definitions:
+<Subject 1> is a young woman whose appearance comes from <Picture 1> and <Picture 2>: fair skin, a narrow oval face, grey-green eyes, light brown hair in a low ponytail, wearing a white long-sleeved top under a navy denim apron.
+
+summary:
+[reference generation] The target video is a split screen: the left half shows a man talking to a phone camera in a bedroom, and the right half shows <Subject 1> doing the same movements at the same moments, in a sunny kitchen with white tiles.
 
 retention_analysis:
 <Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - her face, ponytail, white top and navy apron are retained.
-The kept footage: fully_preserved - the panel is kept exactly.
 
 detailed_description:
-The target video is in a realistic style, as handheld vertical smartphone footage under soft daylight. {layout}
+The target video is in a realistic style, as handheld vertical smartphone footage under soft daylight. A split screen divided by a thin straight vertical line: the left half shows a man talking to a phone camera in a bedroom; the right half shows <Subject 1> performing the same movements at the same moments, in a sunny kitchen with white tiles and a window behind her.
 
-[Shot 1] A medium close-up at chest height, the phone steady at eye level. <Subject 1>, her face from <Picture 1> with grey-green eyes and soft pink lips, her light brown ponytail and navy apron, talks to the camera with small nods.
+[Shot 1] A medium close-up at chest height, the phone steady at eye level. <Subject 1>, her face from <Picture 1> with grey-green eyes and soft pink lips, talks to the camera with small nods. At 00:01.800 she laughs and tilts her head back.
 
 [Shot 2] At 00:03.708, both halves cut together to a closer framing. <Subject 1>, her face from <Picture 1>, the white sleeves and apron straps visible, raises one open hand beside her mouth and smiles.
 
 overall_soundscape:
-Her voice speaking to the camera in a quiet bedroom.
+Her voice speaking to the camera, a kettle starting to hiss in the kitchen at 00:02.500.
 
 non_diegetic_music:
 None.
@@ -106,7 +139,7 @@ TSC's two fixes for a swap in the same room with the same clothes, without a VLM
   exists in the panel, which is cropped off, so it never shows in the output. `face` keeps the body (best when the
   outfit should stay); `person` hides the whole performer (best when the build and outfit should change).
 - **`setting`** + **BFS Setting Picture**: one frame of the clip with the person in static. Plugged into `setting`, it
-  becomes the last `<Picture n>` and the prompt gets *"<Picture n> shows the setting, the same place as the kept footage
+  becomes the last `<Picture n>` and the prompt gets *"<Picture n> shows the setting, the same place as the original performance
   in full detail; the noise patch in it is where <Subject 1> stands."* (or write `{setting}` to place its tag yourself).
   This stops the background and framing from being taken from the character picture.
 
@@ -135,7 +168,7 @@ and is printed under the comparison.
 | hold | pin the panel for the whole clip, or only its first latent frame |
 | guide | optional aligned latent guide in the video area (what the body-swap LoRAs use) |
 | rope_mode | *canvas*: panel and video share one wide grid (TSC). *shifted*: the video keeps the RoPE positions of a render without the panel, and the panel sits past its edge |
-| (prompt in shifted mode) | With *shifted*, `{layout}` becomes "the whole frame shows the generated video, moving in sync with the kept footage": do not describe a split screen there, or the model splits the video itself. *canvas* keeps the split-screen wording and follows the framing more closely (recommended). |
+| (prompt in shifted mode) | With *shifted*, `{layout}` becomes empty: do not describe a split screen there, or the model splits the video itself. *canvas* keeps the split-screen wording and follows the framing more closely (recommended). |
 | rope_gap | *shifted* only: empty RoPE steps (2x2 patches) between video and panel; the panel moves away in position without any pixels in between. Keep it small against the video width: at 320 px wide (10 patches) a gap of 8 made the model draw its own split screen; 0 works everywhere |
 
 ## Notes from tests

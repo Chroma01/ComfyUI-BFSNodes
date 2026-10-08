@@ -1689,8 +1689,8 @@ def _clean_written(text: str) -> str:
     i = t.find("subject_definitions:")
     if i > 0:
         t = t[i:]
-    t = t.replace("<Video 1>", "the kept footage")
-    if "{layout}" not in t and "detailed_description:" in t:
+    t = scrub_meta(t)
+    if "{layout}" not in t and "split screen divided" not in t and "{panel_region}" not in t and "detailed_description:" in t:
         a = t.index("detailed_description:") + len("detailed_description:")
         nl = t.find("\n[Shot", a)
         cut = nl if nl > 0 else len(t)
@@ -1720,88 +1720,143 @@ def describe_place(clip, setting: torch.Tensor | None, max_tokens: int = 256) ->
     return t if not t or t.lower().startswith("the ") else "the " + t
 
 
+# words that describe nothing on screen (TSC: H3 reads one description of one video and does not know what is pinned)
+META_FIXES = (("<Video 1>", "the original performance"), (" in sync with the kept footage", " at the same moments"),
+              (" in sync with it", " at the same moments"), ("moves in sync", "moves at the same moments"),
+              ("the kept footage", "the original performance"), ("The kept footage", "The original performance"),
+              (" seamlessly", ""), (" frame by frame", ""))
+
+
+def scrub_meta(text: str) -> str:
+    out = []
+    for line in text.split("\n"):
+        if line.strip().lower().startswith(("the kept footage: fully_preserved", "the panel: fully_preserved")):
+            continue   # no retention line for the pinned clip: it is not a reference
+        for a, b in META_FIXES:
+            line = line.replace(a, b)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _mmss(t: float) -> str:
+    return f"{int(t // 60):02d}:{t % 60:06.3f}"
+
+
+def video_facts(clip, frames: list, times: list | None, max_tokens: int) -> dict:
+    """What the clip shows, from a few frames with their times on the video's clock: one clause for its region, the
+    medium, place, light, camera, the actions beat by beat (times for the big moments) and the sounds."""
+    tt = ""
+    if times:
+        tt = " The frames are at " + ", ".join(_mmss(t) for t in times) + " (MM:SS.mmm) on the video's clock."
+    q = (f"These {len(frames)} images are frames, in time order, of one video.{tt} Answer with one JSON object only, "
+         "no code fence:\n{"
+         '"seen": "one short clause of what is seen: who, doing what, where, e.g. a man dancing in a small bedroom", '
+         '"medium": "what the video is and how it was captured, e.g. handheld vertical smartphone footage under warm '
+         'lamp light", "style": "realistic, 3D CG or anime", "place": "the place in concrete words with two or three '
+         'details", "light": "where the light comes from and what it falls on", "camera": "camera distance, angle and '
+         'movement", "actions": "what the person does, in time order, one short sentence per real action; start a '
+         'sentence with At MM:SS.mmm only for big moments (cuts, strikes, jumps, a spoken line), using the frame times; '
+         'call them the person and never describe their looks", "sounds": "the sounds these actions make in this '
+         'place, and when"}')
+    d = _parse_json(vlm_generate(clip, q, _letterbox_batch(frames), max_tokens)) if frames else {}
+    return {k: str(v).strip().rstrip(".") for k, v in d.items() if v and isinstance(v, (str, int, float))}
+
+
 def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, max_tokens: int = 1024,
-                      mode: str = "canvas", setting: torch.Tensor | None = None) -> str:
-    """A duet prompt from frames of the kept footage ([1,H,W,3] each) and the reference pictures. The VLM only fills
-    a few fields (look, medium, camera and actions, sounds); the six REF2VA sections are assembled here, so a small
-    model cannot break the format."""
+                      mode: str = "canvas", setting: torch.Tensor | None = None, times: list | None = None) -> str:
+    """A duet prompt from frames of the pinned clip ([1,H,W,3] each) and the reference pictures, in TSC's newer
+    wording: the finished split screen described as plain footage ({panel_region} shows <one clause of the clip>;
+    {video_region} shows <Subject 1> doing the same movements at the same moments, in <place>), the motion spelled out
+    beat by beat with times on the video's clock, the sounds of the new scene. The VLM only gives facts; the six
+    sections are assembled here, so a small model cannot break the format."""
     refs = [r for r in refs if r is not None]
     fr = [f for f in frames if f is not None]
-    key = ("write2", tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change, id(clip),
-           int(max_tokens), mode, _image_key(setting))
+    key = ("write3", tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change, id(clip),
+           int(max_tokens), mode, _image_key(setting), tuple(times or ()))
     if key in _DESCRIBE_CACHE:
         return _DESCRIBE_CACHE[key]
     _status("Writing the prompt with the VLM", force=True)
     swap = task == "character swap" and bool(refs)
-    # two separate questions: mixing the clip's frames and the reference photos in one batch makes the VLM
-    # describe the reference photo (studio, standing still) as if it were the video
+    # separate questions: mixing the clip's frames and the reference photos in one batch makes the VLM describe the
+    # reference photo (studio, standing still) as if it were the video
     look = ""
     if swap:
-        look = vlm_describe(clip, refs, "Describe the person in these reference pictures in ONE sentence of concrete seen "
-                            "words: apparent gender and age, face, hair colour, length and style, skin, and the clothing "
-                            "piece by piece with colours. Physical traits and clothing only: never the pose, expression, "
-                            "camera or background.", max_tokens).strip().rstrip(".")
-    q = (f"These {len(fr)} images are frames, in time order, of one camera shot of a video. "
-         "Answer with one JSON object only, no code fence:\n{"
-         + '"medium": "what the video is, e.g. handheld vertical smartphone footage under soft window light", '
-         + '"shot": "the camera distance, angle and movement, then what the person does, in time order, one short '
-           'sentence per real action; call them the person and never describe their face, hair or clothes", '
-         + '"sounds": "the sounds of the scene in a few words"}')
-    text = vlm_generate(clip, q, _letterbox_batch(fr), max_tokens)
-    d = _parse_json(text)
-    medium = str(d.get("medium") or "real camera footage").strip().rstrip(".")
-    shot = str(d.get("shot") or "").strip()
-    sounds = str(d.get("sounds") or "the sounds of the kept footage").strip().rstrip(".")
-    for w in ("The person", "the person"):
-        shot = shot.replace(w, "<Subject 1>" if swap else w)
+        look = vlm_describe(clip, refs, "Describe the subject of these reference pictures (a person, creature, robot or "
+                            "animal) in ONE sentence of concrete seen words: what it is, apparent gender and age when it "
+                            "has them, face, hair colour, length and style, skin, and the clothing piece by piece with "
+                            "colours. Looks only: never the pose, expression, camera or background.",
+                            max_tokens).strip().rstrip(".")
+    d = video_facts(clip, fr, times, max_tokens)
+    seen = d.get("seen") or "the original performance"
+    medium = d.get("medium") or "real camera footage"
+    style = (d.get("style") or "realistic").lower()
+    style = style if style in ("realistic", "3d cg", "anime") else "realistic"
+    style = "3D CG" if style == "3d cg" else style
+    camera = d.get("camera") or "The same framing and camera movement"
+    actions = d.get("actions") or ""
+    light = d.get("light") or ""
+    place = describe_place(clip, setting) if setting is not None else (d.get("place") or "the same place")
+    place_at = f"{place} from {{setting}}" if setting is not None else place
     pics = " and ".join(f"<Picture {k + 1}>" for k in range(len(refs)))
     chg = change.strip().rstrip(".")
     split = mode != "shifted"
-    lead = ("a split screen: the kept footage beside " if split else "")
     if swap:
-        defs = f"<Subject 1> is the person whose appearance comes from {pics}" + (f": {look}." if look else ".")
+        actions = actions.replace("The person", "<Subject 1>").replace("the person", "<Subject 1>")
+        defs = f"<Subject 1> is the subject whose appearance comes from {pics}" + (f": {look}." if look else ".")
         if chg:
             defs += f" {chg}."
+        if setting is not None:
+            defs += f"\n<Subject 2> is {place} from {{setting}}."
         who = "<Subject 1>"
-        summary = (f"[reference generation] The target video is {lead}<Subject 1>, who " if split else
-                   "[reference generation] The target video shows <Subject 1>, who ") + "moves in sync with the kept footage, in the same place."
+        doing = f"<Subject 1> doing the same movements at the same moments, in {place_at}"
         keep = f"<Subject 1> (appears in [Shot 1]): fully_preserved - the face, hair and clothing from {pics} are retained."
-        short = ", ".join(look.split(", ")[:3]) if look else ""
-        restate = f" <Subject 1>, the face from <Picture 1>{', ' + short if short else ''}, performs every movement in sync with the kept footage."
-        style = f"The target video is in a realistic style, as {medium}."
+        if setting is not None:
+            keep += f"\n<Subject 2> (appears in [Shot 1]): fully_preserved - {place} is retained."
+        first = actions[len("<Subject 1> "):] if actions.startswith("<Subject 1> ") else actions
+        shot = (f"[Shot 1] {camera}. <Subject 1>, the face from <Picture 1>, "
+                + (first or "performs every movement of the original performance at the same moments") + ".")
     else:
         what = {"style": f"redrawn as {chg or 'the requested style'}", "setting": f"moved to {chg or 'the requested place'}",
                 "appearance": f"with the performer now {chg or 'changed'}", "lighting / weather": f"under {chg or 'the new light'}",
                 }.get(task, chg or "changed as requested")
+        actions = actions.replace("The person", "The performer").replace("the person", "the performer")
         defs = (f"<Subject 1> is the place: {chg}." if task == "setting" and chg else
-                "The kept footage is the motion reference.") + (f" {pics} show the look to follow." if refs else "")
-        summary = (f"[reference generation] The target video is {lead}the same performance, {what}." if split else
-                   f"[reference generation] The target video shows the same performance as the kept footage, {what}.")
-        keep = f"The performance and camera: fully_preserved - every movement and expression in sync with the kept footage."
-        restate = f" The same performance, {what}, in sync with the kept footage."
-        style = (f"The target video is in {chg}." if task == "style" and chg else f"The target video is in a realistic style, as {medium}.")
-    place = describe_place(clip, setting)
-    if setting is not None:          # TSC's <Subject 2>: the place picture; {setting} becomes its <Picture n>
-        p = place or "the place"
-        if swap:
-            defs += f"\n<Subject 2> is {p} from {{setting}}."
-            summary = summary.replace(", in the same place.", f", in {p} from {{setting}}.")
-            keep += f"\n<Subject 2> (appears in [Shot 1]): fully_preserved - {p} is retained."
-        else:
-            defs += f" {{setting}} shows the place: {p}."
+                "<Subject 1> is the performer of the original performance.") + (f" {pics} show the look to follow." if refs else "")
+        if setting is not None:
+            defs += f" {{setting}} shows the place: {place}."
+        who = "the same performance"
+        doing = f"the same performance, {what}, the same movements at the same moments"
+        keep = "<Subject 1> (appears in [Shot 1]): fully_preserved - every movement and expression, at the same moments."
+        shot = f"[Shot 1] {camera}, {what}. " + (actions + "." if actions else "Every movement at the same moments.")
+        if task == "style" and chg:
+            style = chg
+    if split:
+        summary = (f"[reference generation] The target video is a split screen: {{panel_region}} shows {seen}, and "
+                   f"{{video_region}} shows {doing}.")
+        split_line = (f" A split screen divided by a thin straight {{split_line}} line: {{panel_region}} shows {seen}; "
+                      f"{{video_region}} shows {who} performing the same movements at the same moments, in {place_at}"
+                      f"{', ' + light if light and setting is None else ''}{{wider}}.")
+    else:
+        summary = f"[reference generation] The target video shows {doing}."
+        split_line = ""
+    style_line = (f"The target video is in {'an' if style[:1].lower() in 'aeiou' else 'a'} {style}"
+                  + ("" if "style" in style.lower() else " style")
+                  + f", as {medium}." if task != "style" or not chg else f"The target video is in {style}.")
+    sounds = d.get("sounds") or "the sounds of the scene"
     out = "\n\n".join([
         "subject_definitions:\n" + defs,
         "summary:\n" + summary,
-        "retention_analysis:\n" + keep + "\nThe kept footage: fully_preserved - the panel is kept exactly.",
-        "detailed_description:\n" + style + " {layout}\n\n[Shot 1] " + (shot or "The same framing and camera as the kept footage.") + restate,
-        "overall_soundscape:\n" + (sounds[0].upper() + sounds[1:] if sounds else "The sounds of the kept footage") + ".",
+        "retention_analysis:\n" + keep,
+        "detailed_description:\n" + style_line + split_line + "\n\n" + shot,
+        "overall_soundscape:\n" + sounds[0].upper() + sounds[1:] + ".",
         "non_diegetic_music:\nNone.",
     ])
+    out = scrub_meta(out)
     _DESCRIBE_CACHE[key] = out
     return out
 
 
-RESERVED_SLOTS = ("layout", "setting", "target", "details")
+RESERVED_SLOTS = ("layout", "setting", "target", "details", "panel_region", "video_region", "split_line", "wider")
 _SLOT = re.compile(r"\{([^{}\n]{2,200})\}")
 
 
@@ -1812,12 +1867,12 @@ def template_slots(text: str) -> list[str]:
 
 
 def fill_duet_template(clip, template: str, frames: list, refs: list, task: str, change: str, max_tokens: int = 1024,
-                       setting: torch.Tensor | None = None) -> str:
+                       setting: torch.Tensor | None = None, times: list | None = None) -> str:
     """A hand-written duet prompt with {...} fields (TSC's template) filled by the VLM. The facts are gathered with
     separate questions (references, place, clip), then a text-only pass fills the fields and keeps every other word."""
     refs = [r for r in refs if r is not None]
     fr = [f for f in frames if f is not None]
-    key = ("fill1", template, tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change,
+    key = ("fill2", tuple(times or ()), template, tuple(_image_key(f) for f in fr), tuple(_image_key(r) for r in refs), task, change,
            id(clip), int(max_tokens), _image_key(setting))
     if key in _DESCRIBE_CACHE:
         return _DESCRIBE_CACHE[key]
@@ -1837,28 +1892,24 @@ def fill_duet_template(clip, template: str, frames: list, refs: list, task: str,
     place = describe_place(clip, setting)
     if place:
         facts.append(f"The place ({{setting}}): {place}")
-    q = (f"These {len(fr)} images are frames, in time order, of one video. Answer with one JSON object only, no code "
-         "fence:\n{" + '"medium": "what the video is and how it was captured, e.g. handheld vertical smartphone footage '
-         'under warm lamp light", "camera": "camera distance, angle and movement", "light": "where the light comes from '
-         'and what it falls on", "actions": "what the person does, in time order, one short sentence per real action, '
-         'a time (MM:SS.mmm) only for the big moments; call them the person and never describe their looks", '
-         '"cuts": "the times of hard cuts as MM:SS.mmm, or none", "sounds": "the sounds of the scene and when"}')
-    d = _parse_json(vlm_generate(clip, q, _letterbox_batch(fr), max_tokens)) if fr else {}
-    for k in ("medium", "camera", "light", "actions", "cuts", "sounds"):
-        if d.get(k):
-            facts.append(f"The kept footage, {k}: {d[k]}")
+    for k, v in video_facts(clip, fr, times, max_tokens).items():
+        facts.append(f"The source clip, {k}: {v}")
     if change.strip():
         facts.append(f"The requested change: {change.strip()}")
     fields = "\n".join(f"- {{{x}}}" for x in dict.fromkeys(slots))
     ask = ("Fill a video prompt template. Replace every field written in curly braces with concrete seen words taken "
            "from the facts below, matching what the field asks for, and keep every other character of the template "
-           "exactly as it is (section names, tags like <Subject 1>, <Picture 1>, {setting}, {layout}, line breaks). "
-           "Rules: never describe the performer of the kept footage (looks, clothes); the new character's looks come only "
-           "from the character facts; no negations, no quality words; write 'they' for a character with no clear gender. "
+           "exactly as it is (section names, tags like <Subject 1>, <Picture 1>, {setting}, {layout}, {panel_region}, "
+           "{video_region}, line breaks). The prompt describes one finished split-screen video as plain footage. Rules: "
+           "a field about what the source shows gets one short clause of what is seen there (who, doing what, where); "
+           "the new character's looks come only from the character facts; spell out the motion beat by beat from the "
+           "actions, keeping their times; the soundscape is the sounds of the new scene; never write kept footage, "
+           "generated, preserved, kept exactly, in sync with, seamlessly; no negations, no quality words; write 'they' "
+           "for a character with no clear gender. "
            "If a field is an optional extra shot that the facts do not support, delete that [Shot n] paragraph. "
            f"Task: {task}.\n\nFacts:\n" + "\n".join(facts) + f"\n\nFields to fill:\n{fields}\n\nTemplate:\n"
            + template + "\n\nReply with the filled template only.")
-    out = _clean_written(vlm_generate(clip, ask, None, max(int(max_tokens), 1536)))
+    out = scrub_meta(_clean_written(vlm_generate(clip, ask, None, max(int(max_tokens), 1536))))
     if "subject_definitions:" not in out or len(out) < len(template) * 0.5:
         print("[BFS] the VLM did not return the template; the fields stay as written", flush=True)
         out = template
@@ -1867,7 +1918,8 @@ def fill_duet_template(clip, template: str, frames: list, refs: list, task: str,
 
 
 def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task: str, instruction: str,
-                max_tokens: int = 1024, mode: str = "canvas", setting: torch.Tensor | None = None) -> str:
+                max_tokens: int = 1024, mode: str = "canvas", setting: torch.Tensor | None = None,
+                fps: float = 24.0, start: int = 0) -> str:
     """The prompt a duet node uses. Without a VLM: the prompt as written ('' = the node's template). With one:
     a prompt with {...} fields gets them filled from the clip and the pictures; an empty prompt is written from the
     task and the instruction; a prompt without fields is used as written."""
@@ -1877,12 +1929,13 @@ def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task:
             print(f"[BFS H3 Duet] the prompt still has fields to fill ({', '.join(template_slots(text)[:3])}...): connect "
                   "a VLM to fill them, or write them in", flush=True)
         return text
-    idx = sorted(set(int(round(x)) for x in torch.linspace(0, frames.shape[0] - 1, min(4, frames.shape[0])).tolist()))
+    idx = sorted(set(int(round(x)) for x in torch.linspace(0, frames.shape[0] - 1, min(6, frames.shape[0])).tolist()))
     fr = [frames[i:i + 1, ..., :3].float() for i in idx]
+    times = [(start + i) / float(fps) for i in idx]   # the video's clock: the pinned clip starts at frame `start`
     if text and template_slots(text):
-        return fill_duet_template(vlm, text, fr, refs, task, instruction, max_tokens, setting)
+        return fill_duet_template(vlm, text, fr, refs, task, instruction, max_tokens, setting, times)
     if not text:
-        return write_duet_prompt(vlm, fr, refs, task, instruction, max_tokens, mode, setting)
+        return write_duet_prompt(vlm, fr, refs, task, instruction, max_tokens, mode, setting, times)
     return text
 
 
@@ -2358,8 +2411,8 @@ def _fit_size(hw, side: int) -> tuple[int, int]:
 
 def setting_line(k: int, swap: bool) -> str:
     who = "<Subject 1>" if swap else "the performer"
-    return (f"<Picture {k}> shows the setting, the same place as the kept footage in full detail; the noise patch in it "
-            f"is where {who} stands.")
+    return (f"<Picture {k}> shows the setting, the same place as the original performance in full detail; the noise "
+            f"patch in it is where {who} stands.")
 
 
 def add_setting(text: str, k: int, swap: bool) -> str:
@@ -2595,8 +2648,9 @@ class BFSShotH3Conditioning:
                     "Pin the shot's own clip in a side panel and generate in sync with it (training-free duet). "
                     "canvas: panel and video share one wide grid. shifted RoPE: the video keeps its own RoPE "
                     "positions and the panel sits past its edge (connect the model and use the model output). "
-                    "BFS Shot Join cuts the panel off by itself. In the prompt the panel has no tag: call it "
-                    "'the kept footage' by its side ('the LEFT half')."}),
+                    "BFS Shot Join cuts the panel off by itself. In the prompt the panel has no tag: name its region "
+                    "by where it is plus what is seen there ('the left half shows a man dancing in a bedroom'; "
+                    "{panel_region} / {video_region} / {layout} are filled in)."}),
                 "model": ("MODEL", {"tooltip": "Needed for 'shifted RoPE': route the model through this node."}),
                 "panel_position": (["left", "right", "top", "bottom"], {"default": "left"}),
                 "panel_size": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.5, "step": 0.01,
@@ -2670,9 +2724,9 @@ class BFSShotH3Conditioning:
                   setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
-            from .bfs_h3_side_panel import build_prompt, layout_text, make_info
+            from .bfs_h3_side_panel import build_prompt, fill_layout, make_info
         except ImportError:
-            from bfs_h3_side_panel import build_prompt, layout_text, make_info
+            from bfs_h3_side_panel import build_prompt, fill_layout, make_info
         refs = {}
         if shot["ref"] is not None:
             refs["ref_image_0"] = shot["ref"]
@@ -2693,9 +2747,9 @@ class BFSShotH3Conditioning:
                                  "or set task to 'planner prompt'")
             if vlm is not None:
                 fr = shot["frames"]
-                idx = sorted(set(np.linspace(0, fr.shape[0] - 1, min(4, fr.shape[0])).round().astype(int).tolist()))
+                idx = sorted(set(np.linspace(0, fr.shape[0] - 1, min(6, fr.shape[0])).round().astype(int).tolist()))
                 text = write_duet_prompt(vlm, [fr[i:i + 1] for i in idx], list(refs.values()), task, instruction,
-                                         1024, rope_mode)
+                                         1024, rope_mode, times=[i / 24.0 for i in idx])
                 _node_boundary()
             else:
                 text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
@@ -2717,10 +2771,8 @@ class BFSShotH3Conditioning:
                 ref_image_size = "max"
             refs[f"ref_image_{len(refs)}"] = setting
             text = add_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
-        if "{layout}" in text:
-            fill = layout_text(make_info(shot["width"], shot["height"], panel_position, panel_size, 0), rope_mode) \
-                if on_canvas else ""
-            text = text.replace("{layout}", fill).replace("  ", " ")
+        text = fill_layout(text, make_info(shot["width"], shot["height"], panel_position, panel_size, 0)
+                           if on_canvas else None, rope_mode)
         kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],
                       length=shot["gen_length"], ref_image_size=ref_image_size, vae=vae,
                       audio_vae=audio_vae, ref_images=refs or None)

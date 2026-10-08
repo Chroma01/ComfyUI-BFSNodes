@@ -26,30 +26,31 @@ PATCH_PX = 32  # one DiT patch (2x2 latent cells of 16 px)
 FRAME_PER_TOKEN = (1, 4, 4, 4, 4)   # H3 video latent: frames per latent step, k % 5
 
 PANEL_PROMPT_HINT = (
-    "How to refer to the side panel in the prompt: the panel has NO tag (it is not <Picture n> or <Video n>; "
-    "the text encoder never sees it). Name it by its place: 'the LEFT half is the kept footage' (write {layout} "
-    "to insert that sentence for the current size and side). Describe only the generated part: never describe "
-    "the panel's performer, clothes or room, even to contrast them; what you leave undescribed is copied from "
-    "the panel. Restate the new identity in every shot ('her face from <Picture 1>' plus two or three face, hair "
-    "or outfit words). Give exact times for cuts ('[Shot 2] At 00:03.708, both halves cut together to ...').")
+    "How to write a duet prompt (TSC, newer strategy): H3 has no idea what is pinned and what is noised, it reads one "
+    "description of one video. Describe the finished split screen as plain footage: never write 'kept footage', 'kept "
+    "exactly', 'generated', 'preserved', 'in sync with', 'seamlessly'. The pinned clip gets no tag and no retention "
+    "line: name its region by where it is plus what is seen there, in one clause ('the top quarter shows a man dancing "
+    "in a small bedroom'; {panel_region} / {video_region} give the region names for the current layout, {layout} the "
+    "whole split-screen sentence). Write the other region as its own scene in a real place with concrete details. "
+    "Spell out the motion beat by beat, with times for the big moments (cuts, strikes, jumps, a line), on the video's "
+    "clock. The soundscape is the sounds of the new scene. Cuts: '[Shot 2] At MM:SS.mmm, both halves cut together to ...'.")
 
 DUET_PROMPT_TEMPLATE = """subject_definitions:
-<Subject 1> is the woman whose appearance comes from <Picture 1>: {skin, face shape, eyes, brows, nose, lips}, {hair colour, length and cut}, wearing {the outfit, piece by piece}.
+<Subject 1> is {name or plain description} whose appearance comes from <Picture 1>: {concrete look words}, wearing {outfit piece by piece}.
 
 summary:
-[reference generation] The target video is a split screen: the kept footage beside <Subject 1>, who moves in sync with it, in the same room.
+[reference generation] The target video is a split screen: {panel_region} shows {what is seen in the source, one clause}, and {video_region} shows <Subject 1> doing the same movements at the same moments, in {place}.
 
 retention_analysis:
-<Subject 1> (appears in [Shot 1]): fully_preserved - {her key look words} are retained.
-The kept footage: fully_preserved - the panel is kept exactly.
+<Subject 1> (appears in [Shot 1]): fully_preserved - {key look words} are retained.
 
 detailed_description:
-The target video is in a realistic style, as {the medium, e.g. handheld vertical smartphone footage under soft daylight}. {layout}
+The target video is in a {realistic / 3D CG / anime} style, as {the medium of the source clip}. A split screen divided by a thin straight {vertical / horizontal} line: {panel_region} shows {what is seen there, one clause}; {video_region} shows <Subject 1> performing the same movements at the same moments, in {place with concrete details}.
 
-[Shot 1] {Camera distance, angle and movement.} <Subject 1>, her face from <Picture 1> with {two face words}, {two hair or outfit words}, {what she does, one sentence per real action}.
+[Shot 1] {Camera distance, angle and movement as the source shows it}. <Subject 1>, the face from <Picture 1>, {what they do, one sentence per real action}. At {00:01.500} {big beat}.
 
 overall_soundscape:
-{The sounds of the scene and when they happen.}
+{The sounds of the new scene and when they happen.}
 
 non_diegetic_music:
 None."""
@@ -63,27 +64,26 @@ CREDIT = ("Credits: the initial idea for this H3 node came from TSC's latent-pin
           "New here: the shifted RoPE layout (the video keeps its own grid and the panel sits past its edge, with an "
           "optional gap), dynamic references, task prompts and the shot-loop node.")
 
-PROMPT_EXAMPLE = """Example (character swap, source clip pinned on the left, one face picture and one full-body picture):
+PROMPT_EXAMPLE = """Example (character swap, source clip pinned on the left half, one face picture and one full-body picture):
 
 subject_definitions:
-<Subject 1> is the woman whose appearance comes from <Picture 1> and <Picture 2>: fair skin, a narrow oval face, grey-green eyes, light brown hair in a low ponytail, wearing a white long-sleeved top under a navy denim apron.
+<Subject 1> is a young woman whose appearance comes from <Picture 1> and <Picture 2>: fair skin, a narrow oval face, grey-green eyes, light brown hair in a low ponytail, wearing a white long-sleeved top under a navy denim apron.
 
 summary:
-[reference generation] The target video is a split screen: the kept footage beside <Subject 1>, who moves in sync with it, in the same bedroom.
+[reference generation] The target video is a split screen: the left half shows a man talking to a phone camera in a bedroom, and the right half shows <Subject 1> doing the same movements at the same moments, in a sunny kitchen with white tiles.
 
 retention_analysis:
 <Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - her face, ponytail, white top and navy apron are retained.
-The kept footage: fully_preserved - the panel is kept exactly.
 
 detailed_description:
-The target video is in a realistic style, as handheld vertical smartphone footage under soft daylight. {layout}
+The target video is in a realistic style, as handheld vertical smartphone footage under soft daylight. A split screen divided by a thin straight vertical line: the left half shows a man talking to a phone camera in a bedroom; the right half shows <Subject 1> performing the same movements at the same moments, in a sunny kitchen with white tiles and a window behind her.
 
-[Shot 1] A medium close-up at chest height, the phone steady at eye level. <Subject 1>, her face from <Picture 1> with grey-green eyes and soft pink lips, her light brown ponytail and navy apron, talks to the camera with small nods.
+[Shot 1] A medium close-up at chest height, the phone steady at eye level. <Subject 1>, her face from <Picture 1> with grey-green eyes and soft pink lips, talks to the camera with small nods. At 00:01.800 she laughs and tilts her head back.
 
 [Shot 2] At 00:03.708, both halves cut together to a closer framing. <Subject 1>, her face from <Picture 1>, the white sleeves and apron straps visible, raises one open hand beside her mouth and smiles.
 
 overall_soundscape:
-Her voice speaking to the camera in a quiet bedroom.
+Her voice speaking to the camera, a kettle starting to hiss in the kitchen at 00:02.500.
 
 non_diegetic_music:
 None."""
@@ -205,30 +205,66 @@ def panel_mask(info: dict, latent_t: int, hold: str, target_mask: torch.Tensor |
     return m
 
 
-def layout_text(info: dict, rope_mode: str = "canvas") -> str:
-    """How the kept region is named in a prompt (TSC's wording: 42-58% of the canvas is 'the LEFT half').
-    shifted RoPE: the video sits on its own grid, so a split-screen sentence would make the model split the video
-    itself; the sentence then only says that the whole frame follows the kept footage."""
-    if rope_mode == "shifted":
-        return "The whole frame shows the generated video, moving in sync with the kept footage frame by frame."
+_SHARES = ((1 / 2, "half"), (1 / 3, "third"), (2 / 3, "two thirds"), (1 / 4, "quarter"), (3 / 4, "three quarters"),
+           (1 / 5, "fifth"), (4 / 5, "four fifths"))
+
+
+def _share_name(side: str, share: float) -> str:
+    for v, w in _SHARES:
+        if abs(share - v) <= 0.035:
+            return f"the {side} {w}"
+    return f"the {side} {round(share * 100)}% of the frame"
+
+
+def region_names(info: dict) -> tuple[str, str, str]:
+    """(pinned region, generated region, divider) as plain words: ('the top quarter', 'the bottom three quarters',
+    'horizontal'). TSC: H3 does not know what is pinned, so the regions are named by where they are."""
     pos = info["position"]
-    side = {"left": "LEFT", "right": "RIGHT", "top": "TOP", "bottom": "BOTTOM"}[pos]
-    other = {"left": "RIGHT", "right": "LEFT", "top": "BOTTOM", "bottom": "TOP"}[pos]
+    other = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}[pos]
     horizontal = pos in ("left", "right")
     strip = info["strip_w"] if horizontal else info["strip_h"]
+    share = strip / max(1, strip + (info["w"] if horizontal else info["h"]))
+    return _share_name(pos, share), _share_name(other, 1 - share), "vertical" if horizontal else "horizontal"
+
+
+def _verb(region: str) -> str:
+    return "show" if region.endswith(("thirds", "quarters", "fifths")) else "shows"
+
+
+def layout_text(info: dict, rope_mode: str = "canvas", seen: str = "", who: str = "", place: str = "") -> str:
+    """The split-screen sentence of detailed_description, in TSC's newer wording: the finished frame described as plain
+    footage, each region by where it is and what is seen there (no 'kept footage', 'generated', 'in sync').
+    shifted RoPE: the video sits on its own grid, so there is no split screen to describe."""
+    if rope_mode == "shifted":
+        return ""
+    pin, gen, line = region_names(info)
+    seen = seen or "the original performance"
+    horizontal = info["position"] in ("left", "right")
+    strip = info["strip_w"] if horizontal else info["strip_h"]
     total = strip + (info["w"] if horizontal else info["h"])
-    share = strip / total
-    word = "half" if 0.42 <= share <= 0.58 else None
-    kept = f"the {side} half" if word else f"the {side} {round(share * 100)}% of the frame (a narrow strip)"
-    gen = f"the {other} half" if word else f"the {other} {round((1 - share) * 100)}% of the frame"
-    line = "vertical" if horizontal else "horizontal"
-    text = (f"A split screen divided by a thin straight {line} line: {kept} is the kept footage; "
-            f"{gen} is generated and moves in sync with it.")
-    if (1 - share) > 1.3 * share:
-        text += (f" The generated area is LARGER than the kept panel ({round((1 - share) * 100)}% of the frame against "
-                 f"{round(share * 100)}%): restage the scene at that larger size, the same shots, framing proportions and "
-                 "timing, a bigger picture, not a pixel-for-pixel mirror.")
-    return text
+    wider = ", a wider view of the same action" if (total - strip) > 1.3 * strip else ""
+    doing = f"{who} performing the same movements" if who else "the same movements"
+    return (f"A split screen divided by a thin straight {line} line: {pin} {_verb(pin)} {seen}; {gen} {_verb(gen)} "
+            f"{doing} at the same moments{', in ' + place if place else ''}{wider}.")
+
+
+def fill_layout(text: str, info: dict | None, rope_mode: str = "canvas") -> str:
+    """{layout}, {panel_region}, {video_region}, {split_line} and {wider} of a prompt, from the canvas layout."""
+    if info is None or rope_mode == "shifted":
+        for k in ("{layout}", "{panel_region}", "{split_line}", "{wider}"):
+            text = text.replace(k, "")
+        return text.replace("{video_region} shows", "the frame shows").replace("{video_region}", "the frame").replace("  ", " ")
+    pin, gen, line = region_names(info)
+    horizontal = info["position"] in ("left", "right")
+    strip = info["strip_w"] if horizontal else info["strip_h"]
+    total = strip + (info["w"] if horizontal else info["h"])
+    wider = ", a wider view of the same action" if (total - strip) > 1.3 * strip else ""
+    who = "<Subject 1>" if "<Subject 1>" in text else ""
+    text = text.replace("{layout}", layout_text(info, rope_mode, who=who))
+    text = text.replace("{split_line}", line).replace("{wider}", wider)
+    for k, v in (("{panel_region}", pin), ("{video_region}", gen)):
+        text = text.replace(k + " shows", f"{v} {_verb(v)}").replace(k, v)
+    return text.replace("  ", " ")
 
 
 ROPE_MODES = ["canvas", "shifted"]
@@ -455,50 +491,53 @@ class BFSH3SidePanelCrop:
 
 
 def build_prompt(task: str, instruction: str, n_pictures: int, n_videos: int, rope_mode: str = "canvas") -> str:
-    """A six-section REF2VA prompt for a duet task. `{layout}` stays in it and is filled at render time.
-    shifted: no split-screen wording (it makes the model split the video itself)."""
+    """A six-section REF2VA duet prompt without a VLM, in TSC's newer wording: the finished split screen described as
+    plain footage ({panel_region} / {video_region} / {layout} are filled from the canvas at render time). Without a VLM
+    the motion cannot be spelled out: write it into `instruction`, or connect a VLM."""
     inst = instruction.strip().rstrip(".")
     pics = [f"<Picture {i}>" for i in range(1, n_pictures + 1)]
     pics_txt = " and ".join(pics) if len(pics) <= 2 else ", ".join(pics[:-1]) + " and " + pics[-1]
     seen = f" as shown in {pics_txt}" if pics else ""
-    sync = "every movement, gesture and expression in sync with the kept footage"
+    split = rope_mode != "shifted"
     if task == "character swap":
         look = f"whose appearance comes from {pics_txt}" if pics else "the new person"
         defs = f"<Subject 1> is the person {look}" + (f": {inst}." if inst else ".")
-        summary = ("[reference generation] The target video is a split screen: the kept footage beside <Subject 1>, "
-                   "who moves in sync with it, in the same place.")
+        summary = ("[reference generation] The target video is a split screen: {panel_region} shows the original "
+                   "performance, and {video_region} shows <Subject 1> doing the same movements at the same moments, in "
+                   "the same place." if split else
+                   "[reference generation] The target video shows <Subject 1> doing the movements of the original "
+                   "performance at the same moments, in the same place.")
         keep = (f"<Subject 1> (appears in [Shot 1]): fully_preserved - the face, hair and outfit"
                 f"{' from ' + pics[0] if pics else ''} are retained.")
         face = f", the face from {pics[0]}" if pics else ""
-        shot = (f"[Shot 1] The same framing and camera movement as the kept footage. <Subject 1>{face}"
-                f"{', ' + inst if inst else ''}, performs {sync}.")
-        style = "The target video keeps the medium and the light of the kept footage."
+        shot = (f"[Shot 1] The same framing and camera movement. <Subject 1>{face}{', ' + inst if inst else ''}, "
+                "performs every movement, gesture and expression of the original performance at the same moments.")
+        style = "The target video is in a realistic style, as the same footage."
+        sound = "The sounds <Subject 1>'s movements make in the place, at the same moments."
     else:
         what = {"style": f"restyled as {inst or 'the style'}{seen}",
                 "setting": f"moved to {inst or 'the place'}{seen}",
                 "appearance": f"with the performer now {inst or 'changed'}{seen}",
                 "lighting / weather": f"under {inst or 'the new light'}{seen}"}[task]
         defs = (f"<Subject 1> is {inst or 'the reference'}{seen}." if pics else "")
-        summary = (f"[reference generation] The target video is a split screen: the kept footage beside the same "
-                   f"performance, {what}.")
-        keep = f"The performance and camera: fully_preserved - {sync}."
-        shot = f"[Shot 1] The same framing, people and camera movement as the kept footage, {what}, {sync}."
+        summary = (f"[reference generation] The target video is a split screen: {{panel_region}} shows the original "
+                   f"performance, and {{video_region}} shows the same performance, {what}, the same movements at the "
+                   "same moments." if split else
+                   f"[reference generation] The target video shows the original performance, {what}.")
+        keep = f"The performance: fully_preserved - every movement and expression, at the same moments."
+        shot = f"[Shot 1] The same framing, people and camera movement, {what}, every movement at the same moments."
         style = (f"The target video is in {inst}{'' if 'style' in inst.lower() else ' style'}." if task == "style" and inst
-                 else "The target video keeps the medium of the kept footage.")
+                 else "The target video is in a realistic style, as the same footage.")
+        sound = "The sounds of the scene, at the same moments."
     sections = [
-        "subject_definitions:\n" + (defs or "The kept footage is the motion reference of the split screen."),
+        "subject_definitions:\n" + (defs or "<Subject 1> is the performer of the original performance."),
         "summary:\n" + summary,
-        "retention_analysis:\n" + keep + "\nThe kept footage: fully_preserved - the panel is kept exactly.",
-        "detailed_description:\n" + style + " {layout}\n\n" + shot,
-        "overall_soundscape:\nThe sounds of the kept footage, in sync.",
+        "retention_analysis:\n" + keep,
+        "detailed_description:\n" + style + (" {layout}" if split else "") + "\n\n" + shot,
+        "overall_soundscape:\n" + sound,
         "non_diegetic_music:\nNone.",
     ]
-    text = "\n\n".join(sections)
-    if rope_mode == "shifted":
-        text = (text.replace("The target video is a split screen: the kept footage beside ", "The target video shows ")
-                .replace("who moves in sync with it", "who moves in sync with the kept footage")
-                .replace("the motion reference of the split screen", "the motion reference"))
-    return text
+    return "\n\n".join(sections)
 
 
 def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name, scheduler,
@@ -514,8 +553,9 @@ def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, 
     from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
     from comfy_extras.nodes_custom_sampler import Guider_Basic, Noise_RandomNoise, SamplerCustomAdvanced
 
-    text = layout_text(make_info(width, height, position, size, gap * PATCH_PX), rope_mode) if panel is not None else ""
-    prompt = prompt.replace("{layout}", text)
+    linfo = make_info(width, height, position, size, gap * PATCH_PX) if panel is not None else None
+    text = layout_text(linfo, rope_mode) if linfo is not None else ""
+    prompt = fill_layout(prompt, linfo, rope_mode)
     refs = {k: v for k, v in (refs or {}).items() if v}
     # with a panel the refs are sized for the whole canvas, as in TSC's duet (Reference to Video at the canvas size):
     # 'match' scales refs to the generation's area, and sizing them for the video half alone shrinks them a lot
@@ -857,7 +897,7 @@ if _io is not None:
                 refs = refs + [setting]
                 text = with_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
             info = make_info(width, height, position, size, gap * PATCH_PX)
-            text = text.replace("{layout}", layout_text(info, rope_mode))
+            text = fill_layout(text, info, rope_mode)
             rw, rh = width + info["strip_w"] * 16, height + info["strip_h"] * 16     # refs sized for the canvas
             positive = MiniMaxH3ReferenceToVideo.execute(
                 clip=clip, prompt=text, width=rw, height=rh, length=length, ref_image_size=ref_image_size, vae=vae,

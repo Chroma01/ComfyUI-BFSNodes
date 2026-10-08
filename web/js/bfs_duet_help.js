@@ -94,12 +94,15 @@ function html(type) {
     <tr><td>appearance</td><td><code>an elderly woman with short grey hair</code></td></tr>
     <tr><td>lighting / weather</td><td><code>night, lit by pink and blue neon signs</code></td></tr>
   </table>
-  <p>Rules that matter (render-tested): the panel has <b>no tag</b> (it is not &lt;Picture n&gt; or &lt;Video n&gt;): call it
-  "the kept footage" by its side, or write <code>{layout}</code> to insert the sentence. <b>Never describe the panel's person,
-  clothes or room</b> (what you describe gets drawn; what you leave out is copied from the panel). Restate the new identity in
-  every shot ("her face from &lt;Picture 1&gt;" + 2–3 face/hair/outfit words). Give exact times for cuts
-  ("[Shot 2] At 00:03.708, both halves cut together to…"). No negations ("no hat" draws a hat). The full example is in the
-  prompt tooltip.</p>
+  <p>Rules that matter (TSC, newer strategy): <b>H3 has no idea what is pinned and what is noised</b>, it reads one
+  description of one video. Describe the finished split screen as plain footage: never write "kept footage", "generated",
+  "preserved", "in sync with", "seamlessly". The pinned clip gets <b>no tag and no retention line</b>: name its region by where
+  it is plus what is seen there, in one clause ("the top quarter shows a man dancing in a small bedroom";
+  <code>{panel_region}</code> / <code>{video_region}</code> give the region names, <code>{layout}</code> the whole sentence).
+  Write the other region as its own scene in a real place. <b>Spell out the motion</b> beat by beat, with times for the big
+  moments on the video's clock. The soundscape is the sounds of the new scene. Cuts: "[Shot 2] At 00:03.708, both halves cut
+  together to…". No negations ("no hat" draws a hat). Connect a VLM to <code>vlm</code> to write the prompt or fill a
+  template's <code>{...}</code> fields. The full example is in the prompt tooltip.</p>
 
   <h3>Layout</h3>
   <p><b>position</b>: the side of the panel.</p>
