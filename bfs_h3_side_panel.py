@@ -644,7 +644,9 @@ if _io is not None:
                 ],
                 outputs=[_io.Image.Output(display_name="images"), _io.Audio.Output(display_name="audio"),
                          _io.Image.Output(display_name="canvas"), _io.String.Output(display_name="layout_text"),
-                         _io.Latent.Output(display_name="latent"), _io.String.Output(display_name="prompt")],
+                         _io.Latent.Output(display_name="latent"), _io.String.Output(display_name="prompt"),
+                         _io.Image.Output(display_name="side_by_side", tooltip="Comparison like BFS Shot Join's: "
+                                          "original | references | result, the info on top and the prompt below.")],
             )
 
         @classmethod
@@ -663,10 +665,28 @@ if _io is not None:
             refs = {"ref_images": ref_images, "ref_videos": ref_videos,
                     "ref_video_audios": {k: v for k, v in (ref_video_audios or {}).items() if v is not None},
                     "ref_audios": {k: v for k, v in (ref_audios or {}).items() if v is not None}}
-            return _io.NodeOutput(*h3_render(model, clip, vae, audio_vae, text, refs, width, height, length, steps,
-                                             sampler_name, scheduler, seed, panel, guide, guide_frame_idx, position,
-                                             size, fit, gap, panel_noise, hold, ref_image_size, decode_canvas,
-                                             rope_mode, rope_gap))
+            out = h3_render(model, clip, vae, audio_vae, text, refs, width, height, length, steps,
+                            sampler_name, scheduler, seed, panel, guide, guide_frame_idx, position,
+                            size, fit, gap, panel_noise, hold, ref_image_size, decode_canvas,
+                            rope_mode, rope_gap)
+            return _io.NodeOutput(*out, side_by_side(guide if guide is not None else panel, out[0],
+                                                     list(ref_images.values()), out[5]))
+
+
+def side_by_side(source: torch.Tensor | None, result: torch.Tensor, refs: list | None = None, prompt: str = "",
+                 label: str = "BFS H3 Duet") -> torch.Tensor:
+    """The same comparison as BFS Shot Join's: original | references | result, the info on top and the prompt below."""
+    try:
+        from .bfs_shot_loop import comparison_video
+    except ImportError:
+        from bfs_shot_loop import comparison_video
+    res = result[..., :3].float().cpu()
+    L = res.shape[0]
+    refs = [r for r in (refs or []) if r is not None]
+    shot = {"fps": 24.0, "start": 0, "end": L, "gen_length": L, "prompt": prompt,
+            "ref": refs[0] if refs else None, "ref2": refs[1] if len(refs) > 1 else None}
+    orig = source[..., :3].float().cpu() if source is not None else None
+    return comparison_video(res, [(shot, L, orig)], label, height=min(720, res.shape[1]), show_mask=False)
 
 
 if _io is not None:
