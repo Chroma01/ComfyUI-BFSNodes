@@ -1292,9 +1292,9 @@ def tidy_slot(text: str, slot: str, max_words: int = 25) -> str:
     return t
 
 
-def describe_target(clip, crop: np.ndarray, max_tokens: int = 64, slot: str = "") -> str:
+def describe_target(clip, crop: np.ndarray, max_tokens: int = 64, slot: str = "", temperature: float = 0.0, seed: int = 0) -> str:
     img = torch.from_numpy(crop.astype(np.float32) / 255.0)[None]
-    t = vlm_generate(clip, TARGET_Q + fit_note(slot), img, max_tokens).strip().strip('"\'').split("\n")[0].strip().rstrip(".")
+    t = vlm_generate(clip, TARGET_Q + fit_note(slot), img, max_tokens, temperature, seed).strip().strip('"\'').split("\n")[0].strip().rstrip(".")
     if slot:
         t = tidy_slot(t, slot)
     elif t and not t.lower().startswith("the "):
@@ -1311,6 +1311,7 @@ def fill_target(text: str, desc: str) -> str:
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
                "instruction": "", "describe_preset": "short", "describe_custom": "", "fit_prompt": True,
+               "temperature": 0.0, "seed": 0,
                "write_prompt": False, "write_task": "character swap", "write_change": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
@@ -1354,11 +1355,15 @@ def _node_boundary() -> None:
         pass
 
 
-def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int) -> str:
+def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int, temperature: float = 0.0, seed: int = 0) -> str:
     """Text from a vision-language CLIP. Some models end the answer before writing anything for some wordings:
-    retry with a reworded request, then with sampling, and clean leftovers of the chat template."""
+    retry with a reworded request, then with sampling, and clean leftovers of the chat template. temperature > 0
+    samples (with `seed`) from the first try, so another seed gives another answer."""
     from comfy_extras.nodes_textgen import TextGenerate
-    tries = [(prompt, {"sampling_mode": "off"}),
+    first = ({"sampling_mode": "on", "temperature": float(temperature), "top_k": 40, "top_p": 0.9, "min_p": 0.0,
+              "repetition_penalty": 1.05, "presence_penalty": 0.0, "seed": int(seed)}
+             if temperature and temperature > 0 else {"sampling_mode": "off"})
+    tries = [(prompt, first),
              ("Look at the picture(s) carefully. " + prompt + " Write the answer now.", {"sampling_mode": "off"}),
              (prompt, {"sampling_mode": "on", "temperature": 0.7, "top_k": 40, "top_p": 0.9, "min_p": 0.0,
                        "repetition_penalty": 1.05, "presence_penalty": 0.0, "seed": 1})]
@@ -1483,7 +1488,7 @@ def tidy_details(text: str, cfg: dict) -> str:
         if t.lower().startswith(art):
             t = t[len(art):]
             break
-    return t.rstrip(" .").strip('"\'').rstrip(" .")
+    return " ".join(t.rstrip(" .").strip('"\'').rstrip(" .").split()[:30])
 
 
 def describe_instruction(cfg: dict, slot: str = "") -> str:
@@ -1498,12 +1503,12 @@ def describe_instruction(cfg: dict, slot: str = "") -> str:
     return base + (fit_note(slot) if fits else "")
 
 
-def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) -> str:
+def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320, temperature: float = 0.0, seed: int = 0) -> str:
     """One description for a set of reference pictures (e.g. a close-up and a full-body photo of one person)."""
     images = [im for im in images if im is not None]
     if not images:
         return ""
-    key = (tuple(_image_key(im) for im in images), instruction, id(clip), int(max_tokens))
+    key = (tuple(_image_key(im) for im in images), instruction, id(clip), int(max_tokens), float(temperature), int(seed))
     if key in _DESCRIBE_CACHE:
         return _DESCRIBE_CACHE[key]
     from comfy_extras.nodes_textgen import TextGenerate
@@ -1519,7 +1524,7 @@ def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320) ->
         canvas[:, :, (side - nh) // 2:(side - nh) // 2 + nh, (side - nw) // 2:(side - nw) // 2 + nw] = x
         batch.append(canvas)
     imgs = torch.cat(batch, 0).movedim(1, -1).clamp(0, 1)
-    text = vlm_generate(clip, instruction, imgs, int(max_tokens))
+    text = vlm_generate(clip, instruction, imgs, int(max_tokens), temperature, seed)
     text = " ".join(str(text).replace("```", " ").split())
     _DESCRIBE_CACHE[key] = text
     return text
@@ -1907,7 +1912,8 @@ class BFSShotPlanner:
             d = details.get(ref_set_key(rname, r2name), "")
             if not d and vlm is not None:
                 slot = prompt_slot(text, "{details}") if vcfg.get("fit_prompt", True) else ""
-                d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"])), vcfg)
+                d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"]),
+                                              float(vcfg.get("temperature") or 0), int(vcfg.get("seed") or 0)), vcfg)
                 d = tidy_slot(d, slot) if slot and (vcfg.get("describe_preset") or "short") == "short" else d
             return text.replace("{details}", d)
 
@@ -1936,7 +1942,8 @@ class BFSShotPlanner:
                     continue
                 text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
                 slot = prompt_slot(text, "{target}") if vcfg.get("fit_prompt", True) else ""
-                auto_target[i] = describe_target(vlm, crop, slot=slot)
+                auto_target[i] = describe_target(vlm, crop, slot=slot, temperature=float(vcfg.get("temperature") or 0),
+                                                 seed=int(vcfg.get("seed") or 0))
                 print(f"[BFS Shot Planner] shot {i + 1}: {{target}} = {auto_target[i]!r} (described automatically)", flush=True)
         shots = []
         for i, s in enumerate(segs):
@@ -3184,7 +3191,8 @@ try:
                     raise ValueError("SAM 3 found nothing at that selection.")
                 tcfg = vlm_cfg(p.get("vlm_cfg"))
                 tslot = prompt_slot(seg.get("prompt") or p.get("global_prompt", ""), "{target}") if tcfg.get("fit_prompt", True) else ""
-                desc = describe_target(clip, crop, slot=tslot) if clip is not None else ""
+                desc = describe_target(clip, crop, slot=tslot, temperature=float(tcfg.get("temperature") or 0),
+                                       seed=int(tcfg.get("seed") or 0)) if clip is not None else ""
                 ok, buf = cv2.imencode(".jpg", cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 82])
                 return {"desc": desc, "crop": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(),
                         "no_vlm": clip is None}
@@ -3215,7 +3223,8 @@ try:
                 for r1, r2 in sets:
                     d = tidy_details(vlm_describe(
                         clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
-                        describe_instruction(cfg, slot), int(cfg["max_tokens"])), cfg)
+                        describe_instruction(cfg, slot), int(cfg["max_tokens"]),
+                        float(cfg.get("temperature") or 0), int(cfg.get("seed") or 0)), cfg)
                     out[ref_set_key(r1, r2)] = tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") == "short" else d
                 return out
             texts = await _off_loop(work)

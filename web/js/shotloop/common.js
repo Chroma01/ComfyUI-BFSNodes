@@ -17,7 +17,7 @@ export const MASK_DEFAULTS = { threshold: 0.5, max_objects: 4, invert: false, fi
                                padding: 0.15, expand: 16, feather: 12, paste: "mask" };
 
 export const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 1024, auto_segment: true, auto_shot: true, instruction: "",
-                              describe_preset: "short", describe_custom: "", fit_prompt: true };
+                              describe_preset: "short", describe_custom: "", fit_prompt: true, temperature: 0, seed: 0 };
 
 // hover help for every setting (the 📖 Guide button opens the full documentation)
 export const TIPS = {
