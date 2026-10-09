@@ -1,6 +1,6 @@
 // Shot Planner: constants and small helpers shared by the panel and its views (no side effects: ComfyUI loads every
 // .js under web/js as an extension, so this module only exports).
-import { h } from "../vendor/vue.esm-browser.prod.mjs";
+import { h, reactive } from "../vendor/vue.esm-browser.prod.mjs";
 
 export const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 export const DEFAULTS = {
@@ -76,9 +76,14 @@ export const check = (checked, onChange, label, title = "") =>
 export const select = (value, options, onChange, attrs = {}) => h("select", { value, onChange: e => onChange(e.target.value), ...attrs },
   options.map(o => h("option", { value: Array.isArray(o) ? o[0] : o }, Array.isArray(o) ? o[1] : o)));
 // a titled section inside a card; `open` makes it a collapsible <details>
+// what the user opened or closed wins over a section's default: re-renders (a timer, a status line) no longer snap a
+// section back shut right after it was clicked open
+const OPEN = reactive({});
 export const section = (title, body, { sub = "", right = null, open = null, cls = "" } = {}) => {
   const head = [h("span", { class: "sect" }, title), sub ? hint(sub) : null, h("span", { class: "grow" }), right];
-  return open === null
-    ? h("div", { class: ["sec", cls] }, [h("div", { class: "sech" }, head), ...[body].flat()])
-    : h("details", { class: ["sec", cls], open }, [h("summary", { class: "sech" }, [h("span", { class: "caret" }, "▸"), ...head]), ...[body].flat()]);
+  if (open === null) return h("div", { class: ["sec", cls] }, [h("div", { class: "sech" }, head), ...[body].flat()]);
+  const key = `${cls}|${typeof title === "string" ? title : ""}`;
+  const isOpen = key in OPEN ? OPEN[key] : !!open;
+  return h("details", { class: ["sec", cls], open: isOpen, onToggle: e => { OPEN[key] = e.target.open; } },
+    [h("summary", { class: "sech" }, [h("span", { class: "caret" }, "▸"), ...head]), ...[body].flat()]);
 };

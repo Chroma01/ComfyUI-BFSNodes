@@ -546,6 +546,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     remember(name); save();
   };
   const uploadRef = (target, field) => pickFile("image/*", name => setRef(target, field, name));
+  const clearRecent = () => { recent.value = []; store.set(RECENT_KEY, []); };
   const usedRefs = computed(() => {
     const set = new Set([...recent.value, plan.global_ref, plan.global_ref2, ...plan.segs.flatMap(m => [m?.ref, m?.ref2])].filter(Boolean));
     return [...set].slice(0, 10);
@@ -554,7 +555,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   // everything the views need
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
-    stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent,
+    stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent,
     n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
