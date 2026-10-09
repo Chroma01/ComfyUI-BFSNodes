@@ -3410,6 +3410,70 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BFSShotJoin": "BFS Shot Join",
 }
 
+# ---------------------------------------------------------------------------- chunked uploads
+# ComfyUI refuses any request over --max-upload-size (100 MB by default), so a big video sent in one POST to
+# /upload/image fails. The panel sends it in pieces well under that limit; they are written straight to disk (never
+# held in memory) and the finished file is moved into the input folder.
+UPLOAD_CHUNK = 8 * 1024 * 1024
+_UPLOAD_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _upload_dir() -> str:
+    d = os.path.join(folder_paths.get_input_directory(), ".bfs_upload")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _clean_uploads(max_age_s: float = 86400.0) -> None:
+    """Pieces of uploads that never finished (a closed tab), older than a day."""
+    d = _upload_dir()
+    for f in os.listdir(d):
+        p = os.path.join(d, f)
+        try:
+            if time.time() - os.path.getmtime(p) > max_age_s:
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def write_chunk(uid: str, offset: int, data: bytes) -> int:
+    """Writes one piece at its offset (pieces may be retried); returns the bytes written."""
+    if not _UPLOAD_ID.match(uid or ""):
+        raise ValueError("bad upload id")
+    if offset < 0:
+        raise ValueError("bad offset")
+    part = os.path.join(_upload_dir(), uid + ".part")
+    with open(part, "r+b" if os.path.exists(part) else "wb") as f:
+        f.seek(offset)
+        f.write(data)
+    return len(data)
+
+
+def finish_upload(uid: str, name: str, size: int, subfolder: str = "") -> str:
+    """Checks the size and moves the assembled file into input/ (overwriting a file of the same name, like ComfyUI's
+    own upload). Returns the name to use in the panel."""
+    if not _UPLOAD_ID.match(uid or ""):
+        raise ValueError("bad upload id")
+    base = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    if not base or base.startswith("."):
+        raise ValueError("bad file name")
+    sub = "/".join(x for x in str(subfolder or "").replace("\\", "/").split("/") if x and x not in (".", ".."))
+    part = os.path.join(_upload_dir(), uid + ".part")
+    if not os.path.exists(part):
+        raise ValueError("nothing was uploaded")
+    got = os.path.getsize(part)
+    if got != int(size):
+        raise ValueError(f"upload incomplete: {got} of {int(size)} bytes")
+    root = folder_paths.get_input_directory()
+    dest_dir = os.path.join(root, sub) if sub else root
+    if not os.path.abspath(dest_dir).startswith(os.path.abspath(root)):
+        raise ValueError("bad subfolder")
+    os.makedirs(dest_dir, exist_ok=True)
+    os.replace(part, os.path.join(dest_dir, base))
+    _clean_uploads()
+    return f"{sub}/{base}" if sub else base
+
+
 # ---------------------------------------------------------------------------- http api
 
 try:
@@ -3425,6 +3489,25 @@ try:
                     rel = os.path.relpath(os.path.join(dp, f), root).replace(os.sep, "/")
                     out.append(rel)
         return sorted(out, key=str.lower)
+
+    @PromptServer.instance.routes.post("/bfs/upload/chunk")
+    async def _bfs_upload_chunk(request):
+        try:
+            data = await request.read()
+            n = await _off_loop(lambda: write_chunk(request.query.get("id", ""), int(request.query.get("offset", "-1")), data))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=400)
+        return web.json_response({"written": n})
+
+    @PromptServer.instance.routes.post("/bfs/upload/finish")
+    async def _bfs_upload_finish(request):
+        try:
+            b = await request.json()
+            name = await _off_loop(lambda: finish_upload(b.get("id", ""), b.get("name", ""), int(b.get("size", -1)),
+                                                         b.get("subfolder", "")))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=400)
+        return web.json_response({"name": name})
 
     @PromptServer.instance.routes.get("/bfs/shotloop/files")
     async def _bfs_shot_files(request):

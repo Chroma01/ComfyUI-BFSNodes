@@ -283,6 +283,14 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
 | VLM: frames per shot / max tokens | how much the VLM sees and how long it may answer |
 
+## Big videos (upload)
+
+ComfyUI refuses any single request bigger than `--max-upload-size` (100 MB by default), which is why big videos fail
+to upload in most nodes. The planner's ⬆ Upload (source video, mask videos, pictures) sends files of 32 MB or more in
+8 MB pieces that are written straight to disk and assembled in the input folder, so any size works without changing
+how ComfyUI is started (a dropped piece is sent again). For other nodes, start ComfyUI with a higher limit, e.g.
+`--max-upload-size 4096`, or copy the file into `ComfyUI/input` and pick it from the list.
+
 ## Continuity between shots
 
 Each shot (after the first) can continue from the **previous shot's generated result**: in the shot editor,

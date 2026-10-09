@@ -403,14 +403,39 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     x.onerror = () => reject(new Error("network error"));
     x.send(body);
   });
+  // big files go in 8 MB pieces: ComfyUI refuses any single request over --max-upload-size (100 MB by default)
+  const CHUNK = 8 * 1024 * 1024, CHUNKED_FROM = 32 * 1024 * 1024;
+  async function uploadChunked(file, onPct) {
+    const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+    for (let off = 0; off < file.size; off += CHUNK) {
+      const piece = file.slice(off, Math.min(file.size, off + CHUNK));
+      for (let tries = 0; ; tries++) {          // a dropped piece is sent again (it is written at its offset)
+        try {
+          await postWithProgress(`/bfs/upload/chunk?id=${id}&offset=${off}`, piece,
+                                 f => onPct((off + f * piece.size) / file.size));
+          break;
+        } catch (e) { if (tries >= 3) throw e; await new Promise(r => setTimeout(r, 1000 * (tries + 1))); }
+      }
+    }
+    const r = await fetch(api.apiURL("/bfs/upload/finish"), { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name: file.name, size: file.size }) });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+    return j.name;
+  }
   async function upload(file, cb) {
-    const fd = new FormData(); fd.append("image", file); fd.append("type", "input"); fd.append("overwrite", "true");
     const mb = (file.size / 1e6).toFixed(1);
     busy.value = `Uploading ${file.name} (${mb} MB)…`; upPct.value = 0;
     try {
-      const j = await postWithProgress("/upload/image", fd, f => { upPct.value = f; });
+      let name;
+      if (file.size >= CHUNKED_FROM) name = await uploadChunked(file, f => { upPct.value = f; });
+      else {
+        const fd = new FormData(); fd.append("image", file); fd.append("type", "input"); fd.append("overwrite", "true");
+        const j = await postWithProgress("/upload/image", fd, f => { upPct.value = f; });
+        name = j.subfolder ? `${j.subfolder}/${j.name}` : j.name;
+      }
       await refreshFiles();
-      cb(j.subfolder ? `${j.subfolder}/${j.name}` : j.name);
+      cb(name);
     } catch (e) { error.value = `Upload failed: ${e}`; }
     busy.value = "";
   }
