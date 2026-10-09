@@ -1996,7 +1996,7 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
     if queue:
         fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
         if os.path.exists(fp):
-            prev = torch.load(fp)["frames"].float() / 255.0
+            prev = torch.load(fp, map_location="cpu")["frames"]     # uint8, sliced before any float copy
     if prev is None:
         print(f"{tag}: the previous shot's result is not there yet (queue loop: shots run in order; auto loop: "
               "it is taken from the previous render if it matches)", flush=True)
@@ -2006,10 +2006,12 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
     if n < 17:
         print(f"{tag} skipped: the previous shot has only {avail} frames (needs 17)", flush=True)
         return None, None
-    hf = prev[avail - n:avail, ..., :3]
+    hf = prev[avail - n:avail, ..., :3].float() / 255.0
+    del prev
     lo = max(0, int(seg["start"]) - n)
     sf = _read_frames(path, src[np.arange(lo, int(seg["start"]))], (W, H))
-    hs = torch.from_numpy(np.stack(sf).astype(np.float32) / 255.0)
+    hs = torch.from_numpy(np.stack(sf)).float() / 255.0
+    del sf
     if hs.shape[0] < n:
         hs = torch.cat([hs[:1].expand(n - hs.shape[0], -1, -1, -1), hs], 0)
     if hf.shape[1:3] != (H, W):
@@ -2019,7 +2021,16 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
         hf = _fit_to(hf[:, y0:y1, x0:x1], ft.shape[2], ft.shape[1])
         hs = _fit_to(hs[:, y0:y1, x0:x1], ft.shape[2], ft.shape[1])
     print(f"{tag}: the last {n} frames of shot {i} go before this one on H3's timeline", flush=True)
-    return hf, hs
+    # kept as uint8 on the CPU until the conditioning encodes them (4x less RAM per shot)
+    return _to_u8(hf), _to_u8(hs)
+
+
+def _to_u8(x: torch.Tensor) -> torch.Tensor:
+    return (x.clamp(0, 1) * 255).round().to(torch.uint8).cpu()
+
+
+def _from_u8(x: torch.Tensor | None) -> torch.Tensor | None:
+    return None if x is None else (x.float() / 255.0 if x.dtype == torch.uint8 else x.float())
 
 
 def _fit_to(img: torch.Tensor, w: int, h: int) -> torch.Tensor:
@@ -2275,8 +2286,9 @@ class BFSShotPlanner:
             if queue and i > 0 and s["chain"] != "off":
                 fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
                 if os.path.exists(fp):
-                    prev = torch.load(fp)["frames"].float() / 255.0
-                    chain_img = _fit_to(pick_frame(prev, prev_len, s["chain_frame"]), W, H)
+                    prev = torch.load(fp, map_location="cpu")["frames"]
+                    chain_img = _fit_to(pick_frame(prev, prev_len, s["chain_frame"]).float() / 255.0, W, H)
+                    del prev
             sug = vlm_out.get(i)
             if sug is not None:
                 suggestions.append(dict(sug, start=s["start"], end=s["end"]))
@@ -2946,7 +2958,8 @@ class BFSShotH3Conditioning:
         timeline (added last, so the duet panel and the other guides leave it alone)."""
         if shot.get("chain") != "history" or int(shot.get("index", 0)) == 0:
             return positive
-        hist, hsrc = shot.get("history"), shot.get("history_src")
+        # taken out of the shot: nothing stays allocated after this shot is conditioned
+        hist, hsrc = _from_u8(shot.pop("history", None)), _from_u8(shot.pop("history_src", None))
         if hist is None and not shot.get("crop") and _LAST_RESULT.get("index") == int(shot["index"]) - 1:
             prev_len = int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])
             f = _LAST_RESULT["frames"][:prev_len].float()
@@ -2969,11 +2982,14 @@ class BFSShotH3Conditioning:
             strip = strip_frames(panel[-hist.shape[0]:], list(range(hist.shape[0])), W, H, panel_position, panel_size,
                                  0, "contain")
             hist = compose(hist.cpu(), strip, panel_position)
+            del strip, panel
+        hsrc = None
         try:
             from .bfs_h3_history import add_history
         except ImportError:
             from bfs_h3_history import add_history
         positive, n = add_history(positive, vae, hist)
+        del hist
         if n:
             print(f"{tag}: history = the last {n} frames of the previous shot, before frame 0 on H3's timeline", flush=True)
         return positive

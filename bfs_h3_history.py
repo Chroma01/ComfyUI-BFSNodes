@@ -98,7 +98,10 @@ def add_history(positive, vae, frames: torch.Tensor):
     if n < 17:
         return positive, 0
     install()
-    lat = vae.encode(frames[-n:, ..., :3].float())
+    # encoded from CPU frames; the latent comes back on ComfyUI's intermediate device like any H3 guide, and the VAE
+    # is loaded / freed by ComfyUI's model management (nothing here keeps GPU memory)
+    with torch.no_grad():
+        lat = vae.encode(frames[-n:, ..., :3].float().cpu())
     kfs = list(positive[0][1].get("minimax_keyframes", []))
     kfs.append({"resolved_frame_index": 0, "latent": lat, "anchor": "history"})
     return node_helpers.conditioning_set_values(positive, {"minimax_keyframes": kfs}), n
