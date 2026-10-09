@@ -305,6 +305,8 @@ the immediate past of the video it is generating, so motion, camera, light and t
 Ethanfel's MiniMax H3 Context Loop; this is BFS's own implementation (a process-local patch of H3's packed layout
 that moves the video, its audio and the other guides past the history; ComfyUI files are not edited).
 
+- **On by default** (1.88.0) for every shot after the first; set *Continuity = off* on a shot to drop it. Plans saved
+  before keep what they had.
 - **Same take only.** A shot that starts at a camera cut skips it (nothing to continue). For one long take, split it
   with *Mode = fixed length* (or let *Camera cuts* split long shots) and set history on every shot after the first
   with **Copy to other shots → continuity**. Shots still exist: they are the windows, and cuts reset the history.

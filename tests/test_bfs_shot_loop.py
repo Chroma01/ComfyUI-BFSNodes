@@ -249,7 +249,7 @@ class ContinuityTest(unittest.TestCase):
         plan = dict(SL.DEFAULT_PLAN, mode="fixed", max_s=2, bounds=[50],
                     segs=[{}, {"chain": "first frame", "chain_frame": "middle"}])
         segs = SL.resolve_plan(plan, a)
-        self.assertEqual((segs[0]["chain"], segs[1]["chain"], segs[1]["chain_frame"]), ("off", "first frame", "middle"))
+        self.assertEqual((segs[0]["chain"], segs[1]["chain"], segs[1]["chain_frame"]), ("history", "first frame", "middle"))   # history is the default
 
 
 class MaskCropTest(unittest.TestCase):

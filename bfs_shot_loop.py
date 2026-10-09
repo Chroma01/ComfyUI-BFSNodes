@@ -472,7 +472,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["ref"] = m.get("ref") or ""
         s["ref2"] = m.get("ref2") or ""
         s["prompt"] = m.get("prompt") or ""
-        s["chain"] = m.get("chain") or "off"
+        s["chain"] = m.get("chain") or "history"   # a continuing take carries the previous end (cuts skip it)
         s["chain_frame"] = m.get("chain_frame") or "first"
         s["chain_history"] = int(m.get("chain_history") or 17)
         s["crop"] = bool(m.get("crop"))
@@ -1998,8 +1998,8 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
         if os.path.exists(fp):
             prev = torch.load(fp, map_location="cpu")["frames"]     # uint8, sliced before any float copy
     if prev is None:
-        print(f"{tag}: the previous shot's result is not there yet (queue loop: shots run in order; auto loop: "
-              "it is taken from the previous render if it matches)", flush=True)
+        if queue:
+            print(f"{tag}: the previous shot's result is not there yet (shots run in order)", flush=True)
         return None, None
     avail = min(int(prev_len), prev.shape[0])
     n = min(want, (avail // 17) * 17)
