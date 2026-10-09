@@ -656,7 +656,84 @@ def _face_app():
 
 
 def _cast_key(path: str, analysis: dict, step_s: float = 0.5, threshold: float = 0.42, min_share: float = 0.01) -> tuple:
-    return (path, os.path.getmtime(path), float(analysis["fps"]), round(step_s, 3), round(threshold, 3), round(min_share, 4))
+    return (path, os.path.getmtime(path), float(analysis["fps"]), round(step_s, 3), round(threshold, 3), round(min_share, 4),
+            "insightface" if _face_app() is not None else "opencv" if _cv_face() is not None else "sam3")
+
+
+APPEARANCE_THRESHOLD = 0.86   # cosine on the colour signature (only when DINOv2 cannot load)
+SFACE_THRESHOLD = 0.36        # cosine on SFace features (OpenCV's same-identity threshold is 0.363)
+_CV_FACE: dict = {}
+CV_FACE_MODELS = {
+    "face_detection_yunet_2023mar.onnx":
+        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    "face_recognition_sface_2021dec.onnx":
+        "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+}
+
+
+def _cv_face():
+    """OpenCV Zoo's YuNet (detection) + SFace (recognition): Apache-2.0, run by OpenCV itself (no extra package),
+    downloaded once into models/opencv_face (0.2 + 37 MB). None when it cannot load."""
+    if "m" not in _CV_FACE:
+        try:
+            import cv2
+            import urllib.request
+            d = os.path.join(folder_paths.models_dir, "opencv_face")
+            os.makedirs(d, exist_ok=True)
+            for name, url in CV_FACE_MODELS.items():
+                f = os.path.join(d, name)
+                if not os.path.exists(f) or os.path.getsize(f) < 100000:
+                    print(f"[BFS Shot Planner] downloading {name} (OpenCV Zoo, Apache-2.0)", flush=True)
+                    urllib.request.urlretrieve(url, f + ".part")
+                    os.replace(f + ".part", f)
+            det = cv2.FaceDetectorYN.create(os.path.join(d, "face_detection_yunet_2023mar.onnx"), "", (320, 320), 0.6, 0.3, 50)
+            rec = cv2.FaceRecognizerSF.create(os.path.join(d, "face_recognition_sface_2021dec.onnx"), "")
+            _CV_FACE["m"] = (det, rec)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[BFS Shot Planner] OpenCV face models unavailable ({exc!r})", flush=True)
+            _CV_FACE["m"] = None
+    return _CV_FACE["m"]
+
+
+def appearance_signature(frame: np.ndarray, box) -> np.ndarray:
+    """A license-free identity signature for grouping people inside ONE video: colour histograms of the head (hair,
+    skin) and of the torso under it (clothes), plus a tiny grey thumbnail of the face. Weaker than ArcFace across
+    videos, enough to tell the people of a clip apart."""
+    import cv2
+    H, W = frame.shape[:2]
+    x0, y0, x1, y1 = [int(v) for v in box]
+    bw, bh = max(2, x1 - x0), max(2, y1 - y0)
+    head = frame[max(0, y0 - bh // 4):min(H, y1), max(0, x0 - bw // 6):min(W, x1 + bw // 6)]
+    torso = frame[min(H - 1, y1):min(H, y1 + 2 * bh), max(0, x0 - bw // 3):min(W, x1 + bw // 3)]
+
+    def hist(img):
+        if img.size == 0:
+            return np.zeros(12 * 4 * 4, np.float32)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        h = cv2.calcHist([hsv], [0, 1, 2], None, [12, 4, 4], [0, 180, 0, 256, 0, 256]).ravel().astype(np.float32)
+        return np.sqrt(h / max(1.0, h.sum()))      # Hellinger: cosine of sqrt-histograms
+    face = frame[max(0, y0):min(H, y1), max(0, x0):min(W, x1)]
+    thumb = cv2.resize(cv2.cvtColor(face, cv2.COLOR_RGB2GRAY), (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).ravel() \
+        if face.size else np.zeros(64, np.float32)
+    thumb = (thumb - thumb.mean()) / (thumb.std() + 1e-6) * 0.05
+    v = np.concatenate([hist(head), 1.3 * hist(torso), thumb])
+    return v / (np.linalg.norm(v) + 1e-8)
+
+
+def _sam3_faces(frames: list, threshold: float = 0.4) -> list:
+    """Faces per frame with SAM 3.1 (ComfyUI core): [[(x0, y0, x1, y1, score), ...], ...] in pixels."""
+    from comfy_extras.nodes_sam3 import SAM3_Detect
+    model, clip = _sam3()
+    cond = clip.encode_from_tokens_scheduled(clip.tokenize("face"))
+    out = []
+    for k in range(0, len(frames), 8):
+        _status("Finding faces (SAM 3.1)", k, len(frames))
+        batch = torch.from_numpy(np.stack(frames[k:k + 8]).astype(np.float32) / 255.0)
+        boxes = SAM3_Detect.execute(model=model, image=batch, conditioning=cond, threshold=threshold,
+                                    refine_iterations=0).args[1]
+        for fb in boxes:
+            out.append([(b["x"], b["y"], b["x"] + b["width"], b["y"] + b["height"], b.get("score", 1.0)) for b in (fb or [])])
+    return out
 
 
 def cached_cast(path: str, analysis: dict) -> dict | None:
@@ -679,10 +756,15 @@ def analyze_cast(path: str, analysis: dict, step_s: float = 0.5, threshold: floa
     key = _cast_key(path, analysis, step_s, threshold, min_share)
     if key in _CAST_CACHE:
         return _CAST_CACHE[key]
+    # InsightFace (ArcFace) when installed; else OpenCV's YuNet + SFace (Apache-2.0, no extra package); else SAM 3.1
+    # faces grouped by colours (hair, skin, clothes)
     app = _face_app()
+    cvf = _cv_face() if app is None else None
     if app is None:
-        raise RuntimeError("Find people needs the optional insightface package (pip install insightface, with onnxruntime or "
-                           "onnxruntime-gpu) and the buffalo_l models in models/insightface; restart ComfyUI after installing.")
+        threshold = SFACE_THRESHOLD if cvf is not None else APPEARANCE_THRESHOLD
+        print("[BFS Shot Planner] Find people: insightface is not installed, using "
+              + ("OpenCV YuNet + SFace faces" if cvf is not None else "SAM 3.1 faces + colours (hair, skin, clothes)"),
+              flush=True)
     fps = float(analysis["fps"])
     step = max(1, int(round(step_s * fps)))
     frames_idx = np.arange(0, analysis["n"], step)
@@ -691,9 +773,44 @@ def analyze_cast(path: str, analysis: dict, step_s: float = 0.5, threshold: floa
     h = max(32, int(round(w * analysis["height"] / max(1, analysis["width"]))))
     frames = _read_frames(path, src[frames_idx], (w, h), stage="Reading frames for faces")
     dets = []   # (sample index, embedding, area fraction, crop)
-    from insightface.app.common import Face
-    rec = app.models["recognition"]
-    for si, fr in enumerate(frames):
+    if app is None and cvf is not None:
+        det, rec = cvf
+        det.setInputSize((w, h))
+        for si, fr in enumerate(frames):
+            _status("Finding faces", si, len(frames))
+            bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
+            _, faces = det.detect(bgr)
+            cand = []
+            for row in (faces if faces is not None else []):
+                x, y, bw, bh, score = float(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[-1])
+                area = max(0.0, bw) * max(0.0, bh) / float(w * h)
+                if area >= 0.0015 and score >= 0.6:
+                    cand.append((score, row, area))
+            for score, row, area in sorted(cand, key=lambda c: -c[0])[:max_faces]:
+                feat = rec.feature(rec.alignCrop(bgr, row)).ravel().astype(np.float32)
+                x0, y0, x1, y1 = int(row[0]), int(row[1]), int(row[0] + row[2]), int(row[1] + row[3])
+                pad = int(0.25 * max(x1 - x0, y1 - y0))
+                crop = fr[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
+                dets.append((si, feat / (np.linalg.norm(feat) + 1e-8), area, crop))
+    elif app is None:
+        for si, (fr, faces) in enumerate(zip(frames, _sam3_faces(frames, threshold=0.55))):
+            cand = []
+            for x0, y0, x1, y1, score in faces:
+                bw, bh = max(1.0, x1 - x0), max(1.0, y1 - y0)
+                area = bw * bh / float(w * h)
+                if area >= 0.0015 and 0.55 <= bw / bh <= 1.4:     # a face-shaped box (logos and text are skipped)
+                    cand.append((float(score), (x0, y0, x1, y1), area))
+            for score, box, area in sorted(cand, reverse=True)[:max_faces]:
+                x0, y0, x1, y1 = [int(v) for v in box]
+                pad = int(0.25 * max(x1 - x0, y1 - y0))
+                crop = fr[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
+                dets.append((si, appearance_signature(fr, box), area, crop))
+    frames_for_faces = frames if app is not None else []
+    from_insight = app is not None
+    if from_insight:
+        from insightface.app.common import Face
+        rec = app.models["recognition"]
+    for si, fr in enumerate(frames_for_faces):
         _status("Finding faces", si, len(frames))
         bgr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
         boxes, kpss = app.det_model.detect(bgr, max_num=0, metric="default")

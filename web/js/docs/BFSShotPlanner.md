@@ -128,8 +128,11 @@ matching audio) when *Skipped shots in the output* is set to remove them.
 ## Cast (people by face)
 
 *Find people* samples the video every 0.5 s, detects faces and groups them into people by face
-identity (InsightFace `buffalo_l` in `models/insightface`, on the CPU with a few threads so it stays
-light and never touches the GPU; the result is cached per video). Each
+identity, on the CPU (it never touches the GPU; the result is cached per video). **No extra package is needed**: by
+default it uses OpenCV Zoo's **YuNet** (detection) + **SFace** (recognition), Apache-2.0 models run by OpenCV itself and
+downloaded once into `models/opencv_face` (0.2 + 37 MB). If **InsightFace** is installed (`buffalo_l` in
+`models/insightface`) it is used instead (a bit more accurate; mind its license). Last resort, without either: SAM 3.1
+faces grouped by colours (hair, skin, clothes). Each
 person card shows the face, screen share and first/last appearance (click the face to seek).
 Give a person a reference (and a second one) by clicking the slot, or pick one from the recent
 references; *ignore* leaves that person out. Every shot card shows who is in it, with the main

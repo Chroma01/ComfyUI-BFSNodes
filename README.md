@@ -46,8 +46,9 @@ cd ComfyUI-BFSNodes
 pip install -r requirements.txt
 ```
 
-Optional, only for the features that use face recognition (Shot Planner *Find people* / Cast, LTX Identity): `pip install
-insightface` with `onnxruntime` or `onnxruntime-gpu`. They are not in the requirements because insightface pins packages
+Optional: `pip install insightface` with `onnxruntime` or `onnxruntime-gpu`, only for LTX Identity. The Shot Planner's
+*Find people* / Cast no longer needs it (1.93.0): it uses OpenCV's YuNet + SFace (Apache-2.0, downloaded once), and uses
+InsightFace only when it is installed. They are not in the requirements because insightface pins packages
 that conflict with many environments; without them everything else works and those features say what to install.
 
 Restart ComfyUI after installation.
