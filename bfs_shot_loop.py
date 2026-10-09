@@ -1957,6 +1957,10 @@ def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task:
 # ---------------------------------------------------------------------------- continuity between shots
 
 CHAIN_MODES = ("off", "reference", "first frame", "history")
+try:
+    from .bfs_source_blur import SOURCE_BLUR, blur_source
+except ImportError:
+    from bfs_source_blur import SOURCE_BLUR, blur_source
 _LAST_RESULT: dict[str, Any] = {}   # auto loop: the last shot a render node produced (index, count, frames)
 
 
@@ -2807,6 +2811,13 @@ class BFSShotH3Conditioning:
                     "video': enters as a native reference video (<Video n>, after the shot's own if guide_mode uses "
                     "it). The LoRAs were trained with one full guide, so test against off; it can also pull the old "
                     "subject's look."}),
+                "source_blur": (SOURCE_BLUR, {"default": "off", "tooltip":
+                    "Blur the source person in what the model SEES of the source (aligned guide, native reference "
+                    "video, duet panel), keeping the mouth sharp (SAM 3.1 masks). The model still reads the pose, "
+                    "motion and lips but has no face to copy, so the identity comes from the reference. The kept "
+                    "area of 'Mask only' and the output are never blurred. JalenBrunson's swap trick."}),
+                "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05,
+                    "tooltip": "How coarse the source blur is (1 = no detail left)."}),
                 "mask_guide_look": (MASK_GUIDE_LOOKS, {"default": MASK_GUIDE_LOOKS[0], "tooltip":
                     "What the mask guide shows of the subject. grey blurred: its volume, light and head direction "
                     "without colours or a face (default). colour: as it is (can make the model copy the old subject). "
@@ -2831,7 +2842,8 @@ class BFSShotH3Conditioning:
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
                   panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
-                  setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred"):
+                  setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
+                  source_blur="off", source_blur_strength=1.0):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, fill_layout, make_info
@@ -2888,6 +2900,9 @@ class BFSShotH3Conditioning:
                       audio_vae=audio_vae, ref_images=refs or None)
         use_mask = inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint"))
         gtag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
+        # what the model sees of the source; the kept area (keep_video) stays the original
+        seen = blur_source(shot["frames"], source_blur, float(source_blur_strength), gtag) \
+            if source_blur and source_blur != "off" else shot["frames"]
         pg = mask_guide if mask_guide in MASK_GUIDES[1:] else None
         if pg and (not use_mask or shot.get("crop") or on_canvas):
             print(f"{gtag}: mask_guide ignored: it is for 'Mask only' shots (mask, no crop, no duet)", flush=True)
@@ -2900,7 +2915,7 @@ class BFSShotH3Conditioning:
         if native or pg == MASK_GUIDES[3]:
             vids = {}
             if native:
-                vids["ref_video_1"] = shot["frames"]
+                vids["ref_video_1"] = seen
                 if audio is not None:
                     kwargs["ref_video_audios"] = {"ref_video_audio_1": audio}
             if pg == MASK_GUIDES[3]:
@@ -2926,10 +2941,10 @@ class BFSShotH3Conditioning:
         if aligned and (not on_canvas or audio is not None):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  audio_vae=audio_vae if audio is not None else None,
-                                                 image=shot["frames"], audio=audio).args[0]
+                                                 image=seen, audio=audio).args[0]
         if first_frame != "none":
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
-                                                 image=shot["frames"][:1]).args[0]
+                                                 image=seen[:1]).args[0]
         prev = chain_image(shot)
         if prev is not None and shot.get("chain") == "first frame":
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
@@ -2957,9 +2972,9 @@ class BFSShotH3Conditioning:
             except ImportError:
                 from bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
             # the guide goes straight onto the canvas (guides added above are moved onto it by the panel step)
-            guide = shot["frames"] if aligned and audio is None else None
+            guide = seen if aligned and audio is None else None
             positive, latent, info, _, _ = BFSH3SidePanel().apply(
-                positive, latent, vae, shot["frames"], panel_position, panel_size, "contain", 0, "all frames",
+                positive, latent, vae, seen, panel_position, panel_size, "contain", 0, "all frames",
                 panel_noise, guide, 0, keep_video=keep_video, keep_mask=keep_mask)
             shot["panel"] = info        # BFS Shot Join crops the decoded canvas back to the video
             if duet == "shifted RoPE":

@@ -283,6 +283,16 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
 | VLM: frames per shot / max tokens | how much the VLM sees and how long it may answer |
 
+## Source blur (keep the mouth) (1.91.0)
+
+`source_blur` on **BFS Shot H3 Conditioning**, **BFS Shot H3 Duet**, **BFS H3 Duet** and **BFS H3 Duet Conditioning**
+blurs the source person in what the model *sees* of the source (aligned guide, native reference video, duet panel),
+keeping the **mouth** sharp: the model still reads the pose, the motion and the lips but has no face to copy, so the
+identity comes from the reference. Masks from SAM 3.1 (the part, minus a slightly grown "mouth" mask), cached per shot.
+`face (keep mouth)`, `head + hands (keep mouth)` (also hides hair and hands), `person (keep mouth)` (the whole body:
+only for big changes, the pose then comes from the blurred shape). The kept area of *Mask only* and the output are
+never blurred. Trick shared by JalenBrunson (Sapiens2 there) for reliable ref2v swaps.
+
 ## Big videos (upload)
 
 ComfyUI refuses any single request bigger than `--max-upload-size` (100 MB by default), which is why big videos fail
