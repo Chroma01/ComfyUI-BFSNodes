@@ -547,6 +547,15 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   const uploadRef = (target, field) => pickFile("image/*", name => setRef(target, field, name));
   const clearRecent = () => { recent.value = []; store.set(RECENT_KEY, []); };
+  // everything: the recent list AND every reference this plan uses (global, per shot, per person in the cast)
+  const clearAllRefs = () => {
+    if (!confirm("Remove every reference picture from this plan (global, every shot and every person) and forget the recent list?")) return;
+    clearRecent();
+    plan.global_ref = ""; plan.global_ref2 = "";
+    plan.segs.forEach(m => { if (m) { m.ref = ""; m.ref2 = ""; } });
+    Object.values(plan.cast || {}).forEach(cc => { if (cc) { cc.ref = ""; cc.ref2 = ""; } });
+    save();
+  };
   const usedRefs = computed(() => {
     const set = new Set([...recent.value, plan.global_ref, plan.global_ref2, ...plan.segs.flatMap(m => [m?.ref, m?.ref2])].filter(Boolean));
     return [...set].slice(0, 10);
@@ -555,7 +564,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   // everything the views need
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
-    stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent,
+    stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
     n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,

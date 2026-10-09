@@ -116,7 +116,8 @@ function editor(c, cur) {
     ]),
     usedRefs.value.length ? h("div", { class: "recent" }, [hint("recent (click = ref, shift+click = ref 2):"),
       ...usedRefs.value.map(n => h("img", { src: c.viewUrl(n), title: n, onClick: e => c.setRef(i, e.shiftKey ? "ref2" : "ref", n) })),
-      h("button", { class: "sm", title: "Forget the recent pictures (the ones this plan still uses stay)", onClick: () => c.clearRecent() }, "✕ clear")]) : null,
+      h("button", { class: "sm", title: "Forget the recent pictures (the ones this plan still uses stay)", onClick: () => c.clearRecent() }, "✕ clear"),
+      h("button", { class: "sm dng", title: "Remove EVERY reference from this plan (global, all shots, all people) and the recent list", onClick: () => c.clearAllRefs() }, "✕ clear all")]) : null,
     h("div", { class: "row", style: "margin-top:6px" }, [
       h("button", { class: "dng", title: "clear this shot's references and prompt: it uses its person's / the global ones",
         onClick: () => { ["ref", "ref2", "prompt"].forEach(f => { c.meta(i)[f] = ""; }); c.save(); } }, "Use global"),
