@@ -2025,6 +2025,23 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
     return _to_u8(hf), _to_u8(hs)
 
 
+def shot_history(shot: dict):
+    """(history, source under it) of a shot with continuity 'history', as float frames, taken OUT of the shot so nothing
+    stays allocated afterwards; auto loop: from the previous render kept in memory. (None, None) when there is none."""
+    if shot.get("chain") != "history" or int(shot.get("index", 0)) == 0:
+        return None, None
+    hist, hsrc = _from_u8(shot.pop("history", None)), _from_u8(shot.pop("history_src", None))
+    if hist is None and not shot.get("crop") and _LAST_RESULT.get("index") == int(shot["index"]) - 1 \
+            and _LAST_RESULT.get("count") == int(shot.get("count", 0)):
+        prev_len = int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])
+        f = _LAST_RESULT["frames"][:prev_len]
+        n = (min(int(shot.get("chain_history") or 17), f.shape[0]) // 17) * 17
+        if n >= 17:
+            hist = f[f.shape[0] - n:].float()
+            hist = hist / 255.0 if hist.max() > 1.5 else hist
+    return hist, hsrc
+
+
 def _to_u8(x: torch.Tensor) -> torch.Tensor:
     return (x.clamp(0, 1) * 255).round().to(torch.uint8).cpu()
 
@@ -2956,16 +2973,7 @@ class BFSShotH3Conditioning:
     def _history(shot, positive, vae, tag, on_canvas, duet, panel_position, panel_size):
         """Continuity 'history': the end of the previous result as clean frames just before this shot on H3's
         timeline (added last, so the duet panel and the other guides leave it alone)."""
-        if shot.get("chain") != "history" or int(shot.get("index", 0)) == 0:
-            return positive
-        # taken out of the shot: nothing stays allocated after this shot is conditioned
-        hist, hsrc = _from_u8(shot.pop("history", None)), _from_u8(shot.pop("history_src", None))
-        if hist is None and not shot.get("crop") and _LAST_RESULT.get("index") == int(shot["index"]) - 1:
-            prev_len = int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])
-            f = _LAST_RESULT["frames"][:prev_len].float()
-            f = f / 255.0 if f.max() > 1.5 else f
-            n = (min(int(shot.get("chain_history") or 17), f.shape[0]) // 17) * 17
-            hist = f[f.shape[0] - n:] if n >= 17 else None
+        hist, hsrc = shot_history(shot)
         if hist is None:
             return positive
         if duet == "shifted RoPE":

@@ -543,7 +543,7 @@ def build_prompt(task: str, instruction: str, n_pictures: int, n_videos: int, ro
 def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, steps, sampler_name, scheduler,
               seed, panel=None, guide=None, guide_frame_idx=0, position="left", size=1.0, fit="contain", gap=0,
               panel_noise=0.0, hold="all frames", ref_image_size="match", decode_canvas=False,
-              rope_mode="canvas", rope_gap=0.0, first_frame=None):
+              rope_mode="canvas", rope_gap=0.0, first_frame=None, history=None, history_src=None):
     """Reference to Video -> optional pinned panel -> optional aligned guide -> sample -> crop -> decode.
 
     `refs` holds the Reference to Video inputs ({"ref_images": {...}, "ref_videos": {...}, ...}). Without a
@@ -580,6 +580,28 @@ def h3_render(model, clip, vae, audio_vae, prompt, refs, width, height, length, 
         positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=guide_frame_idx,
                                              vae=vae, image=guide).args[0]
 
+    if history is not None:   # continuity 'history': the previous result's end just before frame 0 (added last)
+        if info is not None and rope_mode == "shifted":
+            print("[BFS H3 Duet] history is not used with rope_mode 'shifted' (use canvas)", flush=True)
+        else:
+            hist = history[..., :3].float().cpu()
+            if tuple(hist.shape[1:3]) != (height, width):
+                hist = torch.nn.functional.interpolate(hist.movedim(-1, 1), size=(height, width), mode="bilinear",
+                                                       align_corners=False).movedim(1, -1)
+            if info is not None:   # the canvas: the source frames under the history go into the panel strip
+                under = history_src if history_src is not None and history_src.shape[0] >= hist.shape[0] else hist
+                strip = strip_frames(under[-hist.shape[0]:], list(range(hist.shape[0])), width, height, position,
+                                     size, gap * PATCH_PX, fit)
+                hist = compose(hist, strip, position)
+                del strip
+            try:
+                from .bfs_h3_history import add_history
+            except ImportError:
+                from bfs_h3_history import add_history
+            positive, n = add_history(positive, vae, hist)
+            del hist
+            if n:
+                print(f"[BFS H3 Duet] history: the previous {n} frames go before frame 0 on H3's timeline", flush=True)
     if info is not None and rope_mode == "shifted":
         model = patch_model_rope(model, info, rope_gap)
     guider = Guider_Basic(model)
@@ -971,20 +993,23 @@ class BFSShotH3Duet:
             imgs[f"ref_image_{len(imgs) + 1}"] = shot["ref2"]
         duet, guided = mode != self.MODES[1], mode != self.MODES[0]
         try:
-            from .bfs_shot_loop import chain_image, remember_result
+            from .bfs_shot_loop import chain_image, remember_result, shot_history
         except ImportError:
-            chain_image = remember_result = None
+            chain_image = remember_result = shot_history = None
         prev = chain_image(shot) if chain_image else None
         if prev is not None and shot.get("chain") == "reference":
             imgs[f"ref_image_{len(imgs) + 1}"] = prev
         text = _resolve_prompt(shot.get("prompt", ""), task, instruction, len(imgs), 0)
+        hist, hsrc = shot_history(shot) if shot_history else (None, None)
         out = h3_render(model, clip, vae, audio_vae, text, {"ref_images": imgs}, shot["width"], shot["height"],
                         shot["gen_length"], steps, sampler_name, scheduler, seed + int(shot.get("index", 0)),
                         panel=shot["frames"] if duet else None, guide=shot["frames"] if guided else None,
                         position=position, size=size, fit=fit, gap=gap, panel_noise=panel_noise,
                         ref_image_size=ref_image_size, decode_canvas=decode_canvas,
                         rope_mode=rope_mode, rope_gap=rope_gap,
-                        first_frame=prev if prev is not None and shot.get("chain") == "first frame" else None)
+                        first_frame=prev if prev is not None and shot.get("chain") == "first frame" else None,
+                        history=hist, history_src=hsrc)
+        del hist, hsrc
         if remember_result:
             remember_result(shot, out[0])   # the next shot can continue from it (auto loop)
         return out[:4] + (out[5],)

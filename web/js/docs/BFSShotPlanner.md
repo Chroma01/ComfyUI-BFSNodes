@@ -314,6 +314,7 @@ that moves the video, its audio and the other guides past the history; ComfyUI f
   condition outside it), *Crop* (the history is cut with this shot's box) and the **duet canvas** (the source frames
   under the history go into the panel strip). Not with duet *shifted RoPE*. The aligned guide still drives this shot's
   own frames, so sync stays frame-exact.
+- **BFS Shot H3 Conditioning and BFS Shot H3 Duet** both use it (duet canvas or aligned guide).
 - **Queue loop:** shots run in order and each reads the stored result of the one before. Auto loop: taken from the
   previous render when it matches.
 - Video only for now (the previous audio is not carried). Costs one more 17/34/51-frame condition per shot.

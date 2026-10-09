@@ -837,5 +837,21 @@ class DuetPromptTest(unittest.TestCase):
             SL.vlm_generate, SL.vlm_describe = old
 
 
+class ShotHistoryTest(unittest.TestCase):
+    def test_history_is_taken_out_of_the_shot(self):
+        h = torch.full((17, 8, 8, 3), 255, dtype=torch.uint8)
+        shot = {"chain": "history", "index": 1, "count": 2, "history": h, "history_src": h}
+        hist, src = SL.shot_history(shot)
+        self.assertEqual((tuple(hist.shape), float(hist.max()), "history" in shot), ((17, 8, 8, 3), 1.0, False))
+        self.assertEqual(SL.shot_history({"chain": "off", "index": 1}), (None, None))
+
+    def test_auto_loop_takes_the_previous_render(self):
+        SL._LAST_RESULT.clear()
+        SL._LAST_RESULT.update(index=0, count=2, frames=torch.rand(40, 8, 8, 3))
+        hist, _ = SL.shot_history({"chain": "history", "index": 1, "count": 2, "prev_length": 30, "chain_history": 34})
+        self.assertEqual(hist.shape[0], 17)          # 30 real frames -> one whole group of 17
+        SL._LAST_RESULT.clear()
+
+
 if __name__ == "__main__":
     unittest.main()
