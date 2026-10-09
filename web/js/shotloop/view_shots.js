@@ -21,7 +21,7 @@ function shotCard(c, s, i) {
         sam: bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) }[maskSource(s)] || null,
       s.crop || s.inpaint || s.paste ? bdg({ paste: "🧩 frame+paste", mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)] + (s.inpaint && s.strength < 1 ? ` ${Number(s.strength).toFixed(2)}` : ""), "on", c.modeName(s)) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
-      i > 0 && s.chain !== "off" ? bdg("⛓", "on", `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
+      i > 0 && s.chain !== "off" ? bdg("⛓", "on", s.chain === "history" ? `continues the previous shot's last ${s.chainHistory} frames (history)` : `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
       warnN ? bdg(`⚠ ${warnN}`, "warn", issues.map(x => x.text).join("\n")) : null,
     ]),
     who ? h("div", { class: "who" }, who.people.length ? who.people.map(id => h("img", {
@@ -203,14 +203,23 @@ function editor(c, cur) {
 
   const cont = section("Continuity", h("div", { class: "row" }, [
     h("select", { value: cur.chain, style: "width:auto", disabled: i === 0,
-      title: "reference: the previous result's frame becomes one more <Picture n> after this shot's own references. first frame: it is anchored at frame 0 of this shot.",
+      title: "reference: the previous result's frame becomes one more <Picture n> after this shot's own references. first frame: it is anchored at frame 0 of this shot. history: the END of the previous result (17/34/51 frames) goes just before this shot on H3's timeline, so a long take continues its motion and look (same take only, not across a cut).",
       onChange: e => c.setMeta(i, "chain", e.target.value) },
       [h("option", { value: "off" }, "off"), h("option", { value: "reference" }, "previous shot as reference"),
-       h("option", { value: "first frame" }, "previous shot as first frame")]),
-    h("select", { value: cur.chainFrame, style: "width:auto", disabled: i === 0 || cur.chain === "off",
-      title: "Which frame of the previous shot's result", onChange: e => c.setMeta(i, "chain_frame", e.target.value) },
-      [h("option", { value: "first" }, "its first frame"), h("option", { value: "middle" }, "its middle frame"), h("option", { value: "last" }, "its last frame")]),
-    hint(i === 0 ? "the first shot uses only its references" : "uses a frame of the PREVIOUS shot's result (queue loop, or auto loop with BFS Shot H3 Duet)"),
+       h("option", { value: "first frame" }, "previous shot as first frame"),
+       h("option", { value: "history" }, "previous shot's end as history (long take)")]),
+    cur.chain === "history"
+      ? h("select", { value: String(cur.chainHistory), style: "width:auto", disabled: i === 0,
+          title: "How much of the previous result's end goes before this shot (whole H3 VAE groups). More carries more motion, costs more memory.",
+          onChange: e => c.setMeta(i, "chain_history", Number(e.target.value)) },
+          [17, 34, 51].map(n => h("option", { value: String(n) }, `last ${n} frames (${(n / 24).toFixed(1)} s)`)))
+      : h("select", { value: cur.chainFrame, style: "width:auto", disabled: i === 0 || cur.chain === "off",
+          title: "Which frame of the previous shot's result", onChange: e => c.setMeta(i, "chain_frame", e.target.value) },
+          [h("option", { value: "first" }, "its first frame"), h("option", { value: "middle" }, "its middle frame"), h("option", { value: "last" }, "its last frame")]),
+    hint(i === 0 ? "the first shot uses only its references"
+      : cur.chain === "history" ? (cur.cut ? "⚠ a camera cut starts this shot: history is skipped (it only carries a continuing take)"
+        : "the end of the PREVIOUS shot's result continues into this one (queue loop: shots run in order). Works with every mask mode, crop and the duet canvas.")
+      : "uses a frame of the PREVIOUS shot's result (queue loop, or auto loop with BFS Shot H3 Duet)"),
   ]), { open: cur.chain !== "off", sub: cur.chain !== "off" ? cur.chain : "off" });
 
   const copy = section("Copy to other shots", [

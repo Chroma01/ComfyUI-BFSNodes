@@ -296,6 +296,26 @@ the **auto loop with BFS Shot H3 Duet** (it renders shot by shot and keeps the l
 outputs it as `previous_result`. This is different from H3 Conditioning's *first_frame*, which anchors the shot's
 own frame from the source video.
 
+### History: a long take, window by window (1.87.0)
+
+*Continuity* = **previous shot's end as history** carries the **last 17, 34 or 51 frames of the previous shot's
+result** into the next shot as clean frames placed **just before frame 0 on H3's timeline**: the model sees them as
+the immediate past of the video it is generating, so motion, camera, light and the new look continue across the join
+(instead of one still frame). Idea from Akatz's [H3 Relay](https://github.com/akatz-ai/h3-relay) windowed edit and
+Ethanfel's MiniMax H3 Context Loop; this is BFS's own implementation (a process-local patch of H3's packed layout
+that moves the video, its audio and the other guides past the history; ComfyUI files are not edited).
+
+- **Same take only.** A shot that starts at a camera cut skips it (nothing to continue). For one long take, split it
+  with *Mode = fixed length* (or let *Camera cuts* split long shots) and set history on every shot after the first
+  with **Copy to other shots → continuity**. Shots still exist: they are the windows, and cuts reset the history.
+- **Every mode:** full frame, *Frame + paste*, *Mask only* (the mask regenerates the target; the history is a
+  condition outside it), *Crop* (the history is cut with this shot's box) and the **duet canvas** (the source frames
+  under the history go into the panel strip). Not with duet *shifted RoPE*. The aligned guide still drives this shot's
+  own frames, so sync stays frame-exact.
+- **Queue loop:** shots run in order and each reads the stored result of the one before. Auto loop: taken from the
+  previous render when it matches.
+- Video only for now (the previous audio is not carried). Costs one more 17/34/51-frame condition per shot.
+
 ## MiniMax H3 with an aligned guide (example)
 
 ```

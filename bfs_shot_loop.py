@@ -474,6 +474,7 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["prompt"] = m.get("prompt") or ""
         s["chain"] = m.get("chain") or "off"
         s["chain_frame"] = m.get("chain_frame") or "first"
+        s["chain_history"] = int(m.get("chain_history") or 17)
         s["crop"] = bool(m.get("crop"))
         s["inpaint"] = bool(m.get("inpaint"))
         s["paste"] = bool(m.get("paste")) and not s["crop"] and not s["inpaint"]
@@ -1955,7 +1956,7 @@ def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task:
 
 # ---------------------------------------------------------------------------- continuity between shots
 
-CHAIN_MODES = ("off", "reference", "first frame")
+CHAIN_MODES = ("off", "reference", "first frame", "history")
 _LAST_RESULT: dict[str, Any] = {}   # auto loop: the last shot a render node produced (index, count, frames)
 
 
@@ -1981,6 +1982,44 @@ def chain_image(shot: dict) -> torch.Tensor | None:
         prev_len = shot.get("prev_length") or _LAST_RESULT["frames"].shape[0]
         return pick_frame(_LAST_RESULT["frames"], prev_len, shot.get("chain_frame", "first"))
     return None
+
+
+def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, ft):
+    """Continuity 'history': the end of the previous shot's result (17/34/51 frames) at this shot's size, plus the
+    source frames under it (the duet panel shows them). Same take only: a camera cut has nothing to carry over."""
+    tag = f"[BFS Shot Planner] shot {i + 1}: history"
+    if seg["cut_before"]:
+        print(f"{tag} skipped: a camera cut starts this shot", flush=True)
+        return None, None
+    want = int(seg.get("chain_history") or 17)
+    prev = None
+    if queue:
+        fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
+        if os.path.exists(fp):
+            prev = torch.load(fp)["frames"].float() / 255.0
+    if prev is None:
+        print(f"{tag}: the previous shot's result is not there yet (queue loop: shots run in order; auto loop: "
+              "it is taken from the previous render if it matches)", flush=True)
+        return None, None
+    avail = min(int(prev_len), prev.shape[0])
+    n = min(want, (avail // 17) * 17)
+    if n < 17:
+        print(f"{tag} skipped: the previous shot has only {avail} frames (needs 17)", flush=True)
+        return None, None
+    hf = prev[avail - n:avail, ..., :3]
+    lo = max(0, int(seg["start"]) - n)
+    sf = _read_frames(path, src[np.arange(lo, int(seg["start"]))], (W, H))
+    hs = torch.from_numpy(np.stack(sf).astype(np.float32) / 255.0)
+    if hs.shape[0] < n:
+        hs = torch.cat([hs[:1].expand(n - hs.shape[0], -1, -1, -1), hs], 0)
+    if hf.shape[1:3] != (H, W):
+        hf = _fit_to(hf, W, H)
+    if crop is not None:   # the same box as this shot's crop, at the crop's generation size
+        x0, y0, x1, y1 = box_px(crop["box"], W, H)
+        hf = _fit_to(hf[:, y0:y1, x0:x1], ft.shape[2], ft.shape[1])
+        hs = _fit_to(hs[:, y0:y1, x0:x1], ft.shape[2], ft.shape[1])
+    print(f"{tag}: the last {n} frames of shot {i} go before this one on H3's timeline", flush=True)
+    return hf, hs
 
 
 def _fit_to(img: torch.Tensor, w: int, h: int) -> torch.Tensor:
@@ -2264,6 +2303,8 @@ class BFSShotPlanner:
                     bx0, by0, bx1, by1 = box_px(r["box"], r["size"][0], r["size"][1])
                     crop["crop_mask"] = torch.nn.functional.interpolate(
                         r["masks"][:, None, by0:by1, bx0:bx1].float(), size=(chh, cw), mode="nearest")[:, 0]
+            hist, hist_src = (history_for(path, a, src, s, i, prev_len, queue, rid, W, H, crop, ft)
+                              if s["chain"] == "history" and i > 0 else (None, None))
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
@@ -2279,6 +2320,7 @@ class BFSShotPlanner:
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
+                "history": hist, "history_src": hist_src,
                 "prev_length": prev_len,
                 "source": {"path": path, "frames": [int(x) for x in src[idx]]},
             })
@@ -2895,7 +2937,46 @@ class BFSShotH3Conditioning:
                 if model is None:
                     raise ValueError("duet 'shifted RoPE' needs the model input (and its model output in the sampler)")
                 model = patch_model_rope(model, info, rope_gap)
+        positive = self._history(shot, positive, vae, gtag, on_canvas, duet, panel_position, panel_size)
         return (positive, latent, model, text)
+
+    @staticmethod
+    def _history(shot, positive, vae, tag, on_canvas, duet, panel_position, panel_size):
+        """Continuity 'history': the end of the previous result as clean frames just before this shot on H3's
+        timeline (added last, so the duet panel and the other guides leave it alone)."""
+        if shot.get("chain") != "history" or int(shot.get("index", 0)) == 0:
+            return positive
+        hist, hsrc = shot.get("history"), shot.get("history_src")
+        if hist is None and not shot.get("crop") and _LAST_RESULT.get("index") == int(shot["index"]) - 1:
+            prev_len = int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])
+            f = _LAST_RESULT["frames"][:prev_len].float()
+            f = f / 255.0 if f.max() > 1.5 else f
+            n = (min(int(shot.get("chain_history") or 17), f.shape[0]) // 17) * 17
+            hist = f[f.shape[0] - n:] if n >= 17 else None
+        if hist is None:
+            return positive
+        if duet == "shifted RoPE":
+            print(f"{tag}: history is not used with duet 'shifted RoPE' (use canvas)", flush=True)
+            return positive
+        W, H = int(shot["width"]), int(shot["height"])
+        hist = _fit_to(hist, W, H) if tuple(hist.shape[1:3]) != (H, W) else hist
+        if on_canvas:   # the canvas holds the panel too: the source frames under the history go in its strip
+            try:
+                from .bfs_h3_side_panel import compose, strip_frames
+            except ImportError:
+                from bfs_h3_side_panel import compose, strip_frames
+            panel = hsrc if hsrc is not None and hsrc.shape[0] >= hist.shape[0] else hist
+            strip = strip_frames(panel[-hist.shape[0]:], list(range(hist.shape[0])), W, H, panel_position, panel_size,
+                                 0, "contain")
+            hist = compose(hist.cpu(), strip, panel_position)
+        try:
+            from .bfs_h3_history import add_history
+        except ImportError:
+            from bfs_h3_history import add_history
+        positive, n = add_history(positive, vae, hist)
+        if n:
+            print(f"{tag}: history = the last {n} frames of the previous shot, before frame 0 on H3's timeline", flush=True)
+        return positive
 
 
 class BFSShotJoin:
