@@ -853,5 +853,18 @@ class ShotHistoryTest(unittest.TestCase):
         SL._LAST_RESULT.clear()
 
 
+class FillDetailsTest(unittest.TestCase):
+    def test_render_node_fills_details_with_its_vlm(self):
+        old = SL.vlm_describe
+        SL.vlm_describe = lambda clip, ims, q, mt=320, temperature=0.0, seed=0: "The elderly man with white hair in a light blue t-shirt."
+        try:
+            out = SL.fill_details_now("<Subject 1> is the {details} shown in <Picture 1>.", object(), [torch.rand(1, 8, 8, 3)])
+            self.assertEqual(out, "<Subject 1> is the elderly man with white hair in a light blue t-shirt shown in <Picture 1>.")
+            self.assertIn("character", SL.fill_details_now("is the {details} shown", None, []))
+            self.assertEqual(SL.fill_details_now("no slot", None, []), "no slot")
+        finally:
+            SL.vlm_describe = old
+
+
 if __name__ == "__main__":
     unittest.main()

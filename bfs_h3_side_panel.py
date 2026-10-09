@@ -997,7 +997,9 @@ class BFSShotH3Duet:
                          "rope_mode": (ROPE_MODES, {"default": "canvas", "advanced": True}),
                          "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0, "advanced": True}),
                          "source_blur": (_blur_modes(), {"default": "off", "tooltip": "Blur the source person in what the model sees (the panel / the guide), keeping the mouth sharp (SAM 3.1): it reads the pose, motion and lips but has no face to copy. The output is never blurred."}),
-                         "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05})},
+                         "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05}),
+                         "vlm": ("CLIP", {"tooltip": "Optional VLM (Qwen3-VL CLIPLoader): fills {details} in the shot's "
+                                                     "prompt from its references when the planner left it."})},
         }
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "IMAGE", "STRING", "STRING")
@@ -1011,7 +1013,7 @@ class BFSShotH3Duet:
 
     def render(self, shot, model, clip, vae, mode, task, instruction, use_ref_2, position, size, fit, gap,
                panel_noise, ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None,
-               rope_mode="canvas", rope_gap=0.0, source_blur="off", source_blur_strength=1.0):
+               rope_mode="canvas", rope_gap=0.0, source_blur="off", source_blur_strength=1.0, vlm=None):
         imgs = {}
         if shot.get("ref") is not None:
             imgs["ref_image_1"] = shot["ref"]
@@ -1026,6 +1028,9 @@ class BFSShotH3Duet:
         if prev is not None and shot.get("chain") == "reference":
             imgs[f"ref_image_{len(imgs) + 1}"] = prev
         text = _resolve_prompt(shot.get("prompt", ""), task, instruction, len(imgs), 0)
+        if "{details}" in text:
+            text = _shot_loop().fill_details_now(text, vlm, [shot.get("ref"), shot.get("ref2")],
+                                                 f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}")
         hist, hsrc = shot_history(shot) if shot_history else (None, None)
         seen = _blur(shot["frames"], source_blur, source_blur_strength,
                      f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}")

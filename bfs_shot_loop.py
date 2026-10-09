@@ -2046,6 +2046,28 @@ def shot_history(shot: dict):
     return hist, hsrc
 
 
+def fill_details_now(text: str, vlm, refs: list, tag: str = "") -> str:
+    """{details} still in a shot's prompt (nobody pressed 📝 Describe refs and the planner had no VLM): the render
+    node's VLM describes the shot's references with the 'short' preset; without a VLM a plain word keeps the sentence
+    whole."""
+    if "{details}" not in (text or ""):
+        return text
+    refs = [r for r in refs if r is not None]
+    d = ""
+    if vlm is not None and refs:
+        cfg = vlm_cfg({})
+        slot = prompt_slot(text, "{details}") if cfg.get("fit_prompt", True) else ""
+        d = tidy_details(vlm_describe(vlm, refs[:2], describe_instruction(cfg, slot), int(cfg["max_tokens"])), cfg)
+        d = tidy_slot(d, slot) if slot else d
+        if d:
+            print(f"{tag}: {{details}} = {d!r} (described automatically)", flush=True)
+    if not d:
+        print(f"{tag}: {{details}} has no description: press 📝 Describe refs in the planner or connect a VLM "
+              "(planner or this node)", flush=True)
+        d = "character"
+    return text.replace("{details}", d)
+
+
 def _to_u8(x: torch.Tensor) -> torch.Tensor:
     return (x.clamp(0, 1) * 255).round().to(torch.uint8).cpu()
 
@@ -2243,10 +2265,8 @@ class BFSShotPlanner:
                 return text
             k = ref_set_key(rname, r2name)
             d = details.get(k, "") or auto_details.get(k, "")
-            if not d:
-                print(f"[BFS Shot Planner] {{details}} has no description for {k!r}: write it in 📝 Prompts & refs or "
-                      "connect the VLM", flush=True)
-                d = "character"
+            if not d:   # left for BFS Shot H3 Conditioning / Shot H3 Duet: with a VLM there they describe it
+                return text
             return text.replace("{details}", d)
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
@@ -2784,7 +2804,7 @@ class BFSShotH3Conditioning:
                     "What changes, in seen words, for the task: 'a 1990s anime cel style', 'a sunny beach at sunset', "
                     "'an elderly woman with short grey hair'. Empty is fine for character swap (the person comes from "
                     "the references)."}),
-                "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder) that writes the "
+                "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder). Fills {details} when the planner left it (no 📝 Describe refs, no VLM on the planner), and with a task it writes the "
                                             "prompt when a task is chosen. Without it the task's template is used."}),
                 "setting_ref": (SETTING_MODES, {"default": "off", "tooltip":
                     "TSC's trick: one more reference picture, the shot's middle frame with the person covered in TV "
@@ -2893,6 +2913,8 @@ class BFSShotH3Conditioning:
                 ref_image_size = "max"
             refs[f"ref_image_{len(refs)}"] = setting
             text = add_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
+        text = fill_details_now(text, vlm, [shot.get("ref"), shot.get("ref2")],
+                                f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}")
         text = fill_layout(text, make_info(shot["width"], shot["height"], panel_position, panel_size, 0)
                            if on_canvas else None, rope_mode)
         kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],

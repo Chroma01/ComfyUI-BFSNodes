@@ -283,6 +283,13 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
 | VLM: frames per shot / max tokens | how much the VLM sees and how long it may answer |
 
+## {details} filled automatically (1.92.0)
+
+A `{details}` in a shot's prompt is filled without pressing 📝 Describe refs: the planner's VLM describes the shot's
+references before any SAM 3 work; with no VLM on the planner, the slot is left for **BFS Shot H3 Conditioning** or
+**BFS Shot H3 Duet**, whose `vlm` input (the same Qwen3-VL CLIPLoader) describes them (the *short* preset, fitted to
+the sentence). Edited descriptions always win. With no VLM anywhere it becomes "character" and the log says so.
+
 ## Source blur (keep the mouth) (1.91.0)
 
 `source_blur` on **BFS Shot H3 Conditioning**, **BFS Shot H3 Duet**, **BFS H3 Duet** and **BFS H3 Duet Conditioning**
