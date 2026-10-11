@@ -391,6 +391,8 @@ def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int
     cutset = set(cuts)
     if mode == "manual" and manual:
         bounds = sorted(set([lo, n] + [b for b in manual if lo < b < n]))
+    elif mode == "single":       # the whole range as ONE shot, whatever its length (the maximum is not applied)
+        bounds = [lo, n]
     elif mode == "fixed":
         k = max(1, math.ceil((n - lo) / max_len))
         bounds = sorted(set(lo + round((n - lo) * j / k) for j in range(k + 1)))
@@ -3549,12 +3551,64 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
     return out
 
 
+class BFSShotSeed:
+    """The seed of each shot (runs once per shot): the same for all, counting up, or unrelated per shot."""
+
+    MODES = ["same for every shot", "increment per shot", "random per shot"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "shot": ("BFS_SHOT",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True,
+                                 "tooltip": "The base seed (shot 1 always uses it)."}),
+                "mode": (cls.MODES, {"default": cls.MODES[0], "tooltip":
+                    "same for every shot: every shot starts from the same noise (as when one seed widget feeds the "
+                    "sampler). increment per shot: seed, seed+1, seed+2 ... random per shot: an unrelated seed for "
+                    "each shot, derived from the base seed, so the run is still repeatable."}),
+            },
+            "optional": {
+                "overrides": ("STRING", {"default": "", "tooltip":
+                    "Seeds for single shots, 'shot:seed' pairs separated by commas (shots count from 1), e.g. "
+                    "'3:12345, 5:777'. To keep a shot that came out well and re-roll the others."}),
+            },
+        }
+
+    RETURN_TYPES = ("INT", "STRING")
+    RETURN_NAMES = ("seed", "label")
+    OUTPUT_TOOLTIPS = ("This shot's seed: connect it to the sampler / noise node.", "'shot N: seed' for notes and the comparison bar.")
+    FUNCTION = "pick"
+    CATEGORY = "BFS/shot loop"
+    DESCRIPTION = ("One seed per shot from a single base seed: the same for every shot, counting up, or random per "
+                   "shot, with optional per-shot overrides. Connect the shot from BFS Shot Planner / Unpack and feed "
+                   "the seed to the sampler.")
+
+    def pick(self, shot, seed, mode, overrides=""):
+        i = int(shot.get("index", 0))
+        value = shot_seed(int(seed), i, mode, overrides)
+        return (value, f"shot {i + 1}: {value}")
+
+
+def shot_seed(seed: int, index: int, mode: str, overrides: str = "") -> int:
+    for part in re.split(r"[,;\n]+", overrides or ""):
+        m = re.match(r"\s*(\d+)\s*[:=]\s*(\d+)\s*$", part)
+        if m and int(m.group(1)) == index + 1:
+            return int(m.group(2)) & 0xffffffffffffffff
+    if mode.startswith("increment"):
+        return (seed + index) & 0xffffffffffffffff
+    if mode.startswith("random") and index > 0:
+        return int.from_bytes(hashlib.sha256(f"{seed}/{index}".encode()).digest()[:8], "big")
+    return seed
+
+
 NODE_CLASS_MAPPINGS = {
     "BFSShotPlanner": BFSShotPlanner,
     "BFSShotUnpack": BFSShotUnpack,
     "BFSShotRepack": BFSShotRepack,
     "BFSShotH3Conditioning": BFSShotH3Conditioning,
     "BFSShotJoin": BFSShotJoin,
+    "BFSShotSeed": BFSShotSeed,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BFSShotPlanner": "BFS Shot Planner",
@@ -3562,6 +3616,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BFSShotRepack": "BFS Shot Repack",
     "BFSShotH3Conditioning": "BFS Shot H3 Conditioning",
     "BFSShotJoin": "BFS Shot Join",
+    "BFSShotSeed": "BFS Shot Seed",
 }
 
 # ---------------------------------------------------------------------------- chunked uploads

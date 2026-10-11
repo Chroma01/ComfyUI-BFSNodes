@@ -166,7 +166,9 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (skipWhy(s)) return;
       const add = (lvl, text) => out.push({ lvl, shot: i, text });
       const p = promptOf(s);
-      if (s.len > maxLen.value) add("warn", `longer than ${maxLen.value} frames: split it`);
+      if (s.len > maxLen.value) add(plan.mode === "single" ? "note" : "warn", plan.mode === "single"
+        ? `one shot of ${s.len} frames (${(s.len / plan.fps).toFixed(1)} s), longer than Max seconds / shot: the model may not hold it`
+        : `longer than ${maxLen.value} frames: split it`);
       if ((s.crop || s.inpaint || s.paste) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text, points or a mask video; or the planner's mask input)`);
       if (hasMask(s) && maskPrev.value[segKey(s)]?.empty) add("warn", "the mask preview found nothing");
       if (/\{target\}/.test(p) && !s.target) add("warn", "the prompt uses {target} but the shot has no target description");

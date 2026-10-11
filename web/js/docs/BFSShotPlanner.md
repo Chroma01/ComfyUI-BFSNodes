@@ -74,6 +74,10 @@ camera cuts.
   minimum merge into a neighbour when the merge still fits; shots longer than the maximum split
   into equal parts.
 - **Fixed length**: equal parts no longer than the maximum.
+- **One shot (whole range)**: the whole range (start / end frame, *Max total seconds*) as a single shot, whatever its
+  length; *Max seconds / shot* is not applied. For "N seconds in one piece" set *Range length, seconds* = N, right
+  next to the mode (it moves the end frame; *Max total seconds* in the Run tab does the same for quick tests).
+  For pieces of at most X seconds use *Fixed length* with *Max seconds / shot* = X.
 - **By hand**: drag the white handles on the timeline to move a boundary, double-click the
   shot bar to split, *⇥ Merge* to join, or select a shot and press **Delete** to remove the cut at its
   start (it merges into the previous shot). Your edits are what runs.
@@ -273,7 +277,7 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 
 | setting | what it does |
 |---|---|
-| Mode | Camera cuts (shots start at cuts, long ones split evenly) or fixed length |
+| Mode | Camera cuts (shots start at cuts, long ones split evenly), fixed length, or one shot (the whole range) |
 | Detector / Sensitivity | PySceneDetect adaptive or content, or the built-in one; higher sensitivity finds more cuts |
 | Frame grid | frame counts the model accepts (H3 17n+5, LTX/Wan 8n+1, Wan 4n+1) |
 | Max / Min seconds per shot | longest shot sent to the model; shorter shots merge into a neighbour |
@@ -285,6 +289,30 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Mask: padding / expand / feather / temporal expand / blockify | crop context, paste-back growth and softness, flicker hold, square blocks |
 | Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
 | VLM: frames per shot / max tokens | how much the VLM sees and how long it may answer |
+
+## One seed per shot: BFS Shot Seed (1.94.0)
+
+A seed widget on the sampler gives every shot the SAME seed (the node runs once per shot with the same value).
+**BFS Shot Seed** (shot in, seed out) makes it a choice: *same for every shot*, *increment per shot* (seed, seed+1 ...)
+or *random per shot* (unrelated but repeatable seeds from the base seed). `overrides` pins single shots, e.g.
+`3:12345, 5:777`, to keep the shots that came out well and re-roll only the others.
+
+## Structured starting noise: BFS Shot Noise (1.94.0, experimental)
+
+Optional. **BFS Shot Noise** gives the NOISE for SamplerCustomAdvanced; with every amount at 0 it is exactly RandomNoise.
+
+| Input | What it does |
+|---|---|
+| `shot_seed` (+ `shot`, `overrides`) | the seed of each shot: same / increment / random per shot, as BFS Shot Seed |
+| `shared_base` | the coarse pattern of the noise comes from `base_seed`: the same for every shot, at any resolution and any length (it is a tape along the timeline); the fine detail stays per shot. Put the seed of a result that worked in `base_seed` to keep its coarse noise |
+| `distribution` | gaussian (default), laplacian, student-t or uniform, all at unit variance |
+| `spectrum_tilt` | 1/f^alpha spectrum: > 0 puts more energy in the large blobs ("fractal" noise), < 0 in the fine grain |
+| `pyramid` | coarser layers of noise added on top |
+| `static_share` | a part of the noise identical in every frame |
+| `guide_structure` (`vae`, `guide_frames`, `mask`) | outside the mask, the guide's latent is mixed into the noise |
+| `ref_tint` (`vae`, `ref_image`, `mask`) | inside the mask, the noise leans toward the reference's average latent |
+
+All mixes keep unit variance. The model was trained on plain noise: use small amounts and compare with 0.
 
 ## {details} filled automatically (1.92.0)
 

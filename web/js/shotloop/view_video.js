@@ -58,7 +58,14 @@ export function videoTab(c) {
 
   const split = section("Split into shots", [
     h("div", { class: "grid" }, [
-      fld("Mode", sel_("mode", [["shots", "Camera cuts"], ["fixed", "Fixed length"]])),
+      fld("Mode", sel_("mode", [["shots", "Camera cuts"], ["fixed", "Fixed length"], ["single", "One shot (whole range)"]]),
+        plan.mode === "single" ? "ignores Max seconds / shot" : ""),
+      // the range in seconds, here next to the mode: "15 s in one shot" is set without leaving this tab
+      fld("Range length, seconds (0 = to the end)", h("input", { type: "number", step: 0.5, min: 0,
+        value: c.range.value.hi < c.n.value ? +((c.range.value.hi - c.range.value.lo) / plan.fps).toFixed(2) : 0,
+        onChange: e => { const v = parseFloat(e.target.value) || 0;
+          c.setRange("end_f", v > 0 ? c.range.value.lo + Math.round(v * plan.fps) : 0); } }),
+        `from the start frame · ${c.range.value.hi - c.range.value.lo} frames`),
       fld("Detector", sel_("detector", [["adaptive", "PySceneDetect adaptive"], ["content", "PySceneDetect content"], ["builtin", "Built-in"]])),
       fld(`Sensitivity ${Number(plan.sensitivity).toFixed(2)}`, h("input", { type: "range", min: 0, max: 1, step: 0.05, value: plan.sensitivity,
         onInput: e => { plan.sensitivity = parseFloat(e.target.value); }, onChange: c.save })),
