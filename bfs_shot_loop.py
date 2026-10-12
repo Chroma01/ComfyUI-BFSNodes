@@ -429,7 +429,7 @@ def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int
 DEFAULT_PLAN = {
     "video": "", "fps": 24.0, "grid": DEFAULT_GRID, "mode": "shots", "max_s": 4.5, "min_s": 1.0,
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "start_s": 0.0, "end_s": 0.0, "bounds": [], "segs": [],
-    "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.15, "multiple": 32,
+    "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.5, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
@@ -3189,6 +3189,55 @@ class BFSShotH3Conditioning:
         return positive
 
 
+class BFSShotH3ConditioningSimple:
+    """The common H3 shot-conditioning path, without duet, RoPE and prompt-writer controls."""
+
+    GUIDE_MODES = BFSShotH3Conditioning.GUIDE_MODES
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "shot": ("BFS_SHOT",),
+                "clip": ("CLIP",),
+                "vae": ("VAE",),
+                "guide_mode": (cls.GUIDE_MODES, {"default": cls.GUIDE_MODES[0], "tooltip":
+                    "aligned guide: preserve the shot frame by frame with MiniMax H3 Add Guide. "
+                    "native reference video: provide it as <Video 1> context. both: use both paths."}),
+                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Also pass the second reference."}),
+                "ref_image_size": (["match", "max"], {"default": "match"}),
+            },
+            "optional": {
+                "audio_vae": ("VAE",),
+                "with_audio": ("BOOLEAN", {"default": False, "tooltip":
+                    "Condition on the shot soundtrack too. This can improve lip sync when audio_vae is connected."}),
+                "vlm": ("CLIP", {"tooltip":
+                    "Optional Qwen3-VL encoder. Fills missing reference details in the planner prompt."}),
+                "inpaint": (INPAINT_MODES, {"default": INPAINT_MODES[0], "tooltip":
+                    "Use each shot's Planner mask mode, force mask-only generation, or disable it."}),
+                "source_blur": (SOURCE_BLUR, {"default": "off", "tooltip":
+                    "Blur the source subject in the guide so the model is less likely to copy its identity."}),
+                "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05}),
+            },
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "STRING")
+    RETURN_NAMES = ("positive", "latent", "prompt")
+    FUNCTION = "condition"
+    CATEGORY = "BFS/shot loop"
+    DESCRIPTION = ("Build the usual MiniMax H3 shot conditioning with references, prompt and an aligned guide "
+                   "and/or native reference video. Use the Advanced node for duet, shifted RoPE and mask-guide tools.")
+
+    def condition(self, shot, clip, vae, guide_mode, use_ref_2, ref_image_size,
+                  audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
+                  source_blur="off", source_blur_strength=1.0):
+        positive, latent, _, prompt = BFSShotH3Conditioning().condition(
+            shot, clip, vae, guide_mode, use_ref_2, "none", ref_image_size,
+            audio_vae=audio_vae, with_audio=with_audio, vlm=vlm, inpaint=inpaint,
+            source_blur=source_blur, source_blur_strength=source_blur_strength)
+        return positive, latent, prompt
+
+
 class BFSShotJoin:
     """Put the decoded shots back together in order, trimmed to their true lengths."""
 
@@ -3637,6 +3686,7 @@ NODE_CLASS_MAPPINGS = {
     "BFSShotUnpack": BFSShotUnpack,
     "BFSShotRepack": BFSShotRepack,
     "BFSShotH3Conditioning": BFSShotH3Conditioning,
+    "BFSShotH3ConditioningSimple": BFSShotH3ConditioningSimple,
     "BFSShotJoin": BFSShotJoin,
     "BFSShotSeed": BFSShotSeed,
 }
@@ -3644,7 +3694,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BFSShotPlanner": "BFS Shot Planner",
     "BFSShotUnpack": "BFS Shot Unpack",
     "BFSShotRepack": "BFS Shot Repack",
-    "BFSShotH3Conditioning": "BFS Shot H3 Conditioning",
+    "BFSShotH3Conditioning": "BFS Shot H3 Conditioning (Advanced)",
+    "BFSShotH3ConditioningSimple": "BFS Shot H3 Conditioning",
     "BFSShotJoin": "BFS Shot Join",
     "BFSShotSeed": "BFS Shot Seed",
 }

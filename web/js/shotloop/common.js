@@ -6,7 +6,7 @@ export const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (
 export const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", mask_video: "",
-  megapixels: 0.15, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
+  megapixels: 0.5, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
   skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
@@ -30,7 +30,7 @@ export const TIPS = {
   "Timeline fps": "The planner works on this frame rate (the source is resampled). Generated video and audio use it too.",
   "Max shots": "Only the first N shots (0 = all). Handy for quick tests.",
   "Max total seconds": "Only the first N seconds of the video (0 = all).",
-  "Megapixels": "Generation size: the source aspect ratio at this pixel area (0.15 ≈ 512×288). Cropped shots use it for the crop.",
+  "Megapixels": "Generation size: the source aspect ratio at this pixel area (0.5 ≈ 960×544 for 16:9). Cropped shots use it for the crop.",
   "Size multiple": "Width and height snap to this multiple (32 for H3 and most video models).",
   "Run": "Auto loop: every shot in one queue run. Queue loop: one shot per run, stored on disk, the join outputs the video after the last shot.",
   "Skipped shots in the output": "Shots that do not run: keep the original video there, or remove them (with their audio).",

@@ -61,6 +61,9 @@ class GridTest(unittest.TestCase):
         self.assertEqual((w % 32, h % 32), (0, 0))
         self.assertGreater(w, h)
 
+    def test_planner_defaults_to_half_megapixel(self):
+        self.assertEqual(SL.DEFAULT_PLAN["megapixels"], 0.5)
+
 
 class PlanTest(unittest.TestCase):
     def test_fixed_mode_splits_evenly_under_the_limit(self):
@@ -406,6 +409,39 @@ class ConditioningWriterTest(unittest.TestCase):
     def test_task_needs_duet(self):
         with self.assertRaises(ValueError):
             self._run(task="style", instruction="anime")
+
+
+class SimpleConditioningTest(unittest.TestCase):
+    def test_exposes_only_the_common_controls(self):
+        inputs = SL.BFSShotH3ConditioningSimple.INPUT_TYPES()
+        names = set(inputs["required"]) | set(inputs["optional"])
+        self.assertIn("with_audio", names)
+        self.assertIn("inpaint", names)
+        self.assertNotIn("duet", names)
+        self.assertNotIn("model", names)
+        self.assertNotIn("rope_gap", names)
+        self.assertNotIn("task", names)
+
+    def test_forwards_safe_advanced_defaults_and_hides_model_output(self):
+        seen = {}
+        original = SL.BFSShotH3Conditioning.condition
+
+        def fake(_self, *args, **kwargs):
+            seen["args"], seen["kwargs"] = args, kwargs
+            return "positive", "latent", "unchanged model", "prompt"
+
+        SL.BFSShotH3Conditioning.condition = fake
+        try:
+            out = SL.BFSShotH3ConditioningSimple().condition(
+                "shot", "clip", "vae", SL.BFSShotH3ConditioningSimple.GUIDE_MODES[0], True, "match",
+                audio_vae="audio vae", with_audio=True)
+        finally:
+            SL.BFSShotH3Conditioning.condition = original
+
+        self.assertEqual(out, ("positive", "latent", "prompt"))
+        self.assertEqual(seen["args"][5], "none")
+        self.assertTrue(seen["kwargs"]["with_audio"])
+        self.assertEqual(seen["kwargs"]["inpaint"], SL.INPAINT_MODES[0])
 
 
 class TargetTest(unittest.TestCase):
