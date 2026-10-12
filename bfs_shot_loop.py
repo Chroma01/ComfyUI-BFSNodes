@@ -1459,10 +1459,27 @@ def fit_note(slot: str) -> str:
             "sentence, do not write '___', no full sentence.") if slot else ""
 
 
+_ANSWER_LABEL = re.compile(r"(?:\*\*|__|#+\s*)?\s*(?:final\s+|short\s+)?(?:answer|description|phrase|noun\s+phrase|output|result|response|caption)"
+                           r"\s*(?:\*\*|__)?\s*[:\-\u2013]\s*(?:\*\*|__)?\s*", re.I)
+
+
+def strip_answer_label(text: str) -> str:
+    """'**Answer:** elderly woman with ...' -> 'elderly woman with ...'. The VLM sometimes labels its reply (or reasons
+    first and then writes 'Answer: ...'): keep what follows the LAST label, without markdown marks around it."""
+    t = str(text or "").strip()
+    last = None
+    for m in _ANSWER_LABEL.finditer(t):
+        if m.start() == 0 or t[m.start() - 1] in " \n\t.*_#>":
+            last = m
+    if last is not None and t[last.end():].strip():
+        t = t[last.end():]
+    return t.strip().strip("*_`#").strip().strip('"\'').strip()
+
+
 def tidy_slot(text: str, slot: str, max_words: int = 25) -> str:
     """Only the words for the blank: cut an echo of the sentence around it (the VLM sometimes rewrites the whole
     sentence), drop a leading article when the prompt already has one before the blank, keep it short."""
-    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'')
+    t = strip_answer_label(" ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\''))
     if "___" in slot:
         head, tail = slot.split("___", 1)
         tail_key = " ".join(tail.split()[:2])                 # e.g. "shown in"
@@ -1492,7 +1509,8 @@ def tidy_slot(text: str, slot: str, max_words: int = 25) -> str:
 
 def describe_target(clip, crop: np.ndarray, max_tokens: int = 64, slot: str = "", temperature: float = 0.0, seed: int = 0) -> str:
     img = torch.from_numpy(crop.astype(np.float32) / 255.0)[None]
-    t = vlm_generate(clip, TARGET_Q + fit_note(slot), img, max_tokens, temperature, seed).strip().strip('"\'').split("\n")[0].strip().rstrip(".")
+    t = vlm_generate(clip, TARGET_Q + fit_note(slot), img, max_tokens, temperature, seed)
+    t = strip_answer_label(t).split("\n")[0].strip().strip('"\'').rstrip(".")
     if slot:
         t = tidy_slot(t, slot)
     elif t and not t.lower().startswith("the "):
@@ -1629,15 +1647,15 @@ def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -
 # traits that apply to it (a goblin is not described as "a person with greenish skin")
 _WHAT = ("First say what the subject is in a few words (e.g. 'A young woman', 'A goblin', 'A humanoid robot', 'A golden "
          "retriever', 'An anime girl'), then describe it with the traits that apply to that kind of subject: ")
+_DESCRIBE_ONLY = ("Treat all pictures as views of the same subject and use only clearly visible details. Return only "
+                  "the requested English description, with no heading, label, preamble, bullet list or Markdown.")
 DESCRIBE_PRESETS = {
     # default: a noun phrase that fits inside the prompt, "<Subject 1> is the {details} shown in <Picture 1>"
-    "short": ("Describe the subject of these reference pictures as ONE English noun phrase of at most 20 words that fits "
-              "the sentence '<Subject 1> is the ___ shown in <Picture 1>': what it is first (a person, a creature, a robot, "
-              "an animal or a cartoon character), then its most distinctive visible features and clothing with colours. "
-              "Examples: 'young East Asian woman with a high ponytail in a white chef's uniform', 'green goblin with long "
-              "pointed ears in a torn brown leather vest', 'white humanoid robot with a black face plate and blue LED "
-              "eyes', 'golden retriever with a red collar'. No article at the start, no pose, no action, no background. "
-              "Reply with the phrase only."),
+    "short": ("Describe the subject of these reference pictures for a video-generation prompt. Write one English noun "
+              "phrase of at most 20 words: first identify what the subject is (such as a young woman, goblin, humanoid "
+              "robot, dog or anime character), then give only its most distinctive visible features and clothing with "
+              "colours. The phrase must fit after '<Subject 1> is the' and before 'shown in <Picture 1>', so do not start "
+              "with an article. Never describe pose, action, expression, camera or background. " + _DESCRIBE_ONLY),
     "full body": ("Describe the subject of these reference pictures for a video-generation prompt: one paragraph of 3 to 5 "
                   "sentences in English. " + _WHAT + "for people and creatures the apparent gender and age, skin or fur "
                   "colour and texture, face, head shape, ears, horns or other distinctive features, hair, body build and "
@@ -1645,27 +1663,27 @@ DESCRIBE_PRESETS = {
                   "robots the design, materials, colours, head or face plate, panels, joints and lights; for animals the "
                   "breed or species, fur colour, length and markings, ears, tail, build and any collar or accessory. Only "
                   "what is visible. Describe only appearance: never the pose, gesture, action, expression, camera, framing "
-                  "or background. Concrete words only: no negations, no names, no opinions."),
+                  "or background. Concrete words only: no negations, no names, no opinions. " + _DESCRIBE_ONLY),
     "head / face": ("Describe the head and face of the subject of these reference pictures for a video-generation prompt: one "
                     "paragraph of 3 to 4 sentences in English. " + _WHAT + "skin, fur or surface (colour and texture), "
                     "head and face shape, eyes, eyebrows, nose or snout, mouth, jawline, ears, horns, facial hair, "
                     "wrinkles, marks, glasses or face plate, and the hair or fur: colour, length, texture, style. Only "
                     "what is visible. Describe only appearance: never the head angle, gaze, expression, action, camera or "
-                    "background. Concrete words only: no negations, no names, no opinions."),
-    "face attributes": ("Describe this face in a short comma-separated attribute list, in exactly this style: \"Male, oval "
-                        "face shape, average-sized head with strong jawline, light brown skin, dark eyes, black tousled "
-                        "hair, silver hoop earring.\" For anything that is not a person, start with what it is instead of "
-                        "the gender (e.g. \"Goblin, long narrow face, ...\" or \"Robot, ...\" or \"Dog, ...\"). Cover, "
-                        "in order: gender or kind, head/face shape and proportions (e.g. oval/round/square/heart-shaped, "
+                    "background. Concrete words only: no negations, no names, no opinions. " + _DESCRIBE_ONLY),
+    "face attributes": ("Describe the face and head in these reference pictures for a video-generation prompt. Write one "
+                        "short comma-separated English attribute list. First identify the apparent gender and age group "
+                        "for a person, or identify the kind of creature, robot, animal or cartoon character. Then cover, "
+                        "in order: head and face shape and proportions (such as oval, round, square, heart-shaped, "
                         "narrow/wide, jaw structure, whether the head reads as small/average/large relative to the "
                         "shoulders), skin, fur or surface colour, eye color, hair or fur color and style, and any distinctive "
                         "features (ears, horns, facial hair, jewelry, makeup, glasses, etc.). Physical traits only, never the "
-                        "pose, expression or background. Only output the description, nothing else."),
+                        "pose, expression or background. " + _DESCRIBE_ONLY),
     "outfit": ("Describe only what the subject of these reference pictures wears, piece by piece, for a video-generation "
                "prompt: garments, armour or accessories, colours, materials, fit and shoes, in 2 or 3 sentences in "
                "English. Start with what the subject is in two or three words (e.g. 'The goblin wears...'). Never the "
-               "pose, action or background. No negations, no names."),
+               "pose, action or background. No negations, no names. " + _DESCRIBE_ONLY),
 }
+_DESCRIBE_WORD_LIMITS = {"short": 20, "full body": 150, "head / face": 110, "face attributes": 65, "outfit": 90}
 _DESCRIBE_CACHE: dict[tuple, str] = {}
 
 
@@ -1677,16 +1695,28 @@ def _image_key(img: torch.Tensor | None) -> str:
 
 
 def tidy_details(text: str, cfg: dict) -> str:
-    """The 'short' preset goes inside a sentence ('<Subject 1> is the {details} shown in ...'): one line, no quotes,
-    no leading article, no final full stop."""
-    if (cfg.get("describe_preset") or "short") != "short":
-        return text
-    t = " ".join(str(text or "").strip().split("\n")[0].split()).strip().strip('"\'').strip()
-    for art in ("the ", "a ", "an "):
-        if t.lower().startswith(art):
-            t = t[len(art):]
-            break
-    return " ".join(t.rstrip(" .").strip('"\'').rstrip(" .").split()[:30])
+    """Normalise every description preset. In particular, remove labels the VLM adds despite the prompt and keep
+    automatic descriptions inside the size promised by the selected preset. The short phrase also has to fit inside
+    '<Subject 1> is the {details} shown in ...'."""
+    preset = cfg.get("describe_preset") or "short"
+    t = str(text or "").replace("```", " ").strip()
+    t = strip_answer_label(t)
+    if preset == "short":
+        t = t.splitlines()[0] if t.splitlines() else ""
+    t = " ".join(t.split()).strip().strip('"\'').strip()
+    if preset == "short":
+        for art in ("the ", "a ", "an "):
+            if t.lower().startswith(art):
+                t = t[len(art):]
+                break
+        t = t.rstrip(" .").strip('"\'').rstrip(" .")
+    limit = _DESCRIBE_WORD_LIMITS.get(preset, 180)
+    words = t.split()
+    if len(words) > limit:
+        t = " ".join(words[:limit]).rstrip(" ,;:")
+        if preset != "short":
+            t = t.rstrip(".") + "."
+    return t
 
 
 def describe_instruction(cfg: dict, slot: str = "") -> str:

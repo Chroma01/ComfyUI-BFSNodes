@@ -339,6 +339,10 @@ to upload in most nodes. The planner's ⬆ Upload (source video, mask videos, pi
 how ComfyUI is started (a dropped piece is sent again). For other nodes, start ComfyUI with a higher limit, e.g.
 `--max-upload-size 4096`, or copy the file into `ComfyUI/input` and pick it from the list.
 
+A newly selected or uploaded source starts as **one shot covering at most its first 15 seconds**. This is only the
+initial plan: widen the range or choose *Camera cuts* / *Fixed length* and press *Auto split* when you want multiple
+shots. Existing saved plans keep their own range and split mode.
+
 ## Continuity between shots
 
 Each shot (after the first) can continue from the **previous shot's generated result**: in the shot editor,
@@ -488,4 +492,3 @@ or *Crop + mask*.
 | Only the face or the hair is described | the click was on the head: click the body |
 | The other person is described | add an exclude point (right-click) on the other person, **👁 Segment**, save, describe again |
 | The swap still hits the wrong person | make the description more specific (position: "on the left", clothing colours) |
-

@@ -735,7 +735,27 @@ class DescribeShortTest(unittest.TestCase):
         self.assertEqual(SL.tidy_details('"The green goblin in a torn leather vest."\nextra', {"describe_preset": "short"}),
                          "green goblin in a torn leather vest")
         self.assertEqual(SL.tidy_details("A young woman.", {"describe_preset": "full body"}), "A young woman.")
-        self.assertIn("ONE English noun phrase", SL.describe_instruction({}))
+        self.assertIn("one English noun phrase", SL.describe_instruction({}))
+
+    def test_every_preset_removes_vlm_answer_labels(self):
+        for preset in SL.DESCRIBE_PRESETS:
+            with self.subTest(preset=preset):
+                self.assertEqual(SL.tidy_details("**Answer:** elderly woman with large glasses", {"describe_preset": preset}),
+                                 "elderly woman with large glasses")
+
+    def test_short_mode_honours_its_twenty_word_contract(self):
+        text = "Answer: The " + " ".join(f"word{i}" for i in range(30))
+        out = SL.tidy_details(text, {"describe_preset": "short"})
+        self.assertEqual(len(out.split()), 20)
+        self.assertFalse(out.lower().startswith(("answer", "the ")))
+
+    def test_long_modes_are_bounded_but_not_collapsed_to_short(self):
+        text = " ".join(f"word{i}" for i in range(170))
+        full = SL.tidy_details(text, {"describe_preset": "full body"})
+        face = SL.tidy_details(text, {"describe_preset": "head / face"})
+        self.assertEqual(len(full.split()), 150)
+        self.assertEqual(len(face.split()), 110)
+        self.assertTrue(full.endswith("."))
 
 
 class FitPromptTest(unittest.TestCase):
@@ -766,6 +786,16 @@ class FitPromptTest(unittest.TestCase):
         self.assertEqual(SL.tidy_slot("sleek silver humanoid robot with black joints shown in <Picture 1>", d),
                          "sleek silver humanoid robot with black joints")
         self.assertEqual(SL.tidy_slot("<Subject 1> is the green goblin in a vest", d), "green goblin in a vest")
+
+    def test_target_label_is_removed_even_without_a_prompt_slot(self):
+        old = SL.vlm_generate
+        SL.vlm_generate = lambda *args, **kwargs: "Answer: elderly woman with large tortoiseshell glasses"
+        try:
+            crop = __import__("numpy").zeros((8, 8, 3), dtype="uint8")
+            self.assertEqual(SL.describe_target(object(), crop),
+                             "the elderly woman with large tortoiseshell glasses")
+        finally:
+            SL.vlm_generate = old
 
 
 class RangeTest(unittest.TestCase):

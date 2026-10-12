@@ -454,7 +454,19 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   }
 
   // ---- editing
-  const setVideo = v => { plan.video = v; plan.bounds = []; plan.segs = []; save(); analyze(); if (v) tab.value = "shots"; };
+  const setVideo = v => {
+    plan.video = v; plan.bounds = []; plan.segs = [];
+    if (v) {
+      // A new source starts as one manageable clip. The user can widen the range or ask for an automatic split later;
+      // do not surprise them with a wall of detected shots on first load.
+      plan.mode = "single";
+      plan.start_f = 0;
+      plan.end_f = Math.round(15 * plan.fps);
+      plan.start_s = 0; plan.end_s = 0; plan.max_total_s = 0;
+      tab.value = "video";
+    }
+    save(); analyze();
+  };
   const splitAt = f => {
     const { lo, hi } = range.value; f = Math.round(f);
     if (f <= lo || f >= hi || plan.bounds.includes(f)) return;
