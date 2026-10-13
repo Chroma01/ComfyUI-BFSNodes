@@ -134,9 +134,9 @@ function editor(c, cur) {
     h("div", { class: "row", style: "margin-top:4px;align-items:center;gap:8px" }, [
       check(!!cur.color_guide, v => c.setMeta(i, "color_guide", v), "🎨 Colored Mark",
         "Color the selected region in the source video as a translucent visual marker. It does not create or enable an inpainting mask."),
-      cur.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Ref 1 color"),
-        h("select", { value: cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", onChange: e => c.setMeta(i, "color_guide_color", e.target.value) },
-          GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label)))]) : null,
+      h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Region color · Ref 1"),
+        h("select", { value: cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => c.setMeta(i, "color_guide_color", e.target.value) },
+          GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label)))]),
     ]),
     cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 }, [
       h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 ? "Mark a second region · Ref 2" : "+ Mark a second region (optional)"),
