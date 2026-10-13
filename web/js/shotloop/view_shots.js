@@ -135,7 +135,10 @@ function editor(c, cur) {
       check(!!cur.color_guide, v => c.setMeta(i, "color_guide", v), "🎨 Colored Mark",
         "Color the selected region in the source video as a translucent visual marker. It does not create or enable an inpainting mask."),
       h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Region color · Ref 1"),
-        h("select", { value: cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => c.setMeta(i, "color_guide_color", e.target.value) },
+        h("select", { value: cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => {
+          c.setMeta(i, "color_guide_color", e.target.value);
+          if (maskPrev.value[segKey(cur)]) c.previewMask(i);
+        } },
           GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label)))]),
     ]),
     cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 }, [

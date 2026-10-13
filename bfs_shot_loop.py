@@ -1390,19 +1390,25 @@ def uncrop(result: torch.Tensor, shot: dict, edge_hardness: float = 0.0, match_c
     return out
 
 
-def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict, count: int = 6) -> dict:
-    """A few frames of the shot with the mask in red and the crop box, as data URLs."""
+def mask_preview(path: str, analysis: dict, start: int, length: int, spec: dict, count: int = 6,
+                 color: str = "#ff283c", opacity: float = 0.55) -> dict:
+    """A few frames of the shot with the selected region tinted and the crop box, as data URLs."""
     import cv2
     r = shot_mask(path, analysis, start, length, spec)
     masks, (w, h), box = r["masks"], r["size"], r["box"]
     src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
     picks = sorted(set(int(round(i)) for i in np.linspace(0, length - 1, min(count, length))))
     frames = _read_frames(path, src[np.clip(np.array(picks) + start, 0, analysis["n"] - 1)], (w, h))
+    try:
+        tint = np.array([int(color[i:i + 2], 16) for i in (1, 3, 5)], dtype=np.float32)
+        alpha = min(0.8, max(0.05, float(opacity)))
+    except (TypeError, ValueError, IndexError):
+        tint, alpha = np.array([255, 40, 60], dtype=np.float32), 0.55
     out = []
     for i, fr in zip(picks, frames):
         img = fr.copy()
         m = masks[min(i, masks.shape[0] - 1)].numpy().astype(bool)
-        img[m] = (img[m] * 0.45 + np.array([255, 40, 60]) * 0.55).astype(np.uint8)
+        img[m] = (img[m].astype(np.float32) * (1 - alpha) + tint * alpha).astype(np.uint8)
         if box:
             x0, y0, x1, y1 = box_px(box, w, h)
             cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), (255, 210, 90), 2)
@@ -4023,7 +4029,10 @@ try:
             import asyncio   # SAM 3 takes seconds: keep the server responsive
             _outside_prompt()
             out = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: mask_preview(path, a, seg["start"], seg["end"] - seg["start"], spec, int(body.get("count", 6))))
+                None, lambda: mask_preview(path, a, seg["start"], seg["end"] - seg["start"], spec,
+                                           int(body.get("count", 6)),
+                                           seg.get("color_guide_color") if seg.get("color_guide") else "#ff283c",
+                                           seg.get("color_guide_opacity") if seg.get("color_guide") else 0.55))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response(out)

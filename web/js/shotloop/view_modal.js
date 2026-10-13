@@ -23,7 +23,10 @@ export function pointsModal(c) {
     h("div", { class: "mbox" }, [
       h("div", { class: "row", style: "margin-bottom:6px" }, [h("span", { class: "sect" }, `Shot #${modal.idx + 1} · points`),
         ms.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Colored Mark"),
-          h("select", { value: ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => setMeta(modal.idx, "color_guide_color", e.target.value) },
+          h("select", { value: ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => {
+            setMeta(modal.idx, "color_guide_color", e.target.value);
+            if (modal.prev) c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text }, true);
+          } },
             [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"], ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]].map(([v, n]) => h("option", { value: v }, n)))]) : null,
         hint("click = keep (green) · right-click or shift+click = exclude (red) · click a point to remove it")]),
       h("div", { class: "mimg", onContextmenu: e => e.preventDefault(), onPointerdown: e => {
