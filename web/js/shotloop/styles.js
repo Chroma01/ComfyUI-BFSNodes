@@ -141,6 +141,8 @@ const CSS = `
 .bsl .refslot.sm{width:56px;height:56px;font-size:10px}
 .bsl .refslot.via{border-style:solid;border-color:#3b5b3b}
 .bsl .rslot{display:flex;flex-direction:column;gap:3px;align-items:center}
+.bsl .guidecolor{display:flex;flex-direction:column;align-items:center;gap:2px;max-width:112px}
+.bsl .guidecolor select{width:100%;font-size:10px;padding:2px 4px}
 .bsl .rbtns{display:flex;gap:3px;min-height:20px}
 .bsl .rbtns button{padding:1px 6px;font-size:10px}
 .bsl .recent{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;align-items:center}

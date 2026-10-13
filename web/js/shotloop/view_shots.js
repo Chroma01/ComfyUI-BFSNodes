@@ -88,7 +88,8 @@ function editor(c, cur) {
   const i = sel.value, S = segs.value, k = segKey(cur), mp = maskPrev.value[k], g = vlmSug.value[k];
   const issues = c.checksFor(i);
   const guideColor1 = cur.color_guide_color || (cur.color_guide_person != null
-    ? (c.castOf(cur.color_guide_person).guide_color || "#00ff00") : "#00ff00");
+    ? (c.castOf(cur.color_guide_person).guide_color || plan.global_color_guide_ref1 || "#00ff00")
+    : (plan.global_color_guide_ref1 || "#00ff00"));
   const viaRef = f => cur[f] ? "" : (c.castRef(cur, f) || plan["global_" + f] || "");
 
   const head = h("div", { class: "edhd" }, [
@@ -177,7 +178,8 @@ function editor(c, cur) {
       cur.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [
         h("span", { class: "hint" }, "Ref 1 color"),
         h("select", { value: cur.color_guide_color ||
-          (cur.color_guide_person != null ? (c.castOf(cur.color_guide_person).guide_color || "#00ff00") : "#00ff00"),
+          (cur.color_guide_person != null ? (c.castOf(cur.color_guide_person).guide_color || plan.global_color_guide_ref1 || "#00ff00")
+            : (plan.global_color_guide_ref1 || "#00ff00")),
           onChange: e => c.setMeta(i, "color_guide_color", e.target.value) },
           GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label))),
       ]) : null,
@@ -192,7 +194,8 @@ function editor(c, cur) {
         h("button", { disabled: !!busy.value || !cur.color_guide_text2,
           onClick: () => c.previewMask(i, { text: cur.color_guide_text2, max_objects: 1 }) }, "👁 Preview"),
         h("select", { value: cur.color_guide_color2 || (cur.color_guide_person2 != null
-          ? (c.castOf(cur.color_guide_person2).guide_color || "#9b30ff") : "#9b30ff"),
+          ? (c.castOf(cur.color_guide_person2).guide_color || plan.global_color_guide_ref2 || "#9b30ff")
+          : (plan.global_color_guide_ref2 || "#9b30ff")),
           title: "Choose the marker color for the person matched to ref 2",
           onChange: e => c.setMeta(i, "color_guide_color2", e.target.value) },
           GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === guideColor1 }, label))),

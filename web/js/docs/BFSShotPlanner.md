@@ -197,7 +197,8 @@ person. With `guide_mode = aligned guide` the model also sees the whole original
 the motion either way. (Not applied with the duet panel.)
 
 **🎨 Color Guide** is a separate optional visual cue. Turn it on for a shot with a mask and choose the marker color
-for ref 1. The selected region is tinted in the source guide, while the image detail,
+for ref 1. The default colors for the global references are set below each image in **Prompts & refs**; a shot may
+override them. The selected region is tinted in the source guide, while the image detail,
 movement and expression remain visible underneath. This does not turn on `Mask only` or create an H3 generation
 mask. The prompt must explain that the tint is temporary and that the matching reference replaces the tinted person.
 

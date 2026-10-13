@@ -248,7 +248,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   }
   const setCast = (id, k, v) => {
     plan.cast = { ...plan.cast, [String(id)]: { ...castOf(id), [k]: v } };
-    if (k !== "ignore") remember(v);
+    if (k === "ref" || k === "ref2") remember(v);
     save();
   };
   async function describeTarget(i) {
@@ -583,14 +583,18 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   // ---- references
   // the last 10 references picked, remembered across workflows (per browser)
   const RECENT_KEY = "bfs.shotloop.recentRefs";
-  const recent = ref(store.get(RECENT_KEY, []));
+  const isColorValue = name => typeof name === "string" && /^#[0-9a-f]{6}$/i.test(name);
+  const savedRecent = store.get(RECENT_KEY, []);
+  const recent = ref((Array.isArray(savedRecent) ? savedRecent : []).filter(name => typeof name === "string" && !isColorValue(name)));
+  if (recent.value.length !== (Array.isArray(savedRecent) ? savedRecent.length : 0)) store.set(RECENT_KEY, recent.value);
   const remember = name => {
-    if (!name) return;
+    if (!name || typeof name !== "string" || isColorValue(name)) return;
     recent.value = [name, ...recent.value.filter(x => x !== name)].slice(0, 10);
     store.set(RECENT_KEY, recent.value);
   };
   // target: shot index or "global"; field: ref | ref2 (global_ref | global_ref2 for "global")
   const setRef = (target, field, name) => {
+    if (isColorValue(name)) return; // colors belong to Color Guide settings, never to image references
     if (target === "global") plan[field] = name; else meta(target)[field] = name;
     remember(name); save();
   };

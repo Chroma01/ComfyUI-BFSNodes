@@ -1,12 +1,23 @@
 // 📝 Prompts & refs tab: the global reference / prompt, the VLM (shot suggestions) and the reference descriptions ({details}).
 import { h, fld, check, section, pill, hint, select } from "./common.js";
 
+const GUIDE_COLORS = [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
+  ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
+
 function globalSection(c) {
   const { plan } = c;
   const slot = (name, label, field) => h("div", { class: "rslot" }, [
     h("div", { class: "refslot", title: name ? name + " (click to replace)" : "click to upload", onClick: () => c.uploadRef("global", field) },
       name ? [h("img", { src: c.viewUrl(name) })] : [label]),
     h("div", { class: "rbtns" }, [name ? h("button", { title: "remove", onClick: () => c.setRef("global", field, "") }, "✕") : null]),
+    h("label", { class: "guidecolor" }, [
+      h("span", { class: "hint" }, field === "global_ref" ? "Guide color · Ref 1" : "Guide color · Ref 2"),
+      h("select", { value: field === "global_ref" ? (plan.global_color_guide_ref1 || "#00ff00") : (plan.global_color_guide_ref2 || "#9b30ff"),
+        disabled: !name,
+        title: "Default Color Guide marker when this global reference is used",
+        onChange: e => c.setPlan(field === "global_ref" ? "global_color_guide_ref1" : "global_color_guide_ref2", e.target.value) },
+        GUIDE_COLORS.map(([v, text]) => h("option", { value: v }, text))),
+    ]),
   ]);
   return section("Global reference & prompt", [
     h("div", { class: "row", style: "align-items:flex-start;gap:10px" }, [
@@ -20,6 +31,7 @@ function globalSection(c) {
       "Used by shots without their own. Connected ref_image / ref_image_2 / prompt inputs on the node override these. Placeholders: ",
       h("b", "{target}"), " who is replaced (per shot) · ", h("b", "{details}"), " description of the shot's references · ",
       h("b", "{shot}"), " the VLM's description of the shot · ", h("b", "{setting}"), " the setting picture (H3 Conditioning)."]),
+    h("div", { class: "hint", style: "margin-top:4px" }, "These colors are defaults for the global references. Turn on Color Guide on a shot to apply them; shot-level colors can override them."),
   ], { sub: "defaults for every shot" });
 }
 

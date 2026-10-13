@@ -429,7 +429,8 @@ def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int
 DEFAULT_PLAN = {
     "video": "", "fps": 24.0, "grid": DEFAULT_GRID, "mode": "shots", "max_s": 4.5, "min_s": 1.0,
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "start_s": 0.0, "end_s": 0.0, "bounds": [], "segs": [],
-    "global_ref": "", "global_ref2": "", "global_prompt": "", "megapixels": 0.5, "multiple": 32,
+    "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
+    "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
@@ -502,6 +503,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         if guide_pid2 is not None:
             s["color_guide_color2"] = str(m.get("color_guide_color2") or
                                             (plan.get("cast") or {}).get(str(guide_pid2), {}).get("guide_color") or "")
+        s["color_guide_color"] = s["color_guide_color"] or str(plan.get("global_color_guide_ref1") or "#00ff00")
+        s["color_guide_color2"] = s["color_guide_color2"] or str(plan.get("global_color_guide_ref2") or "#9b30ff")
         if s.get("color_guide"):
             cast_entries = plan.get("cast") or {}
             first_person = cast_entries.get(str(s.get("color_guide_person"))) or {}

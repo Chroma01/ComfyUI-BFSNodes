@@ -129,6 +129,8 @@ const TEXT = {
   "off": ["desligado", "desactivado", "关闭"], "on": ["ligado", "activado", "开启"], "run": ["executar", "ejecutar", "运行"], "skip": ["ignorar", "omitir", "跳过"], "filters decide": ["filtros decidem", "deciden los filtros", "由筛选条件决定"], "always run": ["sempre executar", "ejecutar siempre", "始终运行"], "always skip": ["sempre ignorar", "omitir siempre", "始终跳过"], "⏸ Disable": ["⏸ Desativar", "⏸ Desactivar", "⏸ 禁用"], "▶ Enable": ["▶ Ativar", "▶ Activar", "▶ 启用"], "✂ Split": ["✂ Dividir", "✂ Dividir", "✂ 拆分"], "⇥ Merge": ["⇥ Unir", "⇥ Unir", "⇥ 合并"],
   "Advanced": ["Avançado", "Avanzado", "高级"], "English": ["Inglês", "Inglés", "英语"], "Português": ["Português", "Portugués", "葡萄牙语"], "Español": ["Espanhol", "Español", "西班牙语"], "中文": ["Chinês", "Chino", "中文"],
   "Color Guide": ["Guia de cores", "Guía de color", "颜色引导"], "Video": ["Vídeo", "Vídeo", "视频"], "Shots": ["Planos", "Planos", "镜头"], "Prompts": ["Prompts", "Prompts", "提示词"],
+  "Guide color · Ref 1": ["Cor guia · Ref. 1", "Color guía · Ref. 1", "引导颜色 · 参考图 1"], "Guide color · Ref 2": ["Cor guia · Ref. 2", "Color guía · Ref. 2", "引导颜色 · 参考图 2"],
+  "These colors are defaults for the global references. Turn on Color Guide on a shot to apply them; shot-level colors can override them.": ["Estas cores são os padrões das referências globais. Ative o Guia de cores no plano para aplicá-las; cada plano pode substituí-las.", "Estos colores son los valores predeterminados de las referencias globales. Activa la Guía de color en un plano para aplicarlos; cada plano puede cambiarlos.", "这些颜色是全局参考图的默认值。启用镜头的颜色引导即可应用；镜头也可以单独覆盖。"],
   "Audio": ["Áudio", "Audio", "音频"], "use the video's audio": ["usar o áudio do vídeo", "usar el audio del vídeo", "使用视频音频"], "silent track": ["faixa silenciosa", "pista silenciosa", "静音音轨"],
   "auto": ["automático", "automático", "自动"], "fixed": ["fixo", "fijo", "固定"], "single": ["único", "único", "单个"], "adaptive": ["adaptativo", "adaptativo", "自适应"], "content": ["conteúdo", "contenido", "内容"], "builtin": ["integrado", "integrado", "内置"],
   "PySceneDetect adaptive": ["PySceneDetect adaptativo", "PySceneDetect adaptativo", "PySceneDetect 自适应"], "PySceneDetect content": ["PySceneDetect por conteúdo", "PySceneDetect por contenido", "PySceneDetect 内容检测"], "Built-in": ["Integrado", "Integrado", "内置"],
@@ -217,7 +219,7 @@ export function h(type, props, children) {
 export const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 export const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
-  max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", mask_video: "",
+  max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", global_color_guide_ref1: "#00ff00", global_color_guide_ref2: "#9b30ff", mask_video: "",
   megapixels: 0.5, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
   skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_assign: true, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
