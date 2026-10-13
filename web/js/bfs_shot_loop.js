@@ -112,6 +112,9 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "history", chainFrame: m.chain_frame || "first", chainHistory: m.chain_history || 17,
+                 color_guide: !!m.color_guide, color_guide_color: m.color_guide_color || "",
+                 color_guide_opacity: m.color_guide_opacity ?? 0.35,
+                 color_guide_text2: m.color_guide_text2 || "", color_guide_color2: m.color_guide_color2 || "",
                  crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "",
                  extMask: !!plan.mask_video || !!(plan.track?.points?.length), trackMask: !!(plan.track?.points?.length) });
     }
