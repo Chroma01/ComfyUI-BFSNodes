@@ -11,10 +11,10 @@ function globalSection(c) {
       name ? [h("img", { src: c.viewUrl(name) })] : [label]),
     h("div", { class: "rbtns" }, [name ? h("button", { title: "remove", onClick: () => c.setRef("global", field, "") }, "✕") : null]),
     h("label", { class: "guidecolor" }, [
-      h("span", { class: "hint" }, field === "global_ref" ? "Guide color · Ref 1" : "Guide color · Ref 2"),
+      h("span", { class: "hint" }, field === "global_ref" ? "Marker color · Ref 1" : "Marker color · Ref 2"),
       h("select", { value: field === "global_ref" ? (plan.global_color_guide_ref1 || "#00ff00") : (plan.global_color_guide_ref2 || "#9b30ff"),
         disabled: !name,
-        title: "Default Color Guide marker when this global reference is used",
+        title: "Default Colored Mark for this global reference",
         onChange: e => c.setPlan(field === "global_ref" ? "global_color_guide_ref1" : "global_color_guide_ref2", e.target.value) },
         GUIDE_COLORS.map(([v, text]) => h("option", { value: v }, text))),
     ]),
@@ -31,7 +31,7 @@ function globalSection(c) {
       "Used by shots without their own. Connected ref_image / ref_image_2 / prompt inputs on the node override these. Placeholders: ",
       h("b", "{target}"), " who is replaced (per shot) · ", h("b", "{details}"), " description of the shot's references · ",
       h("b", "{shot}"), " the VLM's description of the shot · ", h("b", "{setting}"), " the setting picture (H3 Conditioning)."]),
-    h("div", { class: "hint", style: "margin-top:4px" }, "These colors are defaults for the global references. Turn on Color Guide on a shot to apply them; shot-level colors can override them."),
+    h("div", { class: "hint", style: "margin-top:4px" }, "These are the default marker colors for the global references. Turn on Colored Mark on a shot to apply them; shot-level colors can override them."),
   ], { sub: "defaults for every shot" });
 }
 
@@ -88,7 +88,7 @@ function vlmSection(c) {
             placeholder: "no description yet: Describe refs, write your own, or leave it to the VLM at run time",
             onChange: e => c.setDetail(x.key, e.target.value) }),
         ]),
-      ]))) : hint("Add a reference (global, per shot or per person) first."),
+      ]))) : hint("Add a reference (global, per shot or per shot) first."),
     ], { sub: "write {details} in any prompt: each shot gets the description of its own references" }),
   ];
 }

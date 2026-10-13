@@ -15,13 +15,16 @@ export function busyBar(c, msg) {
 }
 
 export function pointsModal(c) {
-  const { modal, segs, plan, api } = c;
+  const { modal, segs, plan, api, setMeta } = c;
   const ms = segs.value[modal.idx];
   if (!modal.open || !ms) return null;
   return h(Teleport, { to: "body" }, h("div", { class: "bsl", style: "background:none;padding:0" }, h("div", { class: "mmodal",
     onKeydown: e => e.stopPropagation(), onPointerdown: e => { if (e.target === e.currentTarget) modal.open = false; } }, [
     h("div", { class: "mbox" }, [
       h("div", { class: "row", style: "margin-bottom:6px" }, [h("span", { class: "sect" }, `Shot #${modal.idx + 1} · points`),
+        ms.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Colored Mark"),
+          h("select", { value: ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => setMeta(modal.idx, "color_guide_color", e.target.value) },
+            [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"], ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]].map(([v, n]) => h("option", { value: v }, n)))]) : null,
         hint("click = keep (green) · right-click or shift+click = exclude (red) · click a point to remove it")]),
       h("div", { class: "mimg", onContextmenu: e => e.preventDefault(), onPointerdown: e => {
         const box = e.currentTarget.getBoundingClientRect();
@@ -64,9 +67,9 @@ export function pointsModal(c) {
 const TOUR_STEPS = [
   ["video", "Video", "Choose a video, set the frame range, split at camera cuts, then set the generation size."],
   ["shots", "Shots", "Review each shot, assign its references and prompt, and choose how the result is applied."],
-  ["people", "People", "Link detected people to references. Set masks here or per shot; ArcFace links are a guide and need your review."],
+  ["people", "People", "Track detected face identities to filter or split shots. Set masks here or per shot."],
   ["prompts", "Prompts", "Set shared references, prompts and optional VLM assistance. Written prompts are kept exactly as authored."],
-  ["shots", "Color Guide", "Color Guide adds a translucent marker to a selected person. Ref 1 and Ref 2 must use different colors in the same shot."],
+  ["shots", "Colored Mark", "Colored Mark adds a translucent color overlay to a selected region in the source video. It does not enable inpainting. Choose the color before marking the region with points or a description."],
   ["run", "Run", "Check warnings, choose auto or queue loop, and set filters or quick-run limits."],
 ];
 

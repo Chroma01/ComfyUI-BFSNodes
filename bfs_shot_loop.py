@@ -432,7 +432,7 @@ DEFAULT_PLAN = {
     "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
     "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
-    "cast": {}, "cast_assign": True, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
+    "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
 
 
@@ -483,10 +483,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["paste"] = bool(m.get("paste")) and not s["crop"] and not s["inpaint"]
         s["paste_text"] = str(m.get("paste_text") or "")
         s["color_guide"] = bool(m.get("color_guide"))
-        s["color_guide_person"] = m.get("color_guide_person")
         s["color_guide_color"] = str(m.get("color_guide_color") or "")
         s["color_guide_text2"] = str(m.get("color_guide_text2") or "")
-        s["color_guide_person2"] = m.get("color_guide_person2")
         s["color_guide_color2"] = str(m.get("color_guide_color2") or "")
         s["color_guide_opacity"] = min(0.8, max(0.05, float(m.get("color_guide_opacity") or 0.35)))
         s["strength"] = min(1.0, max(0.05, float(m.get("strength") or 1.0)))
@@ -495,34 +493,13 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
         s["people"], s["main"] = [], -1
-        guide_pid = s.get("color_guide_person")
-        if guide_pid is not None:
-            s["color_guide_color"] = str(m.get("color_guide_color") or
-                                           (plan.get("cast") or {}).get(str(guide_pid), {}).get("guide_color") or "")
-        guide_pid2 = s.get("color_guide_person2")
-        if guide_pid2 is not None:
-            s["color_guide_color2"] = str(m.get("color_guide_color2") or
-                                            (plan.get("cast") or {}).get(str(guide_pid2), {}).get("guide_color") or "")
         s["color_guide_color"] = s["color_guide_color"] or str(plan.get("global_color_guide_ref1") or "#00ff00")
         s["color_guide_color2"] = s["color_guide_color2"] or str(plan.get("global_color_guide_ref2") or "#9b30ff")
-        if s.get("color_guide"):
-            cast_entries = plan.get("cast") or {}
-            first_person = cast_entries.get(str(s.get("color_guide_person"))) or {}
-            second_person = cast_entries.get(str(s.get("color_guide_person2"))) or {}
-            if not m.get("ref") and first_person.get("ref"):
-                s["ref"] = first_person["ref"]
-            if not m.get("ref2") and second_person.get("ref"):
-                s["ref2"] = second_person["ref"]
         if cast is not None:
             sp = shot_people(cast, s["start"], s["end"])
             s["people"], s["main"] = sp["people"], sp["main"]
-            entry = (plan.get("cast") or {}).get(str(sp["main"])) or {}
-            if plan.get("cast_assign", True) and not entry.get("ignore"):
-                s["ref"] = s["ref"] or entry.get("ref", "")
-                s["ref2"] = s["ref2"] or entry.get("ref2", "")
-            linked = [p for p in sp["people"] if (plan.get("cast") or {}).get(str(p), {}).get("ref")
-                      and not (plan.get("cast") or {}).get(str(p), {}).get("ignore")]
-            s["cast_skip"] = bool(plan.get("cast_only")) and not linked
+            included = [p for p in sp["people"] if not (plan.get("cast") or {}).get(str(p), {}).get("ignore")]
+            s["cast_skip"] = bool(plan.get("cast_only")) and not included
     return segs
 
 
@@ -646,7 +623,7 @@ def apply_filters(plan: dict, analysis: dict, path: str, segs: list[dict]) -> li
         s["stats"] = shot_stats(path, analysis, s, int(f.get("samples") or 6)) if need else None
         s["skip_reason"] = skip_reason(s["stats"], s["end"] - s["start"], f) if need else ""
         if not s["skip_reason"] and s.get("cast_skip"):
-            s["skip_reason"] = "no linked person"
+            s["skip_reason"] = "no detected person"
         s["run"] = s["enabled"] and (force == "run" or (force != "skip" and not s["skip_reason"]))
     return segs
 
@@ -2416,7 +2393,7 @@ class BFSShotPlanner:
             _EXT_MASK[path] = mask.detach().cpu()
         else:
             _EXT_MASK.pop(path, None)
-        if p.get("cast") or p.get("cast_split"):
+        if p.get("cast") or p.get("cast_split") or p.get("cast_only"):
             analyze_cast(path, a)   # warms the cache so the plan uses the same people as the panel
         all_segs = apply_filters(p, a, path, resolve_plan(p, a, path))
         segs = [s for s in all_segs if s["run"]]
@@ -2900,7 +2877,7 @@ def color_guide(frames: torch.Tensor, mask: torch.Tensor, color: str = "#00ff00"
     try:
         rgb = torch.tensor([int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)], dtype=torch.float32)
     except (TypeError, ValueError, IndexError):
-        raise ValueError(f"Color Guide: invalid color {color!r}; expected a hex color such as #00ff00") from None
+        raise ValueError(f"Colored Mark: invalid color {color!r}; expected a hex color such as #00ff00") from None
     if mask.ndim == 2:
         mask = mask[None]
     m = torch.nn.functional.interpolate(mask[:, None].float(), size=frames.shape[1:3], mode="nearest")[:, 0]
@@ -3066,7 +3043,7 @@ class BFSShotH3Conditioning:
                     "planner as it is. A task writes the prompt of every shot in the duet format instead: with a VLM "
                     "connected it looks at the shot and its references and writes it; without one, a template for the "
                     "task. Needs duet on (canvas or shifted RoPE). See the written text on the prompt output. For two "
-                    "Color Guide people with separate references, use 'planner prompt': the automatic character-swap "
+                    "Colored Mark people with separate references, use 'planner prompt': the automatic character-swap "
                     "template assumes the pictures show one identity."}),
                 "instruction": ("STRING", {"default": "", "multiline": True, "tooltip":
                     "What changes, in seen words, for the task: 'a 1990s anime cel style', 'a sunny beach at sunset', "
@@ -3144,13 +3121,13 @@ class BFSShotH3Conditioning:
             refs[f"ref_image_{len(refs)}"] = shot["ref2"]
         if shot.get("color_guide") and shot.get("color_guide_text2"):
             if not use_ref_2 or shot.get("ref2") is None:
-                raise ValueError("Color Guide's second person is marked, but no second reference is being passed. Set the shot's ref 2 and enable use_ref_2.")
+                raise ValueError("Colored Mark's second person is marked, but no second reference is being passed. Set the shot's ref 2 and enable use_ref_2.")
             if str(shot.get("color_guide_color", "#00ff00")).lower() == str(shot.get("color_guide_color2", "#9b30ff")).lower():
-                raise ValueError("Color Guide needs a different color for each reference in the same shot. Change the color assigned to ref 2 or its cast identity.")
+                raise ValueError("Colored Mark needs a different color for each reference in the same shot. Change the color assigned to ref 2 or the global reference.")
             if task != "planner prompt":
-                raise ValueError("The automatic duet prompt templates treat multiple pictures as views of one character. For two Color Guide people, use task = 'planner prompt' and the color-mapping template in the Shot Planner guide.")
+                raise ValueError("The automatic duet prompt templates treat multiple pictures as views of one character. For two Colored Mark people, use task = 'planner prompt' and the color-mapping template in the Shot Planner guide.")
         if shot.get("color_guide") and shot.get("ref") is None:
-            raise ValueError("Color Guide needs ref 1 for the selected person. Add a reference to this shot or its cast identity.")
+            raise ValueError("Colored Mark needs ref 1 for the selected person. Add a reference to this shot or the global reference.")
         prev = chain_image(shot)
         if prev is not None and shot.get("chain") == "reference":
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
@@ -3204,7 +3181,7 @@ class BFSShotH3Conditioning:
             if source_blur and source_blur != "off" else shot["frames"]
         if shot.get("color_guide"):
             if not shot.get("mask_src") and not shot.get("crop"):
-                raise ValueError(f"{gtag}: Color Guide needs a person selection (SAM 3 text/points or a mask video)")
+                raise ValueError(f"{gtag}: Colored Mark needs a person selection (SAM 3 text/points or a mask video)")
             cmask = generation_mask(shot, log=gtag)
             seen = color_guide(seen, cmask, shot.get("color_guide_color", "#00ff00"),
                                shot.get("color_guide_opacity", 0.35))
@@ -3212,17 +3189,17 @@ class BFSShotH3Conditioning:
             if text2:
                 ms = shot.get("mask_src")
                 if not ms:
-                    raise ValueError(f"{gtag}: the second Color Guide selection needs a full-frame shot mask source; turn off Crop for this shot")
+                    raise ValueError(f"{gtag}: the second Colored Mark selection needs a full-frame shot mask source; turn off Crop for this shot")
                 spec2 = dict(DEFAULT_MASK, text=text2, max_objects=1)
                 r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
                 cmask2 = torch.nn.functional.interpolate(r2["masks"][:, None].float(),
                                                          size=shot["frames"].shape[1:3], mode="nearest")[:, 0]
                 seen = color_guide(seen, cmask2, shot.get("color_guide_color2", "#9b30ff"),
                                    shot.get("color_guide_opacity", 0.35))
-                print(f"{gtag}: second Color Guide selection {text2!r}, "
+                print(f"{gtag}: second Colored Mark selection {text2!r}, "
                       f"{shot.get('color_guide_color2', '#9b30ff')} at {float(shot.get('color_guide_opacity', 0.35)):.2f}, "
                       f"{mask_report(cmask2)}", flush=True)
-            print(f"{gtag}: Color Guide {shot.get('color_guide_color', '#00ff00')} at "
+            print(f"{gtag}: Colored Mark {shot.get('color_guide_color', '#00ff00')} at "
                   f"{float(shot.get('color_guide_opacity', 0.35)):.2f} opacity, {mask_report(cmask)}", flush=True)
         pg = mask_guide if mask_guide in MASK_GUIDES[1:] else None
         if pg and (not use_mask or shot.get("crop") or on_canvas):
@@ -3974,7 +3951,7 @@ try:
             def work():
                 a = analyze(_input_path(p["video"]), float(p["fps"]))
                 path = _input_path(p["video"])
-                if p.get("cast") or p.get("cast_split"):
+                if p.get("cast") or p.get("cast_split") or p.get("cast_only"):
                     try:
                         analyze_cast(path, a)
                     except Exception:  # noqa: BLE001 - plan without people

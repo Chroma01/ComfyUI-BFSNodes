@@ -141,18 +141,14 @@ default it uses OpenCV Zoo's **YuNet** (detection) + **SFace** (recognition), Ap
 downloaded once into `models/opencv_face` (0.2 + 37 MB). If **InsightFace** is installed (`buffalo_l` in
 `models/insightface`) it is used instead (a bit more accurate; mind its license). Last resort, without either: SAM 3.1
 faces grouped by colours (hair, skin, clothes). Each
-person card shows the face, screen share and first/last appearance (click the face to seek).
-Give a person a reference (and a second one) by clicking the slot, or pick one from the recent
-references; *ignore* leaves that person out. Every shot card shows who is in it, with the main
-person (most screen time) highlighted and linked people outlined in green.
+person card shows the face, screen share and first/last appearance (click the face to seek). The *ignore* checkbox excludes a detected identity from cast-based filters. Every shot card shows the people detected in it, with the main person highlighted.
 
 | option | effect |
 |---|---|
-| Shots use their main person's reference | a shot without its own reference takes its main person's (shown with a dashed green outline) |
 | Split where the main person changes | adds a boundary where the largest face switches to another person for at least a second, then re-splits |
-| Only run shots with a linked person | shots where no linked, non-ignored person appears are skipped ("no linked person") |
+| Only run shots with a detected person | shots with no detected, non-ignored person are skipped |
 
-A reference set on the shot itself always wins; the global reference is the last fallback.
+Face identities are used for filtering and optional shot splitting. References and marker colors are selected globally or per shot; they are not assigned to detected identities.
 
 ## References and prompts
 
@@ -169,7 +165,7 @@ without repeats, so a plan where every shot shares one reference returns a singl
 
 ## Mask & crop (SAM 3)
 
-Generate only part of the frame. In a shot's editor (*Who is replaced*), type what to segment in English
+Generate only part of the frame. In a shot's editor (*Select region*), type what to segment in English
 (`person in white`, `woman with red hair`, `red car`; up to 32 tokens, commas for several things) or click
 **🎯 Points** to pick positive / negative points on any frame of the shot, then **👁 Preview** (red = mask,
 yellow = crop box). Then pick how the shot is generated:
@@ -196,22 +192,9 @@ rows at *opacity* × the noise level, so they start from the original partly vis
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
 the motion either way. (Not applied with the duet panel.)
 
-**🎨 Color Guide** is a separate optional visual cue. Turn it on for a shot with a mask and choose the marker color
-for ref 1. The default colors for the global references are set below each image in **Prompts & refs**; a shot may
-override them. The selected region is tinted in the source guide, while the image detail,
-movement and expression remain visible underneath. This does not turn on `Mask only` or create an H3 generation
-mask. The prompt must explain that the tint is temporary and that the matching reference replaces the tinted person.
+**🎨 Colored Mark** is an optional translucent overlay on the source video. Enable it before entering a SAM 3 description or opening **🎯 Points**; the selected color applies to that shot's marked region. This is only a visual marker: it does not create an inpainting mask or change **Full frame**, **Mask only** or crop behavior. The default colors are set under each global reference in **Prompts & refs**; choose a per-shot color when needed. The overlay keeps movement and facial expression visible.
 
-For consistency across shots, **People & masks → Find people** groups sampled faces by identity (ArcFace through
-InsightFace when installed; otherwise YuNet + SFace, or a weaker appearance fallback). Choose the matching `Person N`
-in each shot to inherit that cast member's Color Guide color. This is a user-confirmed link: profile views, small faces
-and occlusion can make identity grouping uncertain. Leave the shot on `manual identity` when unsure. The shot's mask
-still selects the actual region to tint, and its color can be overridden for that shot.
-
-For two people in one shot, open **+ Add a second person**, use **ref 2** for that selection, and choose a different
-color (purple by default; duplicate colors are disabled). Enable *use_ref_2* on BFS Shot H3 Conditioning. The
-second SAM 3 text selection is optional; preview it before queuing. Color opacity and ArcFace identity links are
-under the optional settings. Use this prompt and replace the color names if you choose another palette:
+To mark two regions in one shot, use the main description or points for **Ref 1**, then open **Mark a second region** and describe the second region for **Ref 2**. Give the two references different marker colors and enable *use_ref_2* on BFS Shot H3 Conditioning. The second region currently uses a text description.
 
 ```text
 body_swap: subject_definitions: <Subject 1> is the character shown in <Picture 1>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the green-marked replacement. <Subject 2> is the character shown in <Picture 2>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the purple-marked replacement. In the guide video, the translucent green and purple tints are temporary editing markers, not character appearance. Replace the green-tinted person only with <Subject 1> and the purple-tinted person only with <Subject 2>. The guide video provides the scene and the complete performance of both people, including their body poses, gestures, head motion, gaze, speech and facial expressions.
@@ -293,7 +276,7 @@ an animal or a cartoon character (it says what the subject is first). In the **P
 preset: *short* (the default: one noun phrase of at most ~20 words that fits inside a sentence, e.g. `green goblin with
 long pointed ears in a torn brown leather vest`, for `<Subject 1> is the {details} shown in <Picture 1>`), *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
 short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
-description per reference set: the global references, every shot's and every cast person's. They are saved in
+description per reference set: the global references and every shot's. They are saved in
 the plan and editable. Write **`{details}`** anywhere in a prompt and every shot gets the description of its own
 references; a set without a description is described by the VLM at run time (no click needed).
 

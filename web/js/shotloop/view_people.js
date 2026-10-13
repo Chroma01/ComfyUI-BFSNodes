@@ -1,19 +1,15 @@
 // 👥 People / Filters / Masks tab: cast, shot filters, and global SAM 3 mask settings.
 import { h, fmtT, fld, check, section, pill, hint } from "./common.js";
 
-const CAST_COLORS = [["", "No Color Guide color"], ["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
-  ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
-
 function castSection(c) {
-  const { plan, people, busy, usedRefs } = c;
+  const { plan, people, busy } = c;
   const fps = plan.fps;
-  const castN = people.value.filter(p => c.linked(p.id)).length;
+  const castN = people.value.filter(p => c.included(p.id)).length;
   const opt = (k, label, title) => check(plan[k], v => c.setCastOpt(k, v), label, title);
   return section("Cast", [
     h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
-      opt("cast_assign", "Shots use their main person's reference", "a shot without its own reference takes the reference of the person with the most screen time in it"),
       opt("cast_split", "Split where the main person changes", "adds a boundary when the biggest face switches to someone else (re-splits the plan)"),
-      opt("cast_only", "Only run shots with a linked person", "shots where no linked person appears are skipped"),
+      opt("cast_only", "Only run shots with a detected person", "shots with no detected, non-ignored person are skipped"),
     ]),
     people.value.length ? h("div", { class: "cast" }, people.value.map(p => {
       const cc = c.castOf(p.id);
@@ -21,18 +17,6 @@ function castSection(c) {
         h("img", { class: "face", src: p.thumb, title: `first seen ${fmtT(p.first, fps)} (click to seek)`, onClick: () => c.seek(p.first) }),
         h("div", { class: "t" }, [h("b", `Person ${p.id}`), ` · ${(p.share * 100).toFixed(1)}%`]),
         h("div", { class: "t" }, `${fmtT(p.first, fps)} → ${fmtT(p.last, fps)}`),
-        h("div", { class: "row", style: "margin-top:4px;align-items:center" }, [
-          h("span", { class: "hint" }, "Color Guide identity color"),
-          h("select", { value: cc.guide_color || "", style: "width:auto", onChange: e => c.setCast(p.id, "guide_color", e.target.value) },
-            CAST_COLORS.map(([v, label]) => h("option", { value: v }, label))),
-        ]),
-        h("div", { class: "refbox" }, ["ref", "ref2"].map(k => h("div", { class: "rslot" }, [
-          h("div", { class: "refslot sm", title: cc[k] ? cc[k] + " (click to replace)" : "click to upload",
-            onClick: () => c.pickFile("image/*", name => c.setCast(p.id, k, name)) }, cc[k] ? [h("img", { src: c.viewUrl(cc[k]) })] : [k === "ref" ? "⬆ ref" : "⬆ ref 2"]),
-          cc[k] ? h("div", { class: "rbtns" }, [h("button", { title: "remove", onClick: () => c.setCast(p.id, k, "") }, "✕")]) : null,
-        ]))),
-        usedRefs.value.length ? h("div", { class: "recent sm" }, usedRefs.value.map(n => h("img", { src: c.viewUrl(n), title: `${n} (click = ref, shift+click = ref 2)`,
-          onClick: e => c.setCast(p.id, e.shiftKey ? "ref2" : "ref", n) }))) : null,
         check(cc.ignore, v => c.setCast(p.id, "ignore", v), "ignore"),
       ]);
     })) : h("div", { class: "hint" }, "Nobody found yet."),
@@ -40,8 +24,8 @@ function castSection(c) {
       h("button", { class: "pri", disabled: !!busy.value, onClick: () => c.findPeople(true) }, people.value.length ? "↻ Re-analyse people" : "👥 Find people"),
       hint(people.value.length ? "faces sampled every 0.5 s and grouped by identity (InsightFace, CPU)" : "detects faces across the video and groups them into people"),
     ]),
-  ], { sub: "track faces, link each person to a reference, split and assign shots by who is on screen",
-       right: people.value.length ? pill(`${people.value.length} people · ${castN} linked`) : pill("not analysed") });
+  ], { sub: "track face identities to filter or split shots",
+       right: people.value.length ? pill(`${people.value.length} people · ${castN} included`) : pill("not analysed") });
 }
 
 function maskSection(c) {

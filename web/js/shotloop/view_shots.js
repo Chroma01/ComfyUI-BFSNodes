@@ -23,23 +23,23 @@ function shotCard(c, s, i) {
         track: bdg("🎯 track", "", "its part of the whole-video SAM 3 track"),
         sam: bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) }[maskSource(s)] || null,
       s.crop || s.inpaint || s.paste ? bdg({ paste: "🧩 frame+paste", mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)] + (s.inpaint && s.strength < 1 ? ` ${Number(s.strength).toFixed(2)}` : ""), "on", c.modeName(s)) : null,
-      s.color_guide ? bdg("🎨 color guide", "on", `${s.color_guide_color || "cast color"} · opacity ${s.color_guide_opacity ?? 0.35}`) : null,
+      s.color_guide ? bdg("🎨 Colored Mark", "on", `${s.color_guide_color || "green"} · opacity ${s.color_guide_opacity ?? 0.35}`) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
       i > 0 && s.chain !== "off" ? bdg("⛓", "on", s.chain === "history" ? `continues the previous shot's last ${s.chainHistory} frames (history)` : `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
       warnN ? bdg(`⚠ ${warnN}`, "warn", issues.map(x => x.text).join("\n")) : null,
     ]),
     who ? h("div", { class: "who" }, who.people.length ? who.people.map(id => h("img", {
-      src: c.personOf(id)?.thumb || "", title: `Person ${id}${id === who.main ? " (main)" : ""}${c.linked(id) ? " · linked" : ""}`,
-      class: [id === who.main && "main", c.linked(id) && "lk"] })) : [h("span", { class: "t" }, "no faces")]) : null,
+      src: c.personOf(id)?.thumb || "", title: `Person ${id}${id === who.main ? " (main)" : ""}${c.included(id) ? " · included" : ""}`,
+      class: [id === who.main && "main", c.included(id) && "lk"] })) : [h("span", { class: "t" }, "no faces")]) : null,
     st ? h("div", { class: "t", style: "margin-top:2px" },
       `👤 ${st.persons} · ${(st.person_area * 100).toFixed(1)}% · 🙂 ${st.faces} · ☀ ${(st.brightness * 100).toFixed(0)}%`) : null,
     why ? h("div", { class: "t", style: "color:#ffc46b" }, why) : null,
     h("div", { class: "t" }, `${fmtT(s.start, fps)} → ${fmtT(s.end, fps)} · ${s.len}f → ${s.gen}f`),
     h("div", { class: "thumbs" }, [
       ...["ref", "ref2"].map(k => {
-        const own = s[k], via = c.castRef(s, k), name = own || via || plan["global_" + k];
-        return name ? h("img", { class: "rt", src: c.viewUrl(name), title: own ? name : via ? `${name} (from the person)` : `${name} (global)`,
-          style: own ? "" : via ? "outline:1px dashed #8fd18f" : "opacity:.45" }) : h("div", { class: "rt ph2" }, k);
+        const own = s[k], name = own || plan["global_" + k];
+        return name ? h("img", { class: "rt", src: c.viewUrl(name), title: own ? name : `${name} (global)`,
+          style: own ? "" : "opacity:.45" }) : h("div", { class: "rt ph2" }, k);
       }),
       h("img", { class: "rt", style: "width:56px", src: showMasks.value && mp?.frames?.length
         ? mp.frames[Math.floor(mp.frames.length / 2)].src : c.thumbFor(s.start + Math.floor(s.len / 2)) }),
@@ -74,12 +74,12 @@ function player(c, cur) {
   ]);
 }
 
-function refSlot(c, name, label, target, field, via = "") {
+function refSlot(c, name, label, target, field) {
   return h("div", { class: "rslot" }, [
-    h("div", { class: ["refslot", !name && via && "via"], title: name ? name + " (click to replace)" : via ? `uses ${via}; click to upload this shot's own` : "click to upload",
+    h("div", { class: "refslot", title: name ? name + " (click to replace)" : "click to upload",
       onClick: () => c.uploadRef(target, field) },
-      name ? [h("img", { src: c.viewUrl(name) })] : via ? [h("img", { src: c.viewUrl(via), style: "opacity:.4" })] : [label]),
-    h("div", { class: "rbtns" }, [name ? h("button", { title: "remove (use the person's / global one)", onClick: () => c.setRef(target, field, "") }, "✕") : null]),
+      name ? [h("img", { src: c.viewUrl(name) })] : [label]),
+    h("div", { class: "rbtns" }, [name ? h("button", { title: "remove (use the global reference)", onClick: () => c.setRef(target, field, "") }, "✕") : null]),
   ]);
 }
 
@@ -87,10 +87,6 @@ function editor(c, cur) {
   const { plan, sel, segs, maskPrev, targetCrop, vlmSug, busy, usedRefs, copyOpts, COPY_FIELDS } = c;
   const i = sel.value, S = segs.value, k = segKey(cur), mp = maskPrev.value[k], g = vlmSug.value[k];
   const issues = c.checksFor(i);
-  const guideColor1 = cur.color_guide_color || (cur.color_guide_person != null
-    ? (c.castOf(cur.color_guide_person).guide_color || plan.global_color_guide_ref1 || "#00ff00")
-    : (plan.global_color_guide_ref1 || "#00ff00"));
-  const viaRef = f => cur[f] ? "" : (c.castRef(cur, f) || plan["global_" + f] || "");
 
   const head = h("div", { class: "edhd" }, [
     h("button", { class: "ghost", disabled: i === 0, title: "previous shot (←)", onClick: () => c.select(i - 1) }, "◀"),
@@ -113,8 +109,8 @@ function editor(c, cur) {
   const refPrompt = section("Reference & prompt", [
     h("div", { class: "row", style: "align-items:flex-start;gap:10px" }, [
       h("div", { class: "refbox" }, [
-        refSlot(c, cur.ref, "⬆ reference", i, "ref", viaRef("ref")),
-        refSlot(c, cur.ref2, "⬆ ref 2", i, "ref2", viaRef("ref2")),
+        refSlot(c, cur.ref, "⬆ reference", i, "ref"),
+        refSlot(c, cur.ref2, "⬆ ref 2", i, "ref2"),
       ]),
       h("div", { style: "flex:1;min-width:200px" }, [
         h("textarea", { placeholder: "Prompt for this shot (empty = global prompt). Placeholders: {target} {details} {shot} {setting}",
@@ -125,16 +121,35 @@ function editor(c, cur) {
     usedRefs.value.length ? h("div", { class: "recent" }, [hint("recent (click = ref, shift+click = ref 2):"),
       ...usedRefs.value.map(n => h("img", { src: c.viewUrl(n), title: n, onClick: e => c.setRef(i, e.shiftKey ? "ref2" : "ref", n) })),
       h("button", { class: "sm", title: "Forget the recent pictures (the ones this plan still uses stay)", onClick: () => c.clearRecent() }, "✕ clear"),
-      h("button", { class: "sm dng", title: "Remove EVERY reference from this plan (global, all shots, all people) and the recent list", onClick: () => c.clearAllRefs() }, "✕ clear all")]) : null,
+      h("button", { class: "sm dng", title: "Remove EVERY reference from this plan (global and all shots) and the recent list", onClick: () => c.clearAllRefs() }, "✕ clear all")]) : null,
     h("div", { class: "row", style: "margin-top:6px" }, [
-      h("button", { class: "dng", title: "clear this shot's references and prompt: it uses its person's / the global ones",
+      h("button", { class: "dng", title: "clear this shot's references and prompt: it uses the global ones",
         onClick: () => { ["ref", "ref2", "prompt"].forEach(f => { c.meta(i)[f] = ""; }); c.save(); } }, "Use global"),
-      hint("empty slots use the person's reference (Cast) or the global one (Prompts & refs tab)"),
+      hint("empty slots use the global references (Prompts & refs tab)"),
     ]),
   ], { sub: "who the shot becomes" });
 
   const mode = (on, title, text, onClick) => h("div", { class: ["mode", on && "on"], onClick }, [h("b", title), h("span", text)]);
-  const who = section("Who is replaced", [
+  const who = section("Select region", [
+    h("div", { class: "row", style: "margin-top:4px;align-items:center;gap:8px" }, [
+      check(!!cur.color_guide, v => c.setMeta(i, "color_guide", v), "🎨 Colored Mark",
+        "Color the selected region in the source video as a translucent visual marker. It does not create or enable an inpainting mask."),
+      cur.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Ref 1 color"),
+        h("select", { value: cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", onChange: e => c.setMeta(i, "color_guide_color", e.target.value) },
+          GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label)))]) : null,
+    ]),
+    cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 }, [
+      h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 ? "Mark a second region · Ref 2" : "+ Mark a second region (optional)"),
+      h("div", { class: "row", style: "margin-top:8px;align-items:center;gap:8px" }, [
+        h("span", { class: "hint", style: "white-space:nowrap" }, "Describe second region"),
+        h("input", { type: "text", value: cur.color_guide_text2 || "", style: "flex:1;min-width:160px", placeholder: "e.g. the person on the left", onChange: e => c.setMeta(i, "color_guide_text2", e.target.value) }),
+        h("button", { disabled: !!busy.value || !cur.color_guide_text2, onClick: () => c.previewMask(i, { text: cur.color_guide_text2, max_objects: 1 }) }, "👁 Preview"),
+        h("select", { value: cur.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff", onChange: e => c.setMeta(i, "color_guide_color2", e.target.value) },
+          GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === (cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00") }, label))),
+      ]),
+    ]) : null,
+    cur.color_guide ? h("details", { style: "margin:4px 0" }, [h("summary", { class: "hint", style: "cursor:pointer" }, `Opacity · ${Number(cur.color_guide_opacity ?? 0.35).toFixed(2)}`),
+      h("div", { class: "row", style: "margin-top:6px;gap:8px;align-items:center" }, [h("input", { type: "range", min: 0.05, max: 0.8, step: 0.01, value: cur.color_guide_opacity ?? 0.35, style: "flex:1;max-width:320px", onInput: e => { c.meta(i).color_guide_opacity = parseFloat(e.target.value); }, onChange: c.save }), hint("Keeps movement and expression visible.")])]) : null,
     h("div", { class: "row", style: "align-items:center" }, [
       h("input", { type: "text", value: cur.mask.text || "", style: "flex:1;min-width:160px",
         placeholder: "mask: what to segment, in English (woman in pink top, black dog…) · Enter = preview",
@@ -172,69 +187,7 @@ function editor(c, cur) {
       ["crop", "✂ Crop", "A box around the mask is regenerated (more pixels for a small subject); BFS Shot Join pastes it back."],
       ["cropmask", "✂🎭 Crop + mask", "Inside the crop, only the mask is regenerated: the most detail with the background kept."],
     ].map(([k, t, d]) => mode(c.modeOf(cur) === k, t, d, () => c.setMode(i, k)))),
-    h("div", { class: "row", style: "margin-top:8px;align-items:center;gap:8px" }, [
-      check(!!cur.color_guide, v => c.setMeta(i, "color_guide", v), "🎨 Color Guide",
-        "Tint the selected person in the source guide. This is a translucent visual cue; it does not enable H3 mask-only inpainting."),
-      cur.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [
-        h("span", { class: "hint" }, "Ref 1 color"),
-        h("select", { value: cur.color_guide_color ||
-          (cur.color_guide_person != null ? (c.castOf(cur.color_guide_person).guide_color || plan.global_color_guide_ref1 || "#00ff00")
-            : (plan.global_color_guide_ref1 || "#00ff00")),
-          onChange: e => c.setMeta(i, "color_guide_color", e.target.value) },
-          GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label))),
-      ]) : null,
-    ]),
-    cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 }, [
-      h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 ? "Second person · Ref 2" : "+ Add a second person (optional)"),
-      h("div", { class: "row", style: "margin-top:8px;align-items:center;gap:8px" }, [
-        h("span", { class: "hint", style: "white-space:nowrap" }, "Ref 2"),
-        h("input", { type: "text", value: cur.color_guide_text2 || "", style: "flex:1;min-width:160px",
-          placeholder: "Describe the second person for SAM 3",
-          onChange: e => c.setMeta(i, "color_guide_text2", e.target.value) }),
-        h("button", { disabled: !!busy.value || !cur.color_guide_text2,
-          onClick: () => c.previewMask(i, { text: cur.color_guide_text2, max_objects: 1 }) }, "👁 Preview"),
-        h("select", { value: cur.color_guide_color2 || (cur.color_guide_person2 != null
-          ? (c.castOf(cur.color_guide_person2).guide_color || plan.global_color_guide_ref2 || "#9b30ff")
-          : (plan.global_color_guide_ref2 || "#9b30ff")),
-          title: "Choose the marker color for the person matched to ref 2",
-          onChange: e => c.setMeta(i, "color_guide_color2", e.target.value) },
-          GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === guideColor1 }, label))),
-      ]),
-      h("details", { style: "margin-top:6px" }, [
-        h("summary", { class: "hint", style: "cursor:pointer" }, "Keep ref 2 color consistent across shots (optional)"),
-        h("div", { class: "row", style: "margin-top:6px;gap:8px" }, [
-          h("span", { class: "hint" }, "Ref 2 identity"),
-          h("select", { value: cur.color_guide_person2 == null ? "" : String(cur.color_guide_person2),
-            onChange: e => { c.setMeta(i, "color_guide_person2", e.target.value === "" ? null : Number(e.target.value)); c.setMeta(i, "color_guide_color2", ""); } },
-            [h("option", { value: "" }, "Choose manually"), ...c.people.value.map(p => h("option", { value: String(p.id) }, `Person ${p.id}`))]),
-        ]),
-      ]),
-      h("details", { style: "margin-top:6px" }, [
-        h("summary", { class: "hint", style: "cursor:pointer" }, `Advanced · opacity ${Number(cur.color_guide_opacity ?? 0.35).toFixed(2)}`),
-        h("div", { class: "row", style: "margin-top:6px;align-items:center" }, [
-          h("span", { class: "hint" }, "Opacity"),
-          h("input", { type: "range", min: 0.05, max: 0.8, step: 0.01, value: cur.color_guide_opacity ?? 0.35,
-            style: "flex:1;max-width:320px", onInput: e => { c.meta(i).color_guide_opacity = parseFloat(e.target.value); }, onChange: c.save }),
-          hint("The default keeps movement and expression visible."),
-        ]),
-      ]),
-    ]) : null,
-    cur.color_guide ? h("details", { style: "margin:4px 0" }, [
-      h("summary", { class: "hint", style: "cursor:pointer" }, `More options · opacity ${Number(cur.color_guide_opacity ?? 0.35).toFixed(2)}`),
-      h("div", { class: "row", style: "margin-top:6px;gap:8px;align-items:center" }, [
-        h("span", { class: "hint" }, "Ref 1 identity"),
-        h("select", { value: cur.color_guide_person == null ? "" : String(cur.color_guide_person),
-          onChange: e => { c.setMeta(i, "color_guide_person", e.target.value === "" ? null : Number(e.target.value)); c.setMeta(i, "color_guide_color", ""); } },
-          [h("option", { value: "" }, "Choose manually"), ...c.people.value.map(p => h("option", { value: String(p.id) }, `Person ${p.id}`))]),
-        cur.color_guide_person != null ? h("button", { class: "ghost", title: "Use the cast member's assigned color",
-          onClick: () => c.setMeta(i, "color_guide_color", "") }, "↩ cast color") : null,
-        h("span", { class: "hint" }, "Opacity"),
-        h("input", { type: "range", min: 0.05, max: 0.8, step: 0.01, value: cur.color_guide_opacity ?? 0.35,
-          style: "flex:1;max-width:240px", onInput: e => { c.meta(i).color_guide_opacity = parseFloat(e.target.value); }, onChange: c.save }),
-      ]),
-    ]) : null,
-    cur.color_guide && !hasMask(cur) ? h("div", { class: "err" }, "Color Guide needs this shot's person selection: add mask text, points or a mask video, then preview it.") : null,
-    cur.color_guide && cur.crop && cur.color_guide_text2 ? h("div", { class: "err" }, "The second Color Guide selection uses the full frame; choose Full frame, Frame + paste or Mask only for this shot.") : null,
+    cur.color_guide && !hasMask(cur) ? h("div", { class: "err" }, "Colored Mark needs a region selection: enter a description, add points, or choose a mask video, then preview it.") : null,
     (cur.crop || cur.inpaint || cur.paste) && !hasMask(cur) ? h("div", { class: "err" }, `${c.modeName(cur)} needs a mask on this shot: a mask text, points or a mask video (or the planner's mask input).`) : null,
     cur.inpaint ? h("div", { class: "row", style: "margin-bottom:6px;align-items:center",
       title: "Opacity of the generation mask: the value of the white inside the mask (1 = fully white, the default). H3 reads a grey mask value as 'regenerate this much': at 0.85 the masked area starts at 85% of the noise and keeps ~15% of the original there. 0.8-0.9 keeps pose, outline and lighting while still swapping; too low copies the original person." }, [

@@ -82,6 +82,8 @@ function Panel(io) {
     plan.ref_details = { ...(p.ref_details || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
+    Object.values(plan.cast).forEach(person => { if (person && typeof person === "object") { delete person.ref; delete person.ref2; delete person.guide_color; } });
+    plan.segs.forEach(meta => { if (meta) { delete meta.color_guide_person; delete meta.color_guide_person2; } });
   };
   const save = () => io.setPlan(JSON.stringify(plan));
 
@@ -118,13 +120,7 @@ function Panel(io) {
   });
   const whoIn = s => segPeople.value[segKey(s)] || null;
   const castOf = id => plan.cast[String(id)] || {};
-  const linked = id => !!castOf(id).ref && !castOf(id).ignore;
-  // reference a shot gets from its main person when it has none of its own
-  const castRef = (s, field) => {
-    if (!plan.cast_assign) return "";
-    const who = whoIn(s); if (!who || who.main < 0 || castOf(who.main).ignore) return "";
-    return castOf(who.main)[field] || "";
-  };
+  const included = id => !!personOf(id) && !castOf(id).ignore;
   const personOf = id => people.value.find(p => p.id === id) || null;
   const statFor = s => stats.value.find(x => x.start === s.start && x.end === s.end) || null;
   const filtersOn = computed(() => { const f = plan.filters; return !!(f.person || f.face || f.skip_dark || f.skip_static || f.max_persons > 0 || f.min_frames > 0); });
@@ -135,7 +131,7 @@ function Panel(io) {
     const why = filtersOn.value ? (statFor(s)?.skip_reason || "") : "";
     if (why) return why;
     const who = whoIn(s);
-    if (plan.cast_only && who && !who.people.some(p => linked(p))) return "no linked person";
+    if (plan.cast_only && who && !who.people.some(p => included(p))) return "no detected person";
     return "";
   };
   const active = computed(() => segs.value.filter(s => !skipWhy(s)));
@@ -155,8 +151,8 @@ const modeOf = s => (MODES.find(m => m[2] === !!s.crop && m[3] === !!s.inpaint &
 const modeName = s => MODES.find(m => m[0] === modeOf(s))[1];
 
 const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return plan.segs[i]; };
-  // the reference a shot really uses: its own, its main person's, or the global one
-  const refOf = (s, k) => s[k] || castRef(s, k) || plan["global_" + k] || "";
+  // the reference a shot uses: its own or the global one
+  const refOf = (s, k) => s[k] || plan["global_" + k] || "";
   const promptOf = s => s.prompt || plan.global_prompt || "";
   const detailsOf = s => plan.ref_details?.[`${refOf(s, "ref")}|${refOf(s, "ref2")}`] || "";
 
@@ -218,8 +214,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
           chain: keep[i]?.chain || "history", chain_frame: keep[i]?.chain_frame || "first", chain_history: keep[i]?.chain_history || 17,
           crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "",
           color_guide: !!keep[i]?.color_guide, color_guide_color: keep[i]?.color_guide_color || "", color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
-          color_guide_person: keep[i]?.color_guide_person ?? null, color_guide_text2: keep[i]?.color_guide_text2 || "",
-          color_guide_color2: keep[i]?.color_guide_color2 || "", color_guide_person2: keep[i]?.color_guide_person2 ?? null }));
+          color_guide_text2: keep[i]?.color_guide_text2 || "", color_guide_color2: keep[i]?.color_guide_color2 || "" }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -248,7 +243,6 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   }
   const setCast = (id, k, v) => {
     plan.cast = { ...plan.cast, [String(id)]: { ...castOf(id), [k]: v } };
-    if (k === "ref" || k === "ref2") remember(v);
     save();
   };
   async function describeTarget(i) {
@@ -328,7 +322,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   // copy the chosen settings of shot `from` to the other shots (all of them, or the ones after it)
   const COPY_FIELDS = { ref: "references", prompt: "prompt", mask_text: "mask text", points: "mask points", mask_video: "mask video", crop: "mode",
-                        target: "{target}", chain: "continuity", color_guide: "Color Guide" };
+                        target: "{target}", chain: "continuity", color_guide: "Colored Mark" };
   const copyFrom = (from, fields = copyOpts, scope = copyOpts.scope) => {
     const src = segs.value[from]; if (!src) return 0;
     const to = targets(scope, from);
@@ -342,9 +336,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (fields.target) m.target = src.target;
       if (fields.color_guide) {
         m.color_guide = src.color_guide; m.color_guide_color = src.color_guide_color;
-        m.color_guide_opacity = src.color_guide_opacity; m.color_guide_person = src.color_guide_person;
+        m.color_guide_opacity = src.color_guide_opacity;
         m.color_guide_text2 = src.color_guide_text2; m.color_guide_color2 = src.color_guide_color2;
-        m.color_guide_person2 = src.color_guide_person2;
       }
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; m.chain_history = src.chainHistory; }
     });
@@ -363,13 +356,12 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
-  // reference sets used by the plan (global, every shot's, every cast person's): one description each
+  // reference sets used by the plan (global and per shot): one description each
   const refSets = computed(() => {
     const out = new Map();
     const add = (a, b, where) => { if (!a && !b) return; const k = `${a || ""}|${b || ""}`; if (!out.has(k)) out.set(k, { a, b, where: [] }); out.get(k).where.push(where); };
     add(plan.global_ref, plan.global_ref2, "global");
     segs.value.forEach((x, i) => add(x.ref || plan.global_ref, x.ref2 || plan.global_ref2, `#${i + 1}`));
-    Object.entries(plan.cast || {}).forEach(([id, c]) => { if (!c.ignore) add(c.ref, c.ref2, `person ${id}`); });
     return [...out.entries()].map(([key, v]) => ({ key, ...v }));
   });
   async function describeRefs() {
@@ -471,7 +463,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       // do not surprise them with a wall of detected shots on first load.
       plan.mode = "single";
       plan.start_f = 0;
-      plan.end_f = Math.round(12 * plan.fps);
+      plan.end_f = Math.round(15 * plan.fps);
       plan.start_s = 0; plan.end_s = 0; plan.max_total_s = 0;
       tab.value = "video";
     }
@@ -594,19 +586,18 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   // target: shot index or "global"; field: ref | ref2 (global_ref | global_ref2 for "global")
   const setRef = (target, field, name) => {
-    if (isColorValue(name)) return; // colors belong to Color Guide settings, never to image references
+    if (isColorValue(name)) return; // colors belong to Colored Mark settings, never to image references
     if (target === "global") plan[field] = name; else meta(target)[field] = name;
     remember(name); save();
   };
   const uploadRef = (target, field) => pickFile("image/*", name => setRef(target, field, name));
   const clearRecent = () => { recent.value = []; store.set(RECENT_KEY, []); };
-  // everything: the recent list AND every reference this plan uses (global, per shot, per person in the cast)
+  // everything: the recent list and every reference this plan uses (global and per shot)
   const clearAllRefs = () => {
-    if (!confirm("Remove every reference picture from this plan (global, every shot and every person) and forget the recent list?")) return;
+    if (!confirm("Remove every reference picture from this plan (global, every shot) and forget the recent list?")) return;
     clearRecent();
     plan.global_ref = ""; plan.global_ref2 = "";
     plan.segs.forEach(m => { if (m) { m.ref = ""; m.ref2 = ""; } });
-    Object.values(plan.cast || {}).forEach(cc => { if (cc) { cc.ref = ""; cc.ref2 = ""; } });
     save();
   };
   const usedRefs = computed(() => {
@@ -619,7 +610,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
     n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour,
-    MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
+    MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, included, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
