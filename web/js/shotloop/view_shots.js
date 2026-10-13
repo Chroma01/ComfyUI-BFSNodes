@@ -86,6 +86,7 @@ function refSlot(c, name, label, target, field) {
 function editor(c, cur) {
   const { plan, sel, segs, maskPrev, targetCrop, vlmSug, busy, usedRefs, copyOpts, COPY_FIELDS } = c;
   const i = sel.value, S = segs.value, k = segKey(cur), mp = maskPrev.value[k], g = vlmSug.value[k];
+  const hasRef2 = !!(cur.ref2 || plan.global_ref2);
   const issues = c.checksFor(i);
 
   const head = h("div", { class: "edhd" }, [
@@ -141,7 +142,7 @@ function editor(c, cur) {
         } },
           GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label)))]),
     ]),
-    cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 }, [
+    cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 || hasRef2 }, [
       h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 ? "Mark a second region · Ref 2" : "+ Mark a second region (optional)"),
       h("div", { class: "row", style: "margin-top:8px;align-items:center;gap:8px" }, [
         h("span", { class: "hint", style: "white-space:nowrap" }, "Describe second region"),
