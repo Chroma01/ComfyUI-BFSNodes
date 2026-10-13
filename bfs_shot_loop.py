@@ -481,12 +481,35 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["inpaint"] = bool(m.get("inpaint"))
         s["paste"] = bool(m.get("paste")) and not s["crop"] and not s["inpaint"]
         s["paste_text"] = str(m.get("paste_text") or "")
+        s["color_guide"] = bool(m.get("color_guide"))
+        s["color_guide_person"] = m.get("color_guide_person")
+        s["color_guide_color"] = str(m.get("color_guide_color") or "")
+        s["color_guide_text2"] = str(m.get("color_guide_text2") or "")
+        s["color_guide_person2"] = m.get("color_guide_person2")
+        s["color_guide_color2"] = str(m.get("color_guide_color2") or "")
+        s["color_guide_opacity"] = min(0.8, max(0.05, float(m.get("color_guide_opacity") or 0.35)))
         s["strength"] = min(1.0, max(0.05, float(m.get("strength") or 1.0)))
         s["mask"] = m.get("mask") or {}
         s["target"] = m.get("target") or ""
         s["cut_before"] = bool(s.get("cut_before")) or (s["start"] in cuts)
         s["gen_len"] = snap_up(s["end"] - s["start"], grid)
         s["people"], s["main"] = [], -1
+        guide_pid = s.get("color_guide_person")
+        if guide_pid is not None:
+            s["color_guide_color"] = str(m.get("color_guide_color") or
+                                           (plan.get("cast") or {}).get(str(guide_pid), {}).get("guide_color") or "")
+        guide_pid2 = s.get("color_guide_person2")
+        if guide_pid2 is not None:
+            s["color_guide_color2"] = str(m.get("color_guide_color2") or
+                                            (plan.get("cast") or {}).get(str(guide_pid2), {}).get("guide_color") or "")
+        if s.get("color_guide"):
+            cast_entries = plan.get("cast") or {}
+            first_person = cast_entries.get(str(s.get("color_guide_person"))) or {}
+            second_person = cast_entries.get(str(s.get("color_guide_person2"))) or {}
+            if not m.get("ref") and first_person.get("ref"):
+                s["ref"] = first_person["ref"]
+            if not m.get("ref2") and second_person.get("ref"):
+                s["ref2"] = second_person["ref"]
         if cast is not None:
             sp = shot_people(cast, s["start"], s["end"])
             s["people"], s["main"] = sp["people"], sp["main"]
@@ -1320,6 +1343,12 @@ def paste_back(result: torch.Tensor, shot: dict, new_outline: bool = True, **fin
     sm = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])["masks"]
     n = min(result.shape[0], base.shape[0], sm.shape[0])
     m = torch.nn.functional.interpolate(sm[:n, None].float(), size=(H, W), mode="nearest")[:, 0]
+    second_text = str(shot.get("color_guide_text2") or "").strip()
+    if second_text:
+        sm2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"],
+                        dict(DEFAULT_MASK, text=second_text, max_objects=1))["masks"]
+        sm2 = torch.nn.functional.interpolate(sm2[:n, None].float(), size=(H, W), mode="nearest")[:, 0]
+        m = torch.maximum(m, sm2)
     if new_outline and bool(m.any()):
         x0, y0, x1, y1 = box_px(crop_box(m, 0.5), W, H)              # where the new person may be
         s = 640 / max(H, W)
@@ -2540,6 +2569,14 @@ class BFSShotPlanner:
                         r["masks"][:, None, by0:by1, bx0:bx1].float(), size=(chh, cw), mode="nearest")[:, 0]
             hist, hist_src = (history_for(path, a, src, s, i, prev_len, queue, rid, W, H, crop, ft)
                               if s["chain"] == "history" and i > 0 else (None, None))
+            shot_prompt = fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
+                "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
+                s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
+                s.get("target", "") or auto_target.get(i, ""))
+            if s.get("color_guide"):
+                shot_prompt = color_guide_prompt(shot_prompt, s.get("color_guide_color") or "#00ff00",
+                                                 (s.get("color_guide_color2") or "#9b30ff")
+                                                 if s.get("color_guide_text2") else "")
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
@@ -2547,11 +2584,13 @@ class BFSShotPlanner:
                 "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
                 "inpaint": bool(s.get("inpaint")), "inpaint_strength": float(s.get("strength") or 1.0),
                 "paste": bool(s.get("paste")), "paste_text": s.get("paste_text") or "",
+                "color_guide": bool(s.get("color_guide")),
+                "color_guide_color": str(s.get("color_guide_color") or "#00ff00"),
+                "color_guide_opacity": float(s.get("color_guide_opacity") or 0.35),
+                "color_guide_text2": str(s.get("color_guide_text2") or ""),
+                "color_guide_color2": str(s.get("color_guide_color2") or "#9b30ff"),
                 "ref": ref, "ref2": ref2,
-                "prompt": fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
-                    "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
-                    s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
-                    s.get("target", "") or auto_target.get(i, "")),
+                "prompt": shot_prompt,
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
@@ -2852,6 +2891,48 @@ def masked_only(frames: torch.Tensor, mask: torch.Tensor, grey: float = 0.5, loo
     return guide_look(frames, look) * m + grey * (1 - m)
 
 
+def color_guide(frames: torch.Tensor, mask: torch.Tensor, color: str = "#00ff00",
+                opacity: float = 0.35) -> torch.Tensor:
+    """Tint a selected subject in the guide while keeping its underlying motion and expression visible."""
+    try:
+        rgb = torch.tensor([int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)], dtype=torch.float32)
+    except (TypeError, ValueError, IndexError):
+        raise ValueError(f"Color Guide: invalid color {color!r}; expected a hex color such as #00ff00") from None
+    if mask.ndim == 2:
+        mask = mask[None]
+    m = torch.nn.functional.interpolate(mask[:, None].float(), size=frames.shape[1:3], mode="nearest")[:, 0]
+    idx = torch.clamp(torch.arange(frames.shape[0]), max=m.shape[0] - 1)
+    alpha = m[idx][..., None] * min(0.8, max(0.05, float(opacity)))
+    tint = rgb.to(device=frames.device, dtype=frames.dtype)
+    return (frames[..., :3].float() * (1 - alpha) + tint * alpha).clamp(0, 1)
+
+
+_COLOR_GUIDE_NAMES = {"#00ff00": "green", "#ff2020": "red", "#168cff": "blue", "#ffe600": "yellow",
+                      "#ff00d4": "magenta", "#00e5c0": "cyan", "#9b30ff": "purple"}
+
+
+def color_guide_prompt(prompt: str, color1: str, color2: str = "") -> str:
+    """Add explicit temporary-marker-to-reference mapping for the colors actually enabled on this shot."""
+    name1 = _COLOR_GUIDE_NAMES.get(str(color1).lower(), "green")
+    lines = [f"The translucent {name1} color overlay is a temporary marker for the selected guide person; "
+             f"replace only that person with <Subject 1> from <Picture 1>, and remove the color overlay completely."]
+    if color2:
+        name2 = _COLOR_GUIDE_NAMES.get(str(color2).lower(), "purple")
+        lines.append(f"The translucent {name2} color overlay marks a different guide person; replace only that person "
+                     f"with <Subject 2> from <Picture 2>, and remove that overlay completely.")
+    lines.append("Each person keeps their own original timing, body motion, gestures, head motion, gaze, speech and facial "
+                 "expression. Preserve the scene, camera and unmarked content from the guide video.")
+    mapping = " ".join(lines)
+    # Keep the color contract inside the matching sections of the user's existing structured prompt.
+    text, n = re.subn(r"(?is)(\bsubject_definitions\s*:.*?)(\s+summary\s*:)",
+                      lambda m: m.group(1) + " " + mapping + m.group(2), str(prompt or ""), count=1)
+    if not n:
+        text = (str(prompt or "").rstrip() + "\n\n" + mapping).strip()
+    detailed, n = re.subn(r"(?is)(\bdetailed_description\s*:.*?)(\s+overall_soundscape\s*:)",
+                          lambda m: m.group(1) + " " + mapping + m.group(2), text, count=1)
+    return detailed if n else text
+
+
 def mask_report(m: torch.Tensor) -> str:
     """'37 frames 512x288, covers 12.3% (min 8.1%, max 15.0%)' for console logs."""
     cov = m.float().flatten(1).mean(1) if m.ndim == 3 and m.shape[0] else m.float().mean()[None]
@@ -2981,7 +3062,9 @@ class BFSShotH3Conditioning:
                     "Optional prompt writer for the duet. 'planner prompt' (default) uses the shot's prompt from the "
                     "planner as it is. A task writes the prompt of every shot in the duet format instead: with a VLM "
                     "connected it looks at the shot and its references and writes it; without one, a template for the "
-                    "task. Needs duet on (canvas or shifted RoPE). See the written text on the prompt output."}),
+                    "task. Needs duet on (canvas or shifted RoPE). See the written text on the prompt output. For two "
+                    "Color Guide people with separate references, use 'planner prompt': the automatic character-swap "
+                    "template assumes the pictures show one identity."}),
                 "instruction": ("STRING", {"default": "", "multiline": True, "tooltip":
                     "What changes, in seen words, for the task: 'a 1990s anime cel style', 'a sunny beach at sunset', "
                     "'an elderly woman with short grey hair'. Empty is fine for character swap (the person comes from "
@@ -3056,6 +3139,15 @@ class BFSShotH3Conditioning:
             refs["ref_image_0"] = shot["ref"]
         if use_ref_2 and shot["ref2"] is not None:
             refs[f"ref_image_{len(refs)}"] = shot["ref2"]
+        if shot.get("color_guide") and shot.get("color_guide_text2"):
+            if not use_ref_2 or shot.get("ref2") is None:
+                raise ValueError("Color Guide's second person is marked, but no second reference is being passed. Set the shot's ref 2 and enable use_ref_2.")
+            if str(shot.get("color_guide_color", "#00ff00")).lower() == str(shot.get("color_guide_color2", "#9b30ff")).lower():
+                raise ValueError("Color Guide needs a different color for each reference in the same shot. Change the color assigned to ref 2 or its cast identity.")
+            if task != "planner prompt":
+                raise ValueError("The automatic duet prompt templates treat multiple pictures as views of one character. For two Color Guide people, use task = 'planner prompt' and the color-mapping template in the Shot Planner guide.")
+        if shot.get("color_guide") and shot.get("ref") is None:
+            raise ValueError("Color Guide needs ref 1 for the selected person. Add a reference to this shot or its cast identity.")
         prev = chain_image(shot)
         if prev is not None and shot.get("chain") == "reference":
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
@@ -3107,6 +3199,28 @@ class BFSShotH3Conditioning:
         # what the model sees of the source; the kept area (keep_video) stays the original
         seen = blur_source(shot["frames"], source_blur, float(source_blur_strength), gtag) \
             if source_blur and source_blur != "off" else shot["frames"]
+        if shot.get("color_guide"):
+            if not shot.get("mask_src") and not shot.get("crop"):
+                raise ValueError(f"{gtag}: Color Guide needs a person selection (SAM 3 text/points or a mask video)")
+            cmask = generation_mask(shot, log=gtag)
+            seen = color_guide(seen, cmask, shot.get("color_guide_color", "#00ff00"),
+                               shot.get("color_guide_opacity", 0.35))
+            text2 = str(shot.get("color_guide_text2") or "").strip()
+            if text2:
+                ms = shot.get("mask_src")
+                if not ms:
+                    raise ValueError(f"{gtag}: the second Color Guide selection needs a full-frame shot mask source; turn off Crop for this shot")
+                spec2 = dict(DEFAULT_MASK, text=text2, max_objects=1)
+                r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
+                cmask2 = torch.nn.functional.interpolate(r2["masks"][:, None].float(),
+                                                         size=shot["frames"].shape[1:3], mode="nearest")[:, 0]
+                seen = color_guide(seen, cmask2, shot.get("color_guide_color2", "#9b30ff"),
+                                   shot.get("color_guide_opacity", 0.35))
+                print(f"{gtag}: second Color Guide selection {text2!r}, "
+                      f"{shot.get('color_guide_color2', '#9b30ff')} at {float(shot.get('color_guide_opacity', 0.35)):.2f}, "
+                      f"{mask_report(cmask2)}", flush=True)
+            print(f"{gtag}: Color Guide {shot.get('color_guide_color', '#00ff00')} at "
+                  f"{float(shot.get('color_guide_opacity', 0.35)):.2f} opacity, {mask_report(cmask)}", flush=True)
         pg = mask_guide if mask_guide in MASK_GUIDES[1:] else None
         if pg and (not use_mask or shot.get("crop") or on_canvas):
             print(f"{gtag}: mask_guide ignored: it is for 'Mask only' shots (mask, no crop, no duet)", flush=True)
@@ -3919,7 +4033,13 @@ try:
             a = analyze(path, float(p["fps"]))
             segs = resolve_plan(p, a, path)
             seg = segs[int(body.get("index", 0))]
-            spec = plan_spec(p, body.get("mask") or seg.get("mask"), path)
+            mask_override = body.get("mask")
+            spec = plan_spec(p, mask_override or seg.get("mask"), path)
+            if isinstance(mask_override, dict):
+                for key in ("threshold", "max_objects", "invert", "fill_holes", "temporal_expand", "blockify",
+                            "padding", "expand", "feather", "paste"):
+                    if key in mask_override:
+                        spec[key] = mask_override[key]
             import asyncio   # SAM 3 takes seconds: keep the server responsive
             _outside_prompt()
             out = await asyncio.get_running_loop().run_in_executor(

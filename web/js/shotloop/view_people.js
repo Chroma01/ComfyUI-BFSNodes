@@ -2,6 +2,9 @@
 import { h } from "../vendor/vue.esm-browser.prod.mjs";
 import { fmtT, fld, check, section, pill, hint } from "./common.js";
 
+const CAST_COLORS = [["", "No Color Guide color"], ["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
+  ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
+
 function castSection(c) {
   const { plan, people, busy, usedRefs } = c;
   const fps = plan.fps;
@@ -19,6 +22,11 @@ function castSection(c) {
         h("img", { class: "face", src: p.thumb, title: `first seen ${fmtT(p.first, fps)} (click to seek)`, onClick: () => c.seek(p.first) }),
         h("div", { class: "t" }, [h("b", `Person ${p.id}`), ` · ${(p.share * 100).toFixed(1)}%`]),
         h("div", { class: "t" }, `${fmtT(p.first, fps)} → ${fmtT(p.last, fps)}`),
+        h("div", { class: "row", style: "margin-top:4px;align-items:center" }, [
+          h("span", { class: "hint" }, "Color Guide identity color"),
+          h("select", { value: cc.guide_color || "", style: "width:auto", onChange: e => c.setCast(p.id, "guide_color", e.target.value) },
+            CAST_COLORS.map(([v, label]) => h("option", { value: v }, label))),
+        ]),
         h("div", { class: "refbox" }, ["ref", "ref2"].map(k => h("div", { class: "rslot" }, [
           h("div", { class: "refslot sm", title: cc[k] ? cc[k] + " (click to replace)" : "click to upload",
             onClick: () => c.pickFile("image/*", name => c.setCast(p.id, k, name)) }, cc[k] ? [h("img", { src: c.viewUrl(cc[k]) })] : [k === "ref" ? "⬆ ref" : "⬆ ref 2"]),

@@ -192,6 +192,37 @@ rows at *opacity* × the noise level, so they start from the original partly vis
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
 the motion either way. (Not applied with the duet panel.)
 
+**🎨 Color Guide** is a separate optional visual cue. Turn it on for a shot with a mask and choose the marker color
+for ref 1. The selected region is tinted in the source guide, while the image detail,
+movement and expression remain visible underneath. This does not turn on `Mask only` or create an H3 generation
+mask. The prompt must explain that the tint is temporary and that the matching reference replaces the tinted person.
+
+For consistency across shots, **People & masks → Find people** groups sampled faces by identity (ArcFace through
+InsightFace when installed; otherwise YuNet + SFace, or a weaker appearance fallback). Choose the matching `Person N`
+in each shot to inherit that cast member's Color Guide color. This is a user-confirmed link: profile views, small faces
+and occlusion can make identity grouping uncertain. Leave the shot on `manual identity` when unsure. The shot's mask
+still selects the actual region to tint, and its color can be overridden for that shot.
+
+For two people in one shot, open **+ Add a second person**, use **ref 2** for that selection, and choose a different
+color (purple by default; duplicate colors are disabled). Enable *use_ref_2* on BFS Shot H3 Conditioning. The
+second SAM 3 text selection is optional; preview it before queuing. Color opacity and ArcFace identity links are
+under the optional settings. Use this prompt and replace the color names if you choose another palette:
+
+```text
+body_swap: subject_definitions: <Subject 1> is the character shown in <Picture 1>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the green-marked replacement. <Subject 2> is the character shown in <Picture 2>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the purple-marked replacement. In the guide video, the translucent green and purple tints are temporary editing markers, not character appearance. Replace the green-tinted person only with <Subject 1> and the purple-tinted person only with <Subject 2>. The guide video provides the scene and the complete performance of both people, including their body poses, gestures, head motion, gaze, speech and facial expressions.
+
+summary: [video generation + references] Replace the green-tinted guide person with <Subject 1> from <Picture 1> and the purple-tinted guide person with <Subject 2> from <Picture 2>, preserving the scene, camera and complete motion and expression of both people.
+
+detailed_description: [Shot 1] Replace the person marked by the translucent green tint with <Subject 1> from <Picture 1>, and the person marked by the translucent purple tint with <Subject 2> from <Picture 2>. Each character follows that person's exact position, timing, body pose, gestures, head motion, gaze, speech and facial expressions in the guide. Remove both temporary color markers completely. Keep the two reference identities distinct and stable in every frame. Preserve their interaction, the background, lighting, camera and all unselected content from the guide video. Prevent identity drift, clothing changes, texture crawling and flicker. The result is a real, photographic video.
+```
+
+The VLM's shot analysis suggests a SAM 3 text selection from the original frames; it does not assign guide colors or
+decide that two detections are the same identity. **Describe target** only describes the first shot selection. For
+two-color swaps, choose both selections and identities yourself, and use the explicit mapping above. The VLM prompt
+writer for *duet* is a separate split-screen task; its generic character-swap draft assumes the supplied pictures
+show one character, so use *planner prompt* for this two-character template. `Describe refs` also treats ref and ref 2
+as views of one identity; write the two subject definitions explicitly when ref 2 is a different person.
+
 **Mask guide** (experimental, *Mask only* shots, BFS Shot H3 Conditioning → `mask_guide`): the shot with only the
 masked region visible, the rest grey, so the model looks at the subject's pose and outline on its own while the mask
 limits where it generates. *+ extra guide* adds it as a second aligned guide next to the normal one (the model sees

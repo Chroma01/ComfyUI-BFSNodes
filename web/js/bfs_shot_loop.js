@@ -67,7 +67,7 @@ function Panel(io) {
   watch(tab, v => store.set("bfs.shotloop.tab", v));
   // what "Copy to other shots" copies (remembered per browser)
   const copyOpts = reactive(store.get("bfs.shotloop.copy", { ref: true, prompt: false, mask_text: false, points: false, crop: false,
-                                                              target: false, chain: false, scope: "all" }));
+                                                              target: false, chain: false, color_guide: false, scope: "all" }));
   watch(copyOpts, v => store.set("bfs.shotloop.copy", { ...v }), { deep: true });
 
   const load = () => {
@@ -215,7 +215,10 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         plan.bounds = j.segs.slice(1).map(s => s.start);
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
           chain: keep[i]?.chain || "history", chain_frame: keep[i]?.chain_frame || "first", chain_history: keep[i]?.chain_history || 17,
-          crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "" }));
+          crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "",
+          color_guide: !!keep[i]?.color_guide, color_guide_color: keep[i]?.color_guide_color || "", color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
+          color_guide_person: keep[i]?.color_guide_person ?? null, color_guide_text2: keep[i]?.color_guide_text2 || "",
+          color_guide_color2: keep[i]?.color_guide_color2 || "", color_guide_person2: keep[i]?.color_guide_person2 ?? null }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -255,7 +258,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       const j = await r.json(); if (j.error) throw new Error(j.error);
       targetCrop.value = { ...targetCrop.value, [segKey(s)]: j.crop };
       if (j.desc) setMeta(i, "target", j.desc);
-      else error.value = "No VLM yet: connect it to the planner's vlm input and run once, or type the description yourself.";
+      else error.value = "The SAM 3 target cutout was created (shown below), but no VLM is loaded to describe it. Connect Qwen3-VL to the Shot Planner's vlm input and queue the workflow once; then click Describe target again. You can also type the target description yourself.";
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
@@ -324,7 +327,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   // copy the chosen settings of shot `from` to the other shots (all of them, or the ones after it)
   const COPY_FIELDS = { ref: "references", prompt: "prompt", mask_text: "mask text", points: "mask points", mask_video: "mask video", crop: "mode",
-                        target: "{target}", chain: "continuity" };
+                        target: "{target}", chain: "continuity", color_guide: "Color Guide" };
   const copyFrom = (from, fields = copyOpts, scope = copyOpts.scope) => {
     const src = segs.value[from]; if (!src) return 0;
     const to = targets(scope, from);
@@ -336,6 +339,12 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (fields.mask_video) m.mask = { ...(m.mask || {}), video: src.mask.video || "" };
       if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; m.paste = src.paste; m.paste_text = src.pasteText; m.strength = src.strength; }
       if (fields.target) m.target = src.target;
+      if (fields.color_guide) {
+        m.color_guide = src.color_guide; m.color_guide_color = src.color_guide_color;
+        m.color_guide_opacity = src.color_guide_opacity; m.color_guide_person = src.color_guide_person;
+        m.color_guide_text2 = src.color_guide_text2; m.color_guide_color2 = src.color_guide_color2;
+        m.color_guide_person2 = src.color_guide_person2;
+      }
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; m.chain_history = src.chainHistory; }
     });
     if (fields.points && (src.mask.points || []).length) pointsTo(src.mask.points, src.mask.key ?? Math.floor(src.len / 2), undefined, from, scope);
