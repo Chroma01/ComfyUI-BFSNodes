@@ -1,6 +1,5 @@
 // Timeline: thumbnails, cut marks, cut score, shot bars (click = select, drag the white handles, double-click = split).
-import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { hue, fmtT, pill } from "./common.js";
+import { h, hue, fmtT, pill } from "./common.js";
 
 export function timelineCard(c) {
   const { plan, an, segs, sel, n, pxPerFrame, tlWidth, maxLen, cuts, hover, tlEl, zoom, play, vid, active } = c;

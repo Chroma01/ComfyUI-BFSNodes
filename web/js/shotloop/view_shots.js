@@ -1,7 +1,7 @@
 // 🎬 Shots tab: one card per shot, then the selected shot's editor (preview, reference & prompt, who is replaced,
 // continuity, copy to other shots).
-import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section } from "./common.js";
+import { h, hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section } from "./common.js";
+import { h as rawH } from "../vendor/vue.esm-browser.prod.mjs";
 
 const GUIDE_COLORS = [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
   ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
@@ -44,7 +44,8 @@ function shotCard(c, s, i) {
       h("img", { class: "rt", style: "width:56px", src: showMasks.value && mp?.frames?.length
         ? mp.frames[Math.floor(mp.frames.length / 2)].src : c.thumbFor(s.start + Math.floor(s.len / 2)) }),
     ]),
-    h("div", { class: "p" }, s.prompt ? s.prompt : (plan.global_prompt ? "↳ global prompt" : "— no prompt —")),
+    s.prompt ? rawH("div", { class: "p" }, s.prompt)
+      : h("div", { class: "p" }, plan.global_prompt ? "↳ global prompt" : "— no prompt —"),
   ]);
 }
 
@@ -117,7 +118,7 @@ function editor(c, cur) {
       h("div", { style: "flex:1;min-width:200px" }, [
         h("textarea", { placeholder: "Prompt for this shot (empty = global prompt). Placeholders: {target} {details} {shot} {setting}",
           value: cur.prompt, onChange: e => c.setMeta(i, "prompt", e.target.value) }),
-        !cur.prompt && plan.global_prompt ? hint(`↳ uses the global prompt: ${plan.global_prompt.slice(0, 120)}${plan.global_prompt.length > 120 ? "…" : ""}`) : null,
+        !cur.prompt && plan.global_prompt ? rawH("span", { class: "hint" }, `↳ uses the global prompt: ${plan.global_prompt.slice(0, 120)}${plan.global_prompt.length > 120 ? "…" : ""}`) : null,
       ]),
     ]),
     usedRefs.value.length ? h("div", { class: "recent" }, [hint("recent (click = ref, shift+click = ref 2):"),

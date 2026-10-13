@@ -180,6 +180,12 @@ const CSS = `
 .bsl .ck .lvl{font-size:12px}
 .bsl .prog{height:7px;border-radius:4px;background:#26262e;overflow:hidden}
 .bsl .prog>div{height:100%;background:linear-gradient(90deg,#3a63e0,#7fe0a8)}
+.bsl .langpick{display:flex;gap:5px;align-items:center}
+.bsl .langpick select{width:auto;min-width:100px;padding:4px 6px}
+.bsl .tourback{position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;padding:16px}
+.bsl .tourbox{width:min(480px,94vw);background:#1d1d23;border:1px solid #4a4a58;border-radius:12px;padding:16px;box-shadow:0 12px 48px #0009}
+.bsl .tourbox h3{margin:18px 0 8px;color:var(--hi)}
+.bsl .tourbox p{line-height:1.55}
 
 /* points window (teleported to <body>) */
 .bsl .mmodal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center}

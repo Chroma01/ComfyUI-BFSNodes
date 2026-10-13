@@ -1,6 +1,5 @@
 // 🎞 Video tab: the source video, how it is split into shots, and the generation size.
-import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { GRIDS, fld, select, section, pill, hint, fmtT } from "./common.js";
+import { h, GRIDS, fld, select, section, pill, hint, fmtT } from "./common.js";
 
 export function videoTab(c) {
   const { plan, an, files, size, busy, detectorUsed, maxLen } = c;

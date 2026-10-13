@@ -1,6 +1,5 @@
 // 👥 People / Filters / Masks tab: cast, shot filters, and global SAM 3 mask settings.
-import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { fmtT, fld, check, section, pill, hint } from "./common.js";
+import { h, fmtT, fld, check, section, pill, hint } from "./common.js";
 
 const CAST_COLORS = [["", "No Color Guide color"], ["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
   ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];

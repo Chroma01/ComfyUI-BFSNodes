@@ -1,6 +1,6 @@
 // The busy bar and the points window (🎯 Points…: click on a frame to pick the subject for SAM 3).
-import { h, Teleport } from "../vendor/vue.esm-browser.prod.mjs";
-import { hint } from "./common.js";
+import { Teleport } from "../vendor/vue.esm-browser.prod.mjs";
+import { h, hint, t } from "./common.js";
 
 export function busyBar(c, msg) {
   const { busySince, now, upPct, status } = c;
@@ -56,6 +56,40 @@ export function pointsModal(c) {
           title: "Track this selection with SAM 3 through the whole video (or the range), forward and backward from this frame; every shot without its own selection takes its part of the track. Also type a short text (e.g. 'woman in pink top') so the subject is found again after camera cuts.",
           onClick: c.saveTrack }, "🎯 Track → whole video"),
         h("button", { class: "pri", onClick: c.savePoints }, "Save (this shot)"),
+      ]),
+    ]),
+  ])));
+}
+
+const TOUR_STEPS = [
+  ["video", "Video", "Choose a video, set the frame range, split at camera cuts, then set the generation size."],
+  ["shots", "Shots", "Review each shot, assign its references and prompt, and choose how the result is applied."],
+  ["people", "People", "Link detected people to references. Set masks here or per shot; ArcFace links are a guide and need your review."],
+  ["prompts", "Prompts", "Set shared references, prompts and optional VLM assistance. Written prompts are kept exactly as authored."],
+  ["shots", "Color Guide", "Color Guide adds a translucent marker to a selected person. Ref 1 and Ref 2 must use different colors in the same shot."],
+  ["run", "Run", "Check warnings, choose auto or queue loop, and set filters or quick-run limits."],
+];
+
+export function tourModal(c) {
+  const { tour, tab } = c;
+  const step = tour.value - 1;
+  if (step < 0 || step >= TOUR_STEPS.length) return null;
+  const [targetTab, title, body] = TOUR_STEPS[step];
+  return h(Teleport, { to: "body" }, h("div", { class: "bsl", style: "background:none;padding:0" },
+    h("div", { class: "tourback", role: "dialog", "aria-modal": "true", "aria-label": t("Shot Planner tour"),
+      onKeydown: e => { if (e.key === "Escape") tour.value = 0; }, onPointerdown: e => { if (e.target === e.currentTarget) tour.value = 0; } }, [
+    h("div", { class: "tourbox" }, [
+      h("div", { class: "row" }, [h("b", t("Shot Planner tour")), h("span", { class: "grow" }), h("span", { class: "hint" }, `${step + 1} / ${TOUR_STEPS.length}`),
+        h("button", { class: "ghost", title: t("Close tour"), "aria-label": t("Close tour"), onClick: () => { tour.value = 0; } }, "✕")]),
+      h("h3", t(title)),
+      h("p", t(body)),
+      h("p", { class: "hint" }, t("This tour is optional. Use Next to visit each main tab; close it whenever you like.")),
+      h("div", { class: "row", style: "justify-content:flex-end;margin-top:12px" }, [
+        step > 0 ? h("button", { onClick: () => { tour.value--; tab.value = TOUR_STEPS[step - 1][0]; } }, t("Back")) : null,
+        h("button", { class: "pri", onClick: () => {
+          if (step === TOUR_STEPS.length - 1) tour.value = 0;
+          else { tour.value++; tab.value = TOUR_STEPS[step + 1][0]; }
+        } }, t(step === TOUR_STEPS.length - 1 ? "Close tour" : "Next")),
       ]),
     ]),
   ])));

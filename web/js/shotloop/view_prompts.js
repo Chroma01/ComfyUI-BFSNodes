@@ -1,6 +1,5 @@
 // 📝 Prompts & refs tab: the global reference / prompt, the VLM (shot suggestions) and the reference descriptions ({details}).
-import { h } from "../vendor/vue.esm-browser.prod.mjs";
-import { fld, check, section, pill, hint, select } from "./common.js";
+import { h, fld, check, section, pill, hint, select } from "./common.js";
 
 function globalSection(c) {
   const { plan } = c;

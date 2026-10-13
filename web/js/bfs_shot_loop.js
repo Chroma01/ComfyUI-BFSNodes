@@ -11,8 +11,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showGuide } from "./bfs_md_view.js";
-import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount, h } from "./vendor/vue.esm-browser.prod.mjs";
-import { DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
+import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
+import { h, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
 import { timelineCard } from "./shotloop/view_timeline.js";
 import { videoTab } from "./shotloop/view_video.js";
@@ -20,7 +20,7 @@ import { shotsTab } from "./shotloop/view_shots.js";
 import { peopleTab } from "./shotloop/view_people.js";
 import { promptsTab } from "./shotloop/view_prompts.js";
 import { runTab } from "./shotloop/view_run.js";
-import { busyBar, pointsModal } from "./shotloop/view_modal.js";
+import { busyBar, pointsModal, tourModal } from "./shotloop/view_modal.js";
 
 const viewUrl = name => {
   if (!name) return "";
@@ -65,6 +65,7 @@ function Panel(io) {
   const targetCrop = ref({});    // "start-end" -> data URL of the subject the description was made from
   const tab = ref(store.get("bfs.shotloop.tab", "shots"));
   watch(tab, v => store.set("bfs.shotloop.tab", v));
+  const tour = ref(0); // opened only by the user's Tour button; never shown automatically
   // what "Copy to other shots" copies (remembered per browser)
   const copyOpts = reactive(store.get("bfs.shotloop.copy", { ref: true, prompt: false, mask_text: false, points: false, crop: false,
                                                               target: false, chain: false, color_guide: false, scope: "all" }));
@@ -613,7 +614,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
-    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks,
+    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, linked, castRef, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
@@ -631,7 +632,15 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         + (range.value.lo > 0 || range.value.hi < N ? " (range)" : ""), "ok") : null,
       warns ? h("span", { class: "pill warn", style: "cursor:pointer", title: "open the checks (Run tab)", onClick: () => { tab.value = "run"; } }, `⚠ ${warns}`) : null,
       h("span", { class: "grow" }),
+      h("label", { class: "langpick", title: t("Language") }, [
+        h("span", { class: "hint" }, "🌐"),
+        h("select", { value: uiLanguage.value, "aria-label": t("Language"), onChange: e => setUiLanguage(e.target.value) }, [
+          h("option", { value: "en" }, "English"), h("option", { value: "pt" }, "Português"),
+          h("option", { value: "es" }, "Español"), h("option", { value: "zh" }, "中文"),
+        ]),
+      ]),
       pill(plan.run === "queue" ? "queue loop" : "auto loop"),
+      h("button", { title: t("Shot Planner tour"), onClick: () => { tour.value = 1; tab.value = "video"; } }, t("🧭 Tour")),
       h("button", { title: "Open the full guide (every setting explained, with examples)", onClick: () => showGuide(guideUrl) }, "📖 Guide"),
     ]);
     const counts = { shots: S.length || null, people: people.value.length || null };
@@ -648,6 +657,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       an.value ? timelineCard(c) : null,
       views[cur](c),
       pointsModal(c),
+      tourModal({ tour, tab }),
     ]);
   };
 }

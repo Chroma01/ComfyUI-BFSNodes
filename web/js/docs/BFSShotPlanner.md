@@ -26,6 +26,10 @@ every shot inside that range.
 
 ## The panel
 
+Use the language selector in the top bar to switch the interface between English, Portuguese, Spanish and Simplified
+Chinese. The choice is saved in this browser and does not alter the workflow plan or prompt text. **Tour** opens an
+optional step-by-step introduction when clicked; it never appears automatically.
+
 The planner's panel has five tabs, in the order you work. The timeline stays on top of every tab.
 
 | tab | what is there |
