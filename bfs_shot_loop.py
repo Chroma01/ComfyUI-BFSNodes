@@ -3000,17 +3000,22 @@ _COLOR_GUIDE_NAMES = {"#00ff00": "green", "#ff2020": "red", "#168cff": "blue", "
 
 
 def color_guide_prompt(prompt: str, color1: str, color2: str = "") -> str:
-    """Add explicit temporary-marker-to-reference mapping for the colors actually enabled on this shot."""
+    """Add the same color-mark instructions used by the training captions."""
     name1 = _COLOR_GUIDE_NAMES.get(str(color1).lower(), "green")
-    lines = [f"The translucent {name1} color overlay is a temporary marker for the selected guide person; "
-             f"replace only that person with <Subject 1> from <Picture 1>, and remove the color overlay completely."]
-    if color2:
+    if not color2:
+        mapping = (f"The {name1} mark identifies the only person to replace. Keep every other visible person unchanged. "
+                   f"Replace only the person marked in {name1} with <Subject 1> from <Picture 1>, preserving the movement, "
+                   "pose, gestures, head motion, gaze, and expression visible through the mark. Preserve all unmarked "
+                   "content and remove the mark completely from the result.")
+    else:
         name2 = _COLOR_GUIDE_NAMES.get(str(color2).lower(), "purple")
-        lines.append(f"The translucent {name2} color overlay marks a different guide person; replace only that person "
-                     f"with <Subject 2> from <Picture 2>, and remove that overlay completely.")
-    lines.append("Each person keeps their own original timing, body motion, gestures, head motion, gaze, speech and facial "
-                 "expression. Preserve the scene, camera and unmarked content from the guide video.")
-    mapping = " ".join(lines)
+        mapping = (f"The {name1} mark identifies the first person to replace. Replace only the person marked in {name1} "
+                   f"with <Subject 1> from <Picture 1>, preserving the movement, pose, gestures, head motion, gaze, and "
+                   f"expression visible through the mark. The {name2} mark identifies the second person to replace. "
+                   f"Replace only the person marked in {name2} with <Subject 2> from <Picture 2>, preserving that person's "
+                   "movement, pose, gestures, head motion, gaze, and expression visible through the mark. Keep every "
+                   "other visible person unchanged, preserve all unmarked content, and remove both marks completely from "
+                   "the result.")
     # Keep the color contract inside the matching sections of the user's existing structured prompt.
     text, n = re.subn(r"(?is)(\bsubject_definitions\s*:.*?)(\s+summary\s*:)",
                       lambda m: m.group(1) + " " + mapping + m.group(2), str(prompt or ""), count=1)
