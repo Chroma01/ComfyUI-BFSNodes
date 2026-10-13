@@ -75,9 +75,9 @@ camera cuts.
   minimum merge into a neighbour when the merge still fits; shots longer than the maximum split
   into equal parts.
 - **Fixed length**: equal parts no longer than the maximum.
-- **One shot (whole range)**: the whole range (start / end frame, *Max total seconds*) as a single shot, whatever its
+- **One shot (whole range)**: the whole selected range as a single shot, whatever its
   length; *Max seconds / shot* is not applied. For "N seconds in one piece" set *Range length, seconds* = N, right
-  next to the mode (it moves the end frame; *Max total seconds* in the Run tab does the same for quick tests).
+  next to the mode (it moves the end frame).
   For pieces of at most X seconds use *Fixed length* with *Max seconds / shot* = X.
 - **By hand**: drag the white handles on the timeline to move a boundary, double-click the
   shot bar to split, *⇥ Merge* to join, or select a shot and press **Delete** to remove the cut at its
@@ -86,11 +86,10 @@ camera cuts.
 **Range** (🎞 Video tab, with its own player): *Start frame* / *End frame* (timeline frames; end 0 = the end of the
 video) limit the plan to a part of the video, before anything is split, analysed or generated. Play or scrub the player
 (or click the timeline) and press *⇤ start here* / *⇥ end here* to take its exact frame. The
-timeline dims what is outside; the join and the soundtrack cover only the range. *Max total seconds* counts from the
-start of the range.
+timeline dims what is outside; the join and the soundtrack cover only the range.
 
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
-107 frames for H3). *Max shots* in the Video tab and *Max total seconds* in the Run tab cap a long source.
+107 frames for H3). *Max shots* in the Video tab caps how many shots are used.
 
 ## Audio
 
@@ -283,7 +282,7 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Frame grid | frame counts the model accepts (H3 17n+5, LTX/Wan 8n+1, Wan 4n+1) |
 | Max / Min seconds per shot | longest shot sent to the model; shorter shots merge into a neighbour |
 | Timeline fps | the frame rate the planner works on (generation and audio use it) |
-| Max shots / Max total seconds | test on the first shots or seconds only |
+| Max shots | test on the first shots only |
 | Megapixels / Size multiple | generation size at the source's aspect ratio, snapped to the multiple |
 | Run | auto loop (all shots in one run) or queue loop (one shot per run, stored on disk) |
 | Skipped shots in the output | keep the original video there or remove those shots |

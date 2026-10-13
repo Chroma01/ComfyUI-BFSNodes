@@ -29,7 +29,6 @@ export const TIPS = {
   "Min seconds / shot": "Shorter shots merge into a neighbour when the merge still fits the maximum.",
   "Timeline fps": "The planner works on this frame rate (the source is resampled). Generated video and audio use it too.",
   "Max shots": "Only the first N shots (0 = all). Handy for quick tests.",
-  "Max total seconds": "Only the first N seconds of the video (0 = all).",
   "Megapixels": "Generation size: the source aspect ratio at this pixel area (0.5 ≈ 960×544 for 16:9). Cropped shots use it for the crop.",
   "Size multiple": "Width and height snap to this multiple (32 for H3 and most video models).",
   "Run": "Auto loop: every shot in one queue run. Queue loop: one shot per run, stored on disk, the join outputs the video after the last shot.",
