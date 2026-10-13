@@ -18,6 +18,15 @@ export function pointsModal(c) {
   const { modal, segs, plan, api, setMeta } = c;
   const ms = segs.value[modal.idx];
   if (!modal.open || !ms) return null;
+  const pointOverlays = ms.color_guide
+    ? [1, 2].flatMap(region => (region === modal.region ? modal.points : modal.groups[region]?.points || []).map((p, k) => h("div", {
+      class: ["pt", "cg", region === 2 && "r2", p.label ? "pos" : "neg"],
+      style: `left:${p.x * 100}%;top:${p.y * 100}%;--point-color:${region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00")}`,
+      title: `Region ${region}${region === modal.region ? " · click to remove" : ""}`,
+      onPointerdown: e => { if (region !== modal.region) return; e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; },
+    })))
+    : modal.points.map((p, k) => h("div", { class: ["pt", p.label ? "pos" : "neg"], style: `left:${p.x * 100}%;top:${p.y * 100}%`,
+      title: "click to remove", onPointerdown: e => { e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } }));
   return h(Teleport, { to: "body" }, h("div", { class: "bsl", style: "background:none;padding:0" }, h("div", { class: "mmodal",
     onKeydown: e => e.stopPropagation(), onPointerdown: e => { if (e.target === e.currentTarget) modal.open = false; } }, [
     h("div", { class: "mbox" }, [
@@ -40,14 +49,7 @@ export function pointsModal(c) {
         modal.prev = null;
       } }, [
         h("img", { draggable: false, src: api.apiURL(`/bfs/shotloop/frame?video=${encodeURIComponent(plan.video)}&fps=${plan.fps}&f=${ms.start + modal.key}&w=900`) }),
-        ...(ms.color_guide ? [1, 2]
-          .flatMap(region => (region === modal.region ? modal.points : modal.groups[region]?.points || []).map((p, k) => h("div", {
-          class: ["pt", "cg", region === 2 && "r2", p.label ? "pos" : "neg"],
-          style: `left:${p.x * 100}%;top:${p.y * 100}%;--point-color:${region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00")}`,
-          title: `Region ${region}${region === modal.region ? " · click to remove" : ""}`,
-          onPointerdown: e => { if (region !== modal.region) return; e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } })))]
-          : modal.points.map((p, k) => h("div", { class: ["pt", p.label ? "pos" : "neg"], style: `left:${p.x * 100}%;top:${p.y * 100}%`,
-            title: "click to remove", onPointerdown: e => { e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } }))),
+        ...pointOverlays,
       ]),
       h("div", { class: "row", style: "margin-top:6px" }, [
         hint(`frame ${ms.start + modal.key} (${modal.key + 1}/${ms.len})`),
