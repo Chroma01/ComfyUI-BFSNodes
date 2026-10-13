@@ -60,7 +60,7 @@ function Panel(io) {
   const maskPrev = ref({});      // "start-end" -> {frames, box, coverage, empty} from /bfs/shotloop/mask
   const showMasks = ref(true);   // overlay the mask preview on the shot cards
   const vlmSug = ref({});        // "start-end" -> {segment, shot, people, recommend, reason} from the VLM
-  const modal = reactive({ open: false, idx: -1, key: 0, points: [], text: "", prev: null, busy: "" });
+  const modal = reactive({ open: false, idx: -1, key: 0, points: [], text: "", region: 1, groups: {}, prev: null, busy: "" });
   const segPeople = ref({});     // "start-end" -> {people, main} from /bfs/shotloop/plan
   const targetCrop = ref({});    // "start-end" -> data URL of the subject the description was made from
   const tab = ref(store.get("bfs.shotloop.tab", "shots"));
@@ -115,6 +115,7 @@ function Panel(io) {
                  color_guide: !!m.color_guide, color_guide_color: m.color_guide_color || "",
                  color_guide_opacity: m.color_guide_opacity ?? 0.35,
                  color_guide_text2: m.color_guide_text2 || "", color_guide_color2: m.color_guide_color2 || "",
+                 color_guide_points2: m.color_guide_points2 || [], color_guide_key2: m.color_guide_key2,
                  crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "",
                  extMask: !!plan.mask_video || !!(plan.track?.points?.length), trackMask: !!(plan.track?.points?.length) });
     }
@@ -220,7 +221,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
           chain: keep[i]?.chain || "history", chain_frame: keep[i]?.chain_frame || "first", chain_history: keep[i]?.chain_history || 17,
           crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "",
           color_guide: !!keep[i]?.color_guide, color_guide_color: keep[i]?.color_guide_color || "", color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
-          color_guide_text2: keep[i]?.color_guide_text2 || "", color_guide_color2: keep[i]?.color_guide_color2 || "" }));
+          color_guide_text2: keep[i]?.color_guide_text2 || "", color_guide_color2: keep[i]?.color_guide_color2 || "",
+          color_guide_points2: keep[i]?.color_guide_points2 || [], color_guide_key2: keep[i]?.color_guide_key2 ?? 0 }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -282,13 +284,32 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     if (s && maskPrev.value[segKey(s)]) { const mp = { ...maskPrev.value }; delete mp[segKey(s)]; maskPrev.value = mp; }
   };
   const setMaskCfg = (k, v) => { plan.mask_cfg = { ...plan.mask_cfg, [k]: v }; save(); maskPrev.value = {}; };
-  const openPoints = i => {
+  const openPoints = (i, region = 1) => {
     const s = segs.value[i]; if (!s) return;
-    Object.assign(modal, { open: true, idx: i, key: s.mask.key ?? Math.floor(s.len / 2), points: [...(s.mask.points || [])],
-                           text: s.mask.text || "", prev: null, busy: "" });
+    const g1 = { key: s.mask.key ?? Math.floor(s.len / 2), points: [...(s.mask.points || [])], text: s.mask.text || "" };
+    const g2 = { key: g1.key, points: [...(s.color_guide_points2 || [])], text: s.color_guide_text2 || "" };
+    Object.assign(modal, { open: true, idx: i, region: s.color_guide ? region : 1, groups: { 1: g1, 2: g2 },
+      key: (region === 2 && s.color_guide ? g2 : g1).key, points: [...((region === 2 && s.color_guide ? g2 : g1).points)],
+      text: (region === 2 && s.color_guide ? g2 : g1).text, prev: null, busy: "" });
+  };
+  const switchPointRegion = region => {
+    const old = modal.groups[modal.region] || {};
+    modal.groups[modal.region] = { key: modal.key, points: [...modal.points], text: modal.text };
+    const next = modal.groups[region] || { key: modal.key, points: [], text: "" };
+    modal.region = region; modal.points = [...next.points]; modal.text = next.text; modal.prev = null;
+  };
+  const commitPointGroups = i => {
+    const m = meta(i), g1 = modal.groups[1] || {}, g2 = modal.groups[2] || {};
+    m.mask = { ...(m.mask || {}), points: [...(modal.region === 1 ? modal.points : g1.points || [])],
+      key: modal.region === 1 ? modal.key : g1.key, text: modal.region === 1 ? modal.text : g1.text };
+    if (segs.value[i]?.color_guide) {
+      m.color_guide_points2 = [...(modal.region === 2 ? modal.points : g2.points || [])];
+      m.color_guide_key2 = modal.region === 2 ? modal.key : (g1.key ?? modal.key);
+      m.color_guide_text2 = modal.region === 2 ? modal.text : g2.text || "";
+    }
   };
   const savePoints = () => {
-    const m = meta(modal.idx); m.mask = { ...(m.mask || {}), points: modal.points, key: modal.key, text: modal.text }; save();
+    const i = modal.idx; commitPointGroups(i); save();
     if (modal.prev) maskPrev.value = { ...maskPrev.value, [segKey(segs.value[modal.idx])]: modal.prev };
     modal.open = false;
   };
@@ -303,7 +324,11 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     });
     maskPrev.value = {}; save();
   };
-  const savePointsAll = () => { pointsTo(modal.points, modal.key, modal.text, modal.idx); modal.open = false; };
+  const savePointsAll = () => {
+    if (segs.value[modal.idx]?.color_guide) { commitPointGroups(modal.idx); save(); }
+    else pointsTo(modal.points, modal.key, modal.text, modal.idx);
+    modal.open = false;
+  };
   // one selection tracked by SAM 3 through the whole video (or range): every shot without its own selection takes its
   // part of that track, so the subject is found wherever it moves (copied points can fall on the background)
   const saveTrack = () => {
@@ -321,7 +346,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   const clearTrack = () => { plan.track = null; maskPrev.value = {}; save(); };
   const clearMask = i => {
-    const m = meta(i); m.mask = {}; m.crop = false; m.inpaint = false; m.paste = false;
+    const m = meta(i); m.mask = {}; m.color_guide_points2 = []; m.color_guide_key2 = 0; m.color_guide_text2 = "";
+    m.crop = false; m.inpaint = false; m.paste = false;
     const k = segs.value[i] ? segKey(segs.value[i]) : null;
     if (k) { const mp = { ...maskPrev.value }; delete mp[k]; maskPrev.value = mp; }
     save();
@@ -344,6 +370,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         m.color_guide = src.color_guide; m.color_guide_color = src.color_guide_color;
         m.color_guide_opacity = src.color_guide_opacity;
         m.color_guide_text2 = src.color_guide_text2; m.color_guide_color2 = src.color_guide_color2;
+        m.color_guide_points2 = [...(src.color_guide_points2 || [])]; m.color_guide_key2 = src.color_guide_key2;
       }
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; m.chain_history = src.chainHistory; }
     });
@@ -618,7 +645,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, included, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
-    openPoints, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
+    openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
     frameAt, thumbFor, playShot, playAll, stop, seek, setRef, uploadRef,
   };

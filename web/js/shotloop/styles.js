@@ -196,6 +196,8 @@ const CSS = `
 .bsl .mimg img{width:100%;border-radius:6px}
 .bsl .pt{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #fff;cursor:pointer}
 .bsl .pt.pos{background:#3ccf6b}.bsl .pt.neg{background:#e8455a}
+.bsl .pt.cg.pos{background:var(--point-color,#00ff00)}
+.bsl .pt.r2{box-shadow:0 0 0 2px #9b30ff}
 `;
 
 export function styles() {

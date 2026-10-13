@@ -140,15 +140,20 @@ function editor(c, cur) {
           c.setMeta(i, "color_guide_color", e.target.value);
           if (maskPrev.value[segKey(cur)]) c.previewMask(i);
         } },
-          GUIDE_COLORS.map(([v, label]) => h("option", { value: v }, label)))]),
+          GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === (cur.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") }, label)))]),
     ]),
     cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 || hasRef2 }, [
-      h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 ? "Mark a second region · Ref 2" : "+ Mark a second region (optional)"),
+      h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 || (cur.color_guide_points2 || []).length ? "Mark a second region · Ref 2" : "+ Mark a second region (optional)"),
       h("div", { class: "row", style: "margin-top:8px;align-items:center;gap:8px" }, [
         h("span", { class: "hint", style: "white-space:nowrap" }, "Describe second region"),
         h("input", { type: "text", value: cur.color_guide_text2 || "", style: "flex:1;min-width:160px", placeholder: "e.g. the person on the left", onChange: e => c.setMeta(i, "color_guide_text2", e.target.value) }),
         h("button", { disabled: !!busy.value || !cur.color_guide_text2, onClick: () => c.previewMask(i, { text: cur.color_guide_text2, max_objects: 1 }) }, "👁 Preview"),
-        h("select", { value: cur.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff", onChange: e => c.setMeta(i, "color_guide_color2", e.target.value) },
+        h("button", { onClick: () => c.openPoints(i, 2) }, (cur.color_guide_points2 || []).length ? `🎯 Points 2 (${cur.color_guide_points2.length})` : "🎯 Mark with points"),
+        h("select", { value: cur.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff", onChange: e => {
+          c.setMeta(i, "color_guide_color2", e.target.value);
+          if ((cur.color_guide_points2 || []).length) c.previewMask(i, { points: cur.color_guide_points2, key: cur.color_guide_key2 || 0,
+            text: cur.color_guide_text2 || "", preview_color: e.target.value });
+        } },
           GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === (cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00") }, label))),
       ]),
     ]) : null,

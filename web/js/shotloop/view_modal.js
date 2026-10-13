@@ -22,12 +22,16 @@ export function pointsModal(c) {
     onKeydown: e => e.stopPropagation(), onPointerdown: e => { if (e.target === e.currentTarget) modal.open = false; } }, [
     h("div", { class: "mbox" }, [
       h("div", { class: "row", style: "margin-bottom:6px" }, [h("span", { class: "sect" }, `Shot #${modal.idx + 1} · points`),
-        ms.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Colored Mark"),
-          h("select", { value: ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => {
-            setMeta(modal.idx, "color_guide_color", e.target.value);
-            if (modal.prev) c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text }, true);
+        ms.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, `Region ${modal.region} · color`),
+          h("select", { value: modal.region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00"), style: "width:auto", onChange: e => {
+            setMeta(modal.idx, modal.region === 2 ? "color_guide_color2" : "color_guide_color", e.target.value);
+            if (modal.prev) c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text,
+              preview_color: e.target.value }, true);
           } },
-            [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"], ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]].map(([v, n]) => h("option", { value: v }, n)))]) : null,
+            [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"], ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]].map(([v, n]) => h("option", { value: v, disabled: ms.color_guide && v === (modal.region === 2 ? (ms.color_guide_color || "#00ff00") : (ms.color_guide_color2 || "#9b30ff")) }, n)))]) : null,
+        ms.color_guide ? h("div", { class: "row" }, [hint("Colored Mark keeps two independent point sets; switch regions to edit each person. Both use the frame selected below."),
+          h("button", { class: modal.region === 1 ? "pri" : "", onClick: () => c.switchPointRegion(1) }, `Region 1 (${modal.groups[1]?.points?.length || 0})`),
+          h("button", { class: modal.region === 2 ? "pri" : "", onClick: () => c.switchPointRegion(2) }, `Region 2 (${modal.groups[2]?.points?.length || 0})`)]) : null,
         hint("click = keep (green) · right-click or shift+click = exclude (red) · click a point to remove it")]),
       h("div", { class: "mimg", onContextmenu: e => e.preventDefault(), onPointerdown: e => {
         const box = e.currentTarget.getBoundingClientRect();
@@ -36,8 +40,14 @@ export function pointsModal(c) {
         modal.prev = null;
       } }, [
         h("img", { draggable: false, src: api.apiURL(`/bfs/shotloop/frame?video=${encodeURIComponent(plan.video)}&fps=${plan.fps}&f=${ms.start + modal.key}&w=900`) }),
-        ...modal.points.map((p, k) => h("div", { class: ["pt", p.label ? "pos" : "neg"], style: `left:${p.x * 100}%;top:${p.y * 100}%`,
-          title: "click to remove", onPointerdown: e => { e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } })),
+        ...(ms.color_guide ? [1, 2]
+          .flatMap(region => (region === modal.region ? modal.points : modal.groups[region]?.points || []).map((p, k) => h("div", {
+          class: ["pt", "cg", region === 2 && "r2", p.label ? "pos" : "neg"],
+          style: `left:${p.x * 100}%;top:${p.y * 100}%;--point-color:${region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00")}`,
+          title: `Region ${region}${region === modal.region ? " · click to remove" : ""}`,
+          onPointerdown: e => { if (region !== modal.region) return; e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } })))]
+          : modal.points.map((p, k) => h("div", { class: ["pt", p.label ? "pos" : "neg"], style: `left:${p.x * 100}%;top:${p.y * 100}%`,
+            title: "click to remove", onPointerdown: e => { e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } }))),
       ]),
       h("div", { class: "row", style: "margin-top:6px" }, [
         hint(`frame ${ms.start + modal.key} (${modal.key + 1}/${ms.len})`),
@@ -49,16 +59,18 @@ export function pointsModal(c) {
           onChange: e => { modal.text = e.target.value; } }),
         h("button", { onClick: () => { modal.points = []; modal.prev = null; } }, "Clear points"),
         h("button", { class: "pri", disabled: !!modal.busy || !(modal.points.length || modal.text),
-          onClick: () => c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text }, true) }, "👁 Segment"),
+          onClick: () => c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text,
+            preview_color: modal.region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff")
+              : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00") }, true) }, "👁 Segment"),
       ]),
       modal.busy ? busyBar(c, modal.busy) : null,
       modal.prev ? h("div", { class: "mstrip" }, [...modal.prev.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
         hint(modal.prev.empty ? "nothing found" : `covers ${(modal.prev.coverage * 100).toFixed(1)}%`)]) : null,
       h("div", { class: "row", style: "margin-top:8px;justify-content:flex-end" }, [
         h("button", { onClick: () => { modal.open = false; } }, "Cancel"),
-        h("button", { title: "Apply these points to EVERY shot, each on its frame at the same relative position (a subject that stays in place)",
-          onClick: c.savePointsAll }, "Save → all shots"),
-        h("button", { disabled: !modal.points.length,
+        !ms.color_guide ? h("button", { title: "Apply these points to EVERY shot, each on its frame at the same relative position (a subject that stays in place)",
+          onClick: c.savePointsAll }, "Save → all shots") : null,
+        h("button", { disabled: !modal.points.length || ms.color_guide,
           title: "Track this selection with SAM 3 through the whole video (or the range), forward and backward from this frame; every shot without its own selection takes its part of the track. Also type a short text (e.g. 'woman in pink top') so the subject is found again after camera cuts.",
           onClick: c.saveTrack }, "🎯 Track → whole video"),
         h("button", { class: "pri", onClick: c.savePoints }, "Save (this shot)"),

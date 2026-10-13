@@ -501,6 +501,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["color_guide_color"] = str(m.get("color_guide_color") or "")
         s["color_guide_text2"] = str(m.get("color_guide_text2") or "")
         s["color_guide_color2"] = str(m.get("color_guide_color2") or "")
+        s["color_guide_points2"] = list(m.get("color_guide_points2") or [])
+        s["color_guide_key2"] = int(m.get("color_guide_key2") or 0)
         s["color_guide_opacity"] = min(0.8, max(0.05, float(m.get("color_guide_opacity") or 0.35)))
         s["strength"] = min(1.0, max(0.05, float(m.get("strength") or 1.0)))
         s["mask"] = m.get("mask") or {}
@@ -2660,7 +2662,7 @@ class BFSShotPlanner:
             if s.get("color_guide"):
                 shot_prompt = color_guide_prompt(shot_prompt, s.get("color_guide_color") or "#00ff00",
                                                  (s.get("color_guide_color2") or "#9b30ff")
-                                                 if s.get("color_guide_text2") else "")
+                                                 if s.get("color_guide_text2") or s.get("color_guide_points2") else "")
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
@@ -2673,6 +2675,8 @@ class BFSShotPlanner:
                 "color_guide_opacity": float(s.get("color_guide_opacity") or 0.35),
                 "color_guide_text2": str(s.get("color_guide_text2") or ""),
                 "color_guide_color2": str(s.get("color_guide_color2") or "#9b30ff"),
+                "color_guide_points2": list(s.get("color_guide_points2") or []),
+                "color_guide_key2": int(s.get("color_guide_key2") or 0),
                 "ref": ref, "ref2": ref2,
                 "prompt": shot_prompt,
                 "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
@@ -3223,7 +3227,7 @@ class BFSShotH3Conditioning:
             refs["ref_image_0"] = shot["ref"]
         if use_ref_2 and shot["ref2"] is not None:
             refs[f"ref_image_{len(refs)}"] = shot["ref2"]
-        if shot.get("color_guide") and shot.get("color_guide_text2"):
+        if shot.get("color_guide") and (shot.get("color_guide_text2") or shot.get("color_guide_points2")):
             if not use_ref_2 or shot.get("ref2") is None:
                 raise ValueError("Colored Mark's second person is marked, but no second reference is being passed. Set the shot's ref 2 and enable use_ref_2.")
             if str(shot.get("color_guide_color", "#00ff00")).lower() == str(shot.get("color_guide_color2", "#9b30ff")).lower():
@@ -3290,17 +3294,18 @@ class BFSShotH3Conditioning:
             seen = color_guide(seen, cmask, shot.get("color_guide_color", "#00ff00"),
                                shot.get("color_guide_opacity", 0.35))
             text2 = str(shot.get("color_guide_text2") or "").strip()
-            if text2:
+            points2 = shot.get("color_guide_points2") or []
+            if text2 or points2:
                 ms = shot.get("mask_src")
                 if not ms:
-                    raise ValueError(f"{gtag}: the second Colored Mark selection needs a full-frame shot mask source; turn off Crop for this shot")
-                spec2 = dict(DEFAULT_MASK, text=text2, max_objects=1)
+                    raise ValueError(f"{gtag}: the second Colored Mark selection needs Crop turned off so both people can be marked on the full frame")
+                spec2 = dict(DEFAULT_MASK, text=text2, points=points2, key=shot.get("color_guide_key2", 0), max_objects=1)
                 r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
                 cmask2 = torch.nn.functional.interpolate(r2["masks"][:, None].float(),
                                                          size=shot["frames"].shape[1:3], mode="nearest")[:, 0]
                 seen = color_guide(seen, cmask2, shot.get("color_guide_color2", "#9b30ff"),
                                    shot.get("color_guide_opacity", 0.35))
-                print(f"{gtag}: second Colored Mark selection {text2!r}, "
+                print(f"{gtag}: second Colored Mark selection ({len(points2)} points{', ' + repr(text2) if text2 else ''}), "
                       f"{shot.get('color_guide_color2', '#9b30ff')} at {float(shot.get('color_guide_opacity', 0.35)):.2f}, "
                       f"{mask_report(cmask2)}", flush=True)
             print(f"{gtag}: Colored Mark {shot.get('color_guide_color', '#00ff00')} at "
@@ -4126,10 +4131,12 @@ try:
                         spec[key] = mask_override[key]
             import asyncio   # SAM 3 takes seconds: keep the server responsive
             _outside_prompt()
+            preview_color = (mask_override or {}).get("preview_color") or (
+                seg.get("color_guide_color") if seg.get("color_guide") else "#ff283c")
             out = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: mask_preview(path, a, seg["start"], seg["end"] - seg["start"], spec,
                                            int(body.get("count", 6)),
-                                           seg.get("color_guide_color") if seg.get("color_guide") else "#ff283c",
+                                           preview_color,
                                            seg.get("color_guide_opacity") if seg.get("color_guide") else 0.55))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
