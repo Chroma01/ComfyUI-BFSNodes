@@ -3063,6 +3063,33 @@ def generation_mask(shot: dict, log: str = "") -> torch.Tensor:
 def overlay_of(shot: dict) -> dict | None:
     """What the comparison draws over the original column: a cropped shot's mask and box, or the generation mask of a
     mask-only shot (segmented already when it ran; never runs SAM 3 just for the picture unless the shot uses it)."""
+    if shot.get("color_guide"):
+        if shot.get("comparison_mark_regions"):
+            return {"regions": shot["comparison_mark_regions"]}
+        opacity = float(shot.get("color_guide_opacity") or 0.35)
+        regions = []
+        crop = shot.get("crop")
+        if crop and crop.get("mask") is not None:
+            regions.append({"mask": crop["mask"], "color": shot.get("color_guide_color") or "#00ff00",
+                            "opacity": opacity})
+        else:
+            ms = shot.get("mask_src")
+            if ms:
+                try:
+                    r1 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
+                    regions.append({"mask": r1["masks"], "color": shot.get("color_guide_color") or "#00ff00",
+                                    "opacity": opacity})
+                    text2 = str(shot.get("color_guide_text2") or "").strip()
+                    points2 = shot.get("color_guide_points2") or []
+                    if text2 or points2:
+                        spec2 = dict(DEFAULT_MASK, text=text2, points=points2,
+                                     key=shot.get("color_guide_key2", 0), max_objects=1)
+                        r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
+                        regions.append({"mask": r2["masks"], "color": shot.get("color_guide_color2") or "#9b30ff",
+                                        "opacity": opacity})
+                except Exception as e:  # the comparison picture is optional
+                    print(f"[BFS Shot Join] no Colored Mark overlay for shot {shot.get('index', 0) + 1}: {e}")
+        return {"regions": regions, "box": crop.get("box") if crop else None}
     if shot.get("crop"):
         return shot["crop"]
     ms = shot.get("mask_src")
@@ -3075,6 +3102,38 @@ def overlay_of(shot: dict) -> dict | None:
     except Exception as e:   # the picture is optional
         print(f"[BFS Shot Join] no mask overlay for shot {shot.get('index', 0) + 1}: {e}")
         return None
+
+
+def _comparison_mark_regions(shot: dict, source: torch.Tensor, height: int) -> list[dict]:
+    """Pack low-resolution Colored Mark masks into queue files for the later comparison join."""
+    H, W = source.shape[1:3]
+    scale = min(1.0, (height or H) / max(1, H))
+    size = (max(16, int(H * scale)), max(16, int(W * scale)))
+    opacity = float(shot.get("color_guide_opacity") or 0.35)
+    masks = []
+    crop = shot.get("crop")
+    ms = shot.get("mask_src")
+    if crop and crop.get("mask") is not None:
+        masks.append((crop["mask"], shot.get("color_guide_color") or "#00ff00"))
+    elif ms:
+        r1 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
+        masks.append((r1["masks"], shot.get("color_guide_color") or "#00ff00"))
+    if not crop and ms:
+        text2 = str(shot.get("color_guide_text2") or "").strip()
+        points2 = shot.get("color_guide_points2") or []
+        if text2 or points2:
+            spec2 = dict(DEFAULT_MASK, text=text2, points=points2,
+                         key=shot.get("color_guide_key2", 0), max_objects=1)
+            r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
+            masks.append((r2["masks"], shot.get("color_guide_color2") or "#9b30ff"))
+    packed = []
+    for mask, color in masks:
+        if mask.ndim == 2:
+            mask = mask[None]
+        small = torch.nn.functional.interpolate(mask[:, None].float(), size=size, mode="nearest")[:, 0]
+        bits = torch.from_numpy(np.packbits((small > 0.5).cpu().numpy().astype(np.uint8), axis=-1).copy())
+        packed.append({"packed": bits, "shape": tuple(small.shape), "color": color, "opacity": opacity})
+    return packed
 
 
 def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torch.Tensor, strength: float = 1.0):
@@ -3517,8 +3576,9 @@ class BFSShotJoin:
                              "'new subject' text from the planner, default 'person'), so a bigger silhouette (hair, "
                              "body) is not cut. Off = only the original mask (+ expand)."}),
                          "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
-                             "a crop or a generation mask (Mask only / Crop + mask) show the mask (red, as grown by "
-                             "expand) and the crop box (yellow) over the original column, to check what was selected."})},
+                             "a crop or a generation mask (Mask only / Crop + mask) show the selected mask over the "
+                             "original column; Colored Mark uses its selected colors, other masks use red. Crop boxes "
+                             "are yellow."})},
         }
 
     INPUT_IS_LIST = True
@@ -3572,6 +3632,14 @@ class BFSShotJoin:
                 sc = min(1.0, h / src.shape[1])
                 small = _scale_batch(src, max(16, int(src.shape[1] * sc)), max(16, int(src.shape[2] * sc)))
                 meta["frames"] = (small * 255).round().to(torch.uint8)
+                if shot.get("color_guide"):
+                    try:
+                        meta["color_guide"] = True
+                        meta["color_guide_color"] = shot.get("color_guide_color") or "#00ff00"
+                        meta["color_guide_opacity"] = shot.get("color_guide_opacity") or 0.35
+                        meta["comparison_mark_regions"] = _comparison_mark_regions(shot, src, h)
+                    except Exception as e:  # keep the video join available if its optional comparison overlay fails
+                        print(f"[BFS Shot Join] no Colored Mark overlay for shot {shot.get('index', 0) + 1}: {e}")
         torch.save({"frames": (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(), "shot": meta},
                    os.path.join(d, f"shot_{shot['index']:04d}.pt"))
         st = run_state(rid)
@@ -3779,14 +3847,31 @@ def _scale_batch(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
 
 
 def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
-    """The shot's SAM 3 mask in red (45 %) and its crop box in yellow over the original column [L,H,W,3]."""
+    """Overlay selection masks and an optional crop box on the original comparison column [L,H,W,3]."""
     H, W = o.shape[1:3]
-    m = crop.get("mask")
-    if m is not None and m.numel():
+    regions = crop.get("regions") or [{"mask": crop.get("mask"), "color": "#ff283c", "opacity": 0.45}]
+    for region in regions:
+        m = region.get("mask")
+        if m is None and region.get("packed") is not None:
+            shape = tuple(region.get("shape") or ())
+            if len(shape) == 3:
+                packed = region["packed"]
+                packed = packed.cpu().numpy() if isinstance(packed, torch.Tensor) else np.asarray(packed)
+                m = torch.from_numpy(np.unpackbits(packed, axis=-1, count=shape[-1])
+                                     .reshape(shape).copy())
+        if m is None or not m.numel():
+            continue
+        if m.ndim == 2:
+            m = m[None]
         idx = torch.clamp(torch.arange(L), max=m.shape[0] - 1)
-        mm = torch.nn.functional.interpolate(m[idx].float()[:, None], size=(H, W), mode="nearest")[:, 0] > 0.5
-        red = torch.tensor([1.0, 0.16, 0.24])
-        o = torch.where(mm[..., None], o * 0.55 + red * 0.45, o)
+        mm = torch.nn.functional.interpolate(m[idx].float()[:, None], size=(H, W), mode="nearest")[:, 0].clamp(0, 1)
+        color = str(region.get("color") or "#ff283c")
+        try:
+            rgb = torch.tensor([int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)], dtype=torch.float32)
+        except (ValueError, IndexError):
+            rgb = torch.tensor([1.0, 0.16, 0.24])
+        alpha = mm[..., None] * min(0.8, max(0.05, float(region.get("opacity", 0.45))))
+        o = o.float() * (1 - alpha) + rgb * alpha
     box = crop.get("box")
     if box:
         x0, y0, x1, y1 = [int(round(v)) for v in (box[0] * W, box[1] * H, box[2] * W, box[3] * H)]
@@ -3801,8 +3886,8 @@ def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
 def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: int = 480,
                      show_mask: bool = True) -> torch.Tensor:
     """original | references | result for every output frame, with shot info on top and the prompt below.
-    Built at `height` px per column (0 = full size) so long videos stay light. With show_mask, cropped shots show
-    their mask (red) and crop box (yellow) over the original column, mask-only shots their generation mask."""
+    Built at `height` px per column (0 = full size) so long videos stay light. With show_mask, selected regions appear
+    over the original column in their Colored Mark colors, or red for other masks; crop boxes are yellow."""
     vH, vW = video.shape[1:3]
     s = min(1.0, height / vH) if height and height > 0 else 1.0
     H, W = max(16, int(vH * s) // 2 * 2), max(16, int(vW * s) // 2 * 2)
