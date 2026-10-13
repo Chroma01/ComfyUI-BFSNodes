@@ -75,6 +75,7 @@ export function videoTab(c) {
       fld("Frame grid", sel_("grid", Object.keys(GRIDS))),
       fld("Max seconds / shot", num("max_s", 0.1, 0.2), `= ${maxLen.value} frames (${(maxLen.value / fps).toFixed(2)} s)`),
       fld("Min seconds / shot", num("min_s", 0.1, 0)),
+      fld("Max shots (0 = all)", num("max_parts", 1, 0), "limit how many detected shots are used"),
       fld("Timeline fps", num("fps", 1, 1), "re-analyses"),
     ]),
     h("div", { class: "row", style: "margin-top:8px" }, [

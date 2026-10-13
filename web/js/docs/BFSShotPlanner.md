@@ -90,7 +90,7 @@ timeline dims what is outside; the join and the soundtrack cover only the range.
 start of the range.
 
 *Max seconds / shot* is converted to frames and snapped down to the grid (4.5 s at 24 fps =
-107 frames for H3). *Max shots* and *Max total seconds* cap a long source.
+107 frames for H3). *Max shots* in the Video tab and *Max total seconds* in the Run tab cap a long source.
 
 ## Audio
 
