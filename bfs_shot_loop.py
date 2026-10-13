@@ -1571,6 +1571,30 @@ def _node_boundary() -> None:
         pass
 
 
+def _textgenerate_execute(TextGenerate, **kwargs):
+    """Keep MTP disabled when TextGenerate supports it, and tolerate older signatures without it."""
+    import inspect
+
+    try:
+        params = inspect.signature(TextGenerate.execute).parameters
+        supports_mtp = "mtp" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):
+        supports_mtp = False
+
+    call_kwargs = dict(kwargs)
+    if supports_mtp:
+        # MTP is speculative decoding. It is optional and off preserves the planner's prior behavior.
+        call_kwargs["mtp"] = "off"
+    try:
+        return TextGenerate.execute(**call_kwargs)
+    except TypeError as e:
+        # Some wrappers advertise **kwargs but forward to an older execute() implementation.
+        if "mtp" not in call_kwargs or "unexpected keyword argument 'mtp'" not in str(e):
+            raise
+        call_kwargs.pop("mtp")
+        return TextGenerate.execute(**call_kwargs)
+
+
 def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int, temperature: float = 0.0, seed: int = 0) -> str:
     """Text from a vision-language CLIP. Some models end the answer before writing anything for some wordings:
     retry with a reworded request, then with sampling, and clean leftovers of the chat template. temperature > 0
@@ -1585,8 +1609,8 @@ def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int, tempe
                        "repetition_penalty": 1.05, "presence_penalty": 0.0, "seed": 1})]
     text = ""
     for q, mode in tries:
-        text = TextGenerate.execute(clip=clip, prompt=q, max_length=int(max_tokens), sampling_mode=mode,
-                                    image=images, mtp="off").args[0]
+        text = _textgenerate_execute(TextGenerate, clip=clip, prompt=q, max_length=int(max_tokens),
+                                     sampling_mode=mode, image=images).args[0]
         _node_boundary()
         text = str(text or "").strip()
         for junk in ("assistant\n", "assistant:", "assistant"):

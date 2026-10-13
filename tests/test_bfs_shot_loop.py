@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -65,10 +66,50 @@ class GridTest(unittest.TestCase):
         self.assertEqual(SL.DEFAULT_PLAN["megapixels"], 0.5)
 
 
+class TextGenerateCompatibilityTest(unittest.TestCase):
+    def _generate(self, execute):
+        calls = []
+
+        def wrapped(*args, **kwargs):
+            result = execute(*args, **kwargs)
+            calls.append(kwargs)
+            return result
+
+        textgen = types.ModuleType("comfy_extras.nodes_textgen")
+        textgen.TextGenerate = type("TextGenerate", (), {"execute": staticmethod(wrapped)})
+        comfy_extras = types.ModuleType("comfy_extras")
+        comfy_extras.__path__ = []
+        modules = {"comfy_extras": comfy_extras, "comfy_extras.nodes_textgen": textgen}
+        with patch.dict(sys.modules, modules):
+            result = SL.vlm_generate(object(), "describe this", torch.zeros(1, 2, 2, 3), 32)
+        self.assertEqual(result, "generated")
+        return calls[0]
+
+    def test_old_textgenerate_signature_does_not_receive_mtp(self):
+        def execute(clip, prompt, max_length, sampling_mode, image=None):
+            return types.SimpleNamespace(args=("generated",))
+
+        kwargs = self._generate(execute)
+        self.assertNotIn("mtp", kwargs)
+
+    def test_new_textgenerate_signature_keeps_mtp_disabled(self):
+        def execute(clip, prompt, max_length, sampling_mode, image=None, mtp="auto"):
+            return types.SimpleNamespace(args=("generated",))
+
+        kwargs = self._generate(execute)
+        self.assertEqual(kwargs["mtp"], "off")
+
+
 class PlanTest(unittest.TestCase):
     def test_fixed_mode_splits_evenly_under_the_limit(self):
         segs = SL.plan_segments(300, [], "fixed", 107, 24)
         self.assertEqual([s["end"] - s["start"] for s in segs], [100, 100, 100])
+
+    def test_camera_cut_mode_splits_a_continuous_range_at_max_length(self):
+        segs = SL.plan_segments(360, [], "shots", 107, 1)
+        self.assertEqual(len(segs), 4)
+        self.assertTrue(all(s["end"] - s["start"] <= 107 for s in segs))
+        self.assertEqual(segs[-1]["end"], 360)
 
     def test_shots_split_at_cuts_and_long_shots_are_divided(self):
         segs = SL.plan_segments(300, [50, 80], "shots", 107, 10)

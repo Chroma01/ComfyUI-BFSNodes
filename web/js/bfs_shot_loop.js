@@ -461,7 +461,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       // do not surprise them with a wall of detected shots on first load.
       plan.mode = "single";
       plan.start_f = 0;
-      plan.end_f = Math.round(15 * plan.fps);
+      plan.end_f = Math.round(12 * plan.fps);
       plan.start_s = 0; plan.end_s = 0; plan.max_total_s = 0;
       tab.value = "video";
     }

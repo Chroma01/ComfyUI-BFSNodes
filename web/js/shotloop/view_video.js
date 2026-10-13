@@ -6,7 +6,8 @@ export function videoTab(c) {
   const { plan, an, files, size, busy, detectorUsed, maxLen } = c;
   const fps = plan.fps;
   const num = (k, step = 0.1, min = 0) => h("input", { type: "number", step, min, value: plan[k], onChange: e => c.setPlan(k, parseFloat(e.target.value) || 0) });
-  const sel_ = (k, opts, after) => select(plan[k], opts, v => c.setPlan(k, v, after));
+  const sel_ = (k, opts, after) => select(plan[k], opts, v =>
+    c.setPlan(k, v, after || (k === "mode" ? () => c.autoSplit(true) : undefined)));
   const au = an.value?.audio;
 
   const source = section("Source video", [
