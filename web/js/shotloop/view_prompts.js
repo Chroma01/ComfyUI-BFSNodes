@@ -50,6 +50,9 @@ function vlmSection(c) {
       h("div", { class: "grid" }, [
         fld("Frames per shot", h("input", { type: "number", min: 1, max: 8, step: 1, value: VC.frames, onChange: e => c.setVlmCfg("frames", parseInt(e.target.value) || 3) })),
         fld("Max tokens", h("input", { type: "number", min: 64, max: 2048, step: 32, value: VC.max_tokens, onChange: e => c.setVlmCfg("max_tokens", parseInt(e.target.value) || 1024) })),
+        fld("Image max side (VLM)", select(String(VC.image_max_side || 1024),
+          [448, 672, 896, 1024, 1280, 1536, 2048].map(n => [String(n), `${n} px`]),
+          v => c.setVlmCfg("image_max_side", parseInt(v) || 1024)), "VLM image sizing"),
       ]),
       h("textarea", { style: "margin-top:6px;min-height:44px", placeholder: "Extra instruction for the VLM (optional), e.g. 'segment the woman, not the man'",
         value: VC.instruction || "", onChange: e => c.setVlmCfg("instruction", e.target.value) }),
@@ -80,15 +83,20 @@ function vlmSection(c) {
       VC.describe_preset === "custom" ? h("textarea", { style: "margin-top:6px;min-height:52px", value: VC.describe_custom || "",
         placeholder: "Your instruction for the VLM, e.g. 'Describe the character's costume and props piece by piece…'",
         onChange: e => c.setVlmCfg("describe_custom", e.target.value) }) : null,
-      refSets.value.length ? h("div", { class: "dlist" }, refSets.value.map(x => h("div", { class: "drow" }, [
-        h("div", { class: "dthumbs" }, [x.a ? h("img", { src: c.viewUrl(x.a) }) : null, x.b ? h("img", { src: c.viewUrl(x.b) }) : null]),
-        h("div", { style: "flex:1" }, [
-          hint(x.where.length > 4 ? `${x.where.slice(0, 4).join(", ")} +${x.where.length - 4}` : x.where.join(", ")),
-          h("textarea", { style: "min-height:44px", value: plan.ref_details?.[x.key] || "",
-            placeholder: "no description yet: Describe refs, write your own, or leave it to the VLM at run time",
-            onChange: e => c.setDetail(x.key, e.target.value) }),
-        ]),
-      ]))) : hint("Add a reference (global, per shot or per shot) first."),
+      refSets.value.length ? h("div", { class: "dlist" }, refSets.value.map(x => {
+        const saved = plan.ref_details?.[x.key] || "";
+        const input = (field, placeholder) => h("textarea", { style: "min-height:44px", value:
+          typeof saved === "object" ? (saved[field] || "") : field === "details" ? saved : "",
+          placeholder, onChange: e => c.setDetail(x.key, { ...(typeof saved === "object" ? saved : { details: saved }), [field]: e.target.value }) });
+        return h("div", { class: "drow" }, [
+          h("div", { class: "dthumbs" }, [x.a ? h("img", { src: c.viewUrl(x.a) }) : null, x.b ? h("img", { src: c.viewUrl(x.b) }) : null]),
+          h("div", { style: "flex:1" }, [
+            hint(x.where.length > 4 ? `${x.where.slice(0, 4).join(", ")} +${x.where.length - 4}` : x.where.join(", ")),
+            x.b ? h("div", { class: "grid" }, [input("details", "Ref 1 description ({details})"), input("details2", "Ref 2 description ({details2})")])
+              : input("details", "no description yet: Describe refs, write your own, or leave it to the VLM at run time"),
+          ]),
+        ]);
+      })) : hint("Add a reference (global, per shot or per shot) first."),
     ], { sub: "write {details} in any prompt: each shot gets the description of its own references" }),
   ];
 }

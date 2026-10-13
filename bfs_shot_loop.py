@@ -171,6 +171,20 @@ def generation_size(src_w: int, src_h: int, megapixels: float, multiple: int) ->
     return w, h
 
 
+def plan_generation_size(src_w: int, src_h: int, plan: dict, multiple: int) -> tuple[int, int]:
+    """Resolve the planner's megapixel, source-resolution, or custom generation size."""
+    mode = str(plan.get("generation_size_mode") or "megapixels")
+    if mode == "original":
+        mp = max(0.05, int(src_w) * int(src_h) / 1e6)
+        return generation_size(src_w, src_h, mp, multiple)
+    if mode == "custom":
+        multiple = max(8, int(multiple))
+        w = max(multiple, int(round(max(1, int(plan.get("custom_width") or 1024)) / multiple)) * multiple)
+        h = max(multiple, int(round(max(1, int(plan.get("custom_height") or 1024)) / multiple)) * multiple)
+        return w, h
+    return generation_size(src_w, src_h, float(plan.get("megapixels", 0.5)), multiple)
+
+
 def audio_info(path: str) -> dict:
     """Whether the video has a usable audio track (PyAV, no ffmpeg binary needed)."""
     try:
@@ -431,6 +445,7 @@ DEFAULT_PLAN = {
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "start_s": 0.0, "end_s": 0.0, "bounds": [], "segs": [],
     "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
     "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
+    "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "auto", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
@@ -1463,9 +1478,23 @@ def prompt_slot(prompt: str, marker: str, limit: int = 360) -> str:
     b = min(ends) + 1 if ends else len(text)
     snippet = text[a:b].strip()
     snippet = snippet.replace(marker, "___", 1)
-    for other, plain in (("{target}", "the guide subject"), ("{details}", "the character"), ("{shot}", ""), ("{setting}", "")):
+    for other, plain in (("{target}", "the guide subject"), ("{details2}", "the second character"),
+                         ("{details}", "the character"), ("{shot}", ""), ("{setting}", "")):
         snippet = snippet.replace(other, plain)
     return snippet[:limit]
+
+
+def expand_two_ref_prompt(prompt: str) -> str:
+    """Add a second subject slot when a shot has a second reference and its template has only one."""
+    text = str(prompt or "")
+    if "{details2}" in text or "<Subject 2>" in text:
+        return text
+    second = "<Subject 2> is the {details2} shown in <Picture 2>."
+    if re.search(r"(?im)^\s*subject_definitions\s*:", text):
+        if re.search(r"(?im)^\s*summary\s*:", text):
+            return re.sub(r"(?im)(^\s*summary\s*:)", lambda m: second + "\n" + m.group(1), text, count=1)
+        return text.rstrip() + "\n" + second
+    return "subject_definitions: " + second + "\n\n" + text
 
 
 def fit_note(slot: str) -> str:
@@ -1522,8 +1551,14 @@ def tidy_slot(text: str, slot: str, max_words: int = 25) -> str:
     return t
 
 
-def describe_target(clip, crop: np.ndarray, max_tokens: int = 64, slot: str = "", temperature: float = 0.0, seed: int = 0) -> str:
+def describe_target(clip, crop: np.ndarray, max_tokens: int = 64, slot: str = "", temperature: float = 0.0,
+                   seed: int = 0, image_max_side: int = 448) -> str:
     img = torch.from_numpy(crop.astype(np.float32) / 255.0)[None]
+    side = max(224, min(4096, int(image_max_side or 1024)))
+    scale = min(1.0, side / max(crop.shape[:2]))
+    if scale < 1.0:
+        h, w = max(2, round(crop.shape[0] * scale)), max(2, round(crop.shape[1] * scale))
+        img = torch.nn.functional.interpolate(img.movedim(-1, 1), size=(h, w), mode="bilinear", align_corners=False).movedim(1, -1)
     t = vlm_generate(clip, TARGET_Q + fit_note(slot), img, max_tokens, temperature, seed)
     t = strip_answer_label(t).split("\n")[0].strip().strip('"\'').rstrip(".")
     if slot:
@@ -1542,7 +1577,7 @@ def fill_target(text: str, desc: str) -> str:
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
                "instruction": "", "describe_preset": "short", "describe_custom": "", "fit_prompt": True,
-               "temperature": 0.0, "seed": 0,
+               "temperature": 0.0, "seed": 0, "image_max_side": 1024,
                "write_prompt": False, "write_task": "character swap", "write_change": ""}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
@@ -1657,7 +1692,7 @@ def _parse_json(text: str) -> dict:
 def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -> dict:
     """Ask the VLM about one shot (a few frames); cached per shot and settings."""
     key = (path, os.path.getmtime(path), int(start), int(end), id(clip),
-           json.dumps({k: cfg[k] for k in ("frames", "max_tokens", "instruction")}, sort_keys=True))
+           json.dumps({k: cfg[k] for k in ("frames", "max_tokens", "instruction", "image_max_side")}, sort_keys=True))
     if key in _VLM_CACHE:
         return _VLM_CACHE[key]
     from comfy_extras.nodes_textgen import TextGenerate
@@ -1665,7 +1700,8 @@ def vlm_shot(clip, path: str, analysis: dict, start: int, end: int, cfg: dict) -
     n = max(1, min(8, int(cfg["frames"])))
     src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
     picks = np.clip(np.linspace(start, end - 1, n).round().astype(int), 0, analysis["n"] - 1)
-    s = 448 / max(analysis["width"], analysis["height"])
+    side = max(224, min(4096, int(cfg.get("image_max_side") or 1024)))
+    s = side / max(analysis["width"], analysis["height"])
     size = (max(32, int(analysis["width"] * s) // 2 * 2), max(32, int(analysis["height"] * s) // 2 * 2))
     imgs = torch.from_numpy(np.stack(_read_frames(path, src[picks], size)).astype(np.float32) / 255.0)
     extra = ("\n" + cfg["instruction"].strip()) if str(cfg.get("instruction") or "").strip() else ""
@@ -1770,21 +1806,24 @@ def describe_instruction(cfg: dict, slot: str = "") -> str:
     return base + (fit_note(slot) if fits else "")
 
 
-def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320, temperature: float = 0.0, seed: int = 0) -> str:
+def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320, temperature: float = 0.0,
+                 seed: int = 0, image_max_side: int = 448) -> str:
     """One description for a set of reference pictures (e.g. a close-up and a full-body photo of one person)."""
     images = [im for im in images if im is not None]
     if not images:
         return ""
-    key = (tuple(_image_key(im) for im in images), instruction, id(clip), int(max_tokens), float(temperature), int(seed))
+    side = max(224, min(4096, int(image_max_side or 1024)))
+    key = (tuple(_image_key(im) for im in images), instruction, id(clip), int(max_tokens), float(temperature), int(seed), side)
     if key in _DESCRIBE_CACHE:
         return _DESCRIBE_CACHE[key]
     from comfy_extras.nodes_textgen import TextGenerate
     _status("Describing the references with the VLM", force=True)
-    side = 448   # same size for the batch: letterbox every picture on grey
+    # Keep each image's aspect ratio and letterbox to a shared canvas. The setting controls
+    # the longest side, before any additional resizing done by the model's own processor.
     batch = []
     for im in images:
         x = im[:1, ..., :3].movedim(-1, 1).float()
-        s = side / max(x.shape[-2:])
+        s = min(1.0, side / max(x.shape[-2:]))
         nh, nw = max(2, int(x.shape[-2] * s)), max(2, int(x.shape[-1] * s))
         x = torch.nn.functional.interpolate(x, size=(nh, nw), mode="bilinear", align_corners=False)
         canvas = torch.full((1, 3, side, side), 0.5)
@@ -2059,7 +2098,7 @@ def write_duet_prompt(clip, frames: list, refs: list, task: str, change: str, ma
     return out
 
 
-RESERVED_SLOTS = ("layout", "setting", "target", "details", "panel_region", "video_region", "split_line", "wider")
+RESERVED_SLOTS = ("layout", "setting", "target", "details", "details2", "panel_region", "video_region", "split_line", "wider")
 _SLOT = re.compile(r"\{([^{}\n]{2,200})\}")
 
 
@@ -2244,17 +2283,39 @@ def shot_history(shot: dict):
 
 
 def fill_details_now(text: str, vlm, refs: list, tag: str = "") -> str:
-    """{details} still in a shot's prompt (nobody pressed 📝 Describe refs and the planner had no VLM): the render
-    node's VLM describes the shot's references with the 'short' preset; without a VLM a plain word keeps the sentence
-    whole."""
-    if "{details}" not in (text or ""):
+    """Fill legacy combined details or the separate per-reference details slots at render time."""
+    if "{details}" not in (text or "") and "{details2}" not in (text or ""):
         return text
     refs = [r for r in refs if r is not None]
+    if "{details2}" in text:
+        cfg = vlm_cfg({})
+        values = []
+        for marker, image, fallback in (("{details}", refs[0] if refs else None, "character"),
+                                        ("{details2}", refs[1] if len(refs) > 1 else None, "the second character")):
+            if marker not in text:
+                values.append((marker, ""))
+                continue
+            d = ""
+            if vlm is not None and image is not None:
+                slot = prompt_slot(text, marker) if cfg.get("fit_prompt", True) else ""
+                d = tidy_details(vlm_describe(vlm, [image], describe_instruction(cfg, slot), int(cfg["max_tokens"]),
+                                            image_max_side=int(cfg.get("image_max_side") or 1024)), cfg)
+                d = tidy_slot(d, slot) if slot else d
+            if d:
+                print(f"{tag}: {marker} = {d!r} (reference described separately)", flush=True)
+            else:
+                d = fallback
+            values.append((marker, d))
+        for marker, value in values:
+            if value:
+                text = text.replace(marker, value)
+        return text
     d = ""
     if vlm is not None and refs:
         cfg = vlm_cfg({})
         slot = prompt_slot(text, "{details}") if cfg.get("fit_prompt", True) else ""
-        d = tidy_details(vlm_describe(vlm, refs[:2], describe_instruction(cfg, slot), int(cfg["max_tokens"])), cfg)
+        d = tidy_details(vlm_describe(vlm, refs[:2], describe_instruction(cfg, slot), int(cfg["max_tokens"]),
+                                      image_max_side=int(cfg.get("image_max_side") or 1024)), cfg)
         d = tidy_slot(d, slot) if slot else d
         if d:
             print(f"{tag}: {{details}} = {d!r} (described automatically)", flush=True)
@@ -2405,7 +2466,7 @@ class BFSShotPlanner:
         segs = [s for s in all_segs if s["run"]]
         if not segs:
             raise ValueError("BFS Shot Planner: no shot is left to run (all disabled or filtered out).")
-        W, H = generation_size(a["width"], a["height"], float(p["megapixels"]), int(p["multiple"]))
+        W, H = plan_generation_size(a["width"], a["height"], p, int(p["multiple"]))
         src = _timeline(a["n_src"], a["fps_src"], fps)
         audio = _read_audio(path) if p.get("audio_mode", "auto") != "silent" else None
         g_ref = ref_image if ref_image is not None else _load_image(p.get("global_ref", ""))
@@ -2448,23 +2509,45 @@ class BFSShotPlanner:
 
         auto_details = {}
 
-        def describe_refs(text, rimg, r2img):
+        def describe_refs(text, rimg, r2img, separate=False):
             """What 📝 Describe refs writes for these references (same preset, fit and clean-up as the button)."""
+            if separate:
+                out = {}
+                for marker, image in (("{details}", rimg), ("{details2}", r2img)):
+                    if image is None or marker not in text:
+                        continue
+                    slot = prompt_slot(text, marker) if vcfg.get("fit_prompt", True) else ""
+                    d = tidy_details(vlm_describe(vlm, [image], describe_instruction(vcfg, slot), int(vcfg["max_tokens"]),
+                                                  float(vcfg.get("temperature") or 0), int(vcfg.get("seed") or 0),
+                                                  int(vcfg.get("image_max_side") or 1024)), vcfg)
+                    out[marker[1:-1]] = tidy_slot(d, slot) if slot and (vcfg.get("describe_preset") or "short") == "short" else d
+                return out
             slot = prompt_slot(text, "{details}") if vcfg.get("fit_prompt", True) else ""
             d = tidy_details(vlm_describe(vlm, [rimg, r2img], describe_instruction(vcfg, slot), int(vcfg["max_tokens"]),
-                                          float(vcfg.get("temperature") or 0), int(vcfg.get("seed") or 0)), vcfg)
+                                          float(vcfg.get("temperature") or 0), int(vcfg.get("seed") or 0),
+                                          int(vcfg.get("image_max_side") or 1024)), vcfg)
             return tidy_slot(d, slot) if slot and (vcfg.get("describe_preset") or "short") == "short" else d
 
-        def fill_details(text, rname, r2name, rimg, r2img):
+        def fill_details(text, rname, r2name, rimg, r2img, separate=False):
             """{details} = the description of this shot's references: edited in the panel, else the one the VLM wrote
             before any SAM 3 work (auto_details), else a plain word so the sentence never has a hole."""
-            if "{details}" not in text:
+            if "{details}" not in text and "{details2}" not in text:
                 return text
             k = ref_set_key(rname, r2name)
-            d = details.get(k, "") or auto_details.get(k, "")
-            if not d:   # left for BFS Shot H3 Conditioning / Shot H3 Duet: with a VLM there they describe it
+            saved = details.get(k, "")
+            if separate or "{details2}" in text:
+                saved = saved if isinstance(saved, dict) else {"details": saved}
+                generated = auto_details.get((k, True), {})
+                d1 = saved.get("details") or generated.get("details") or ("character" if vlm is not None else "")
+                d2 = saved.get("details2") or generated.get("details2") or ("the second character" if vlm is not None else "")
+                if d1:
+                    text = text.replace("{details}", d1)
+                if d2:
+                    text = text.replace("{details2}", d2)
                 return text
-            return text.replace("{details}", d)
+            d = (saved.get("legacy") or " and ".join(x for x in (saved.get("details"), saved.get("details2")) if x)
+                 if isinstance(saved, dict) else saved) or auto_details.get(k, "")
+            return text.replace("{details}", d) if d else text
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
         vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in todo} if use_vlm else {}
@@ -2480,16 +2563,25 @@ class BFSShotPlanner:
         if vlm is not None:
             for i in todo:
                 text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
-                if "{details}" not in text:
-                    continue
                 rn, r2n = segs[i]["ref"] or g_names["ref"], segs[i]["ref2"] or g_names["ref2"]
-                k = ref_set_key(rn, r2n)
-                if details.get(k) or k in auto_details:
+                separate = bool(r2n) or "{details2}" in text
+                if r2n:
+                    text = expand_two_ref_prompt(text)
+                if "{details}" not in text and "{details2}" not in text:
                     continue
+                k = ref_set_key(rn, r2n)
                 r1 = ref_for(segs[i]["ref"], g_ref)
                 r2 = ref_for(segs[i]["ref2"], g_ref2) if r2n else None
-                auto_details[k] = describe_refs(text, r1, r2)
-                print(f"[BFS Shot Planner] {{details}} = {auto_details[k]!r} (described automatically)", flush=True)
+                saved = details.get(k, "")
+                if separate:
+                    saved = saved if isinstance(saved, dict) else {"details": saved}
+                    if saved.get("details") and saved.get("details2"):
+                        continue
+                    auto_details[(k, True)] = describe_refs(text, r1, r2, True)
+                    print(f"[BFS Shot Planner] reference details = {auto_details[(k, True)]!r} (described separately)", flush=True)
+                elif not saved and k not in auto_details:
+                    auto_details[k] = describe_refs(text, r1, r2)
+                    print(f"[BFS Shot Planner] {{details}} = {auto_details[k]!r} (described automatically)", flush=True)
         # {target} with no description of its own: the shot's selection is cut out (SAM 3 for every shot first) and the
         # VLM describes it (written for the prompt's {target} sentence with fit_prompt)
         auto_target = {}
@@ -2507,7 +2599,8 @@ class BFSShotPlanner:
                 text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
                 slot = prompt_slot(text, "{target}") if vcfg.get("fit_prompt", True) else ""
                 auto_target[i] = describe_target(vlm, crop, slot=slot, temperature=float(vcfg.get("temperature") or 0),
-                                                 seed=int(vcfg.get("seed") or 0))
+                                                 seed=int(vcfg.get("seed") or 0),
+                                                 image_max_side=int(vcfg.get("image_max_side") or 1024))
                 print(f"[BFS Shot Planner] shot {i + 1}: {{target}} = {auto_target[i]!r} (described automatically)", flush=True)
         shots = []
         for i, s in enumerate(segs):
@@ -2543,7 +2636,7 @@ class BFSShotPlanner:
                 if r["box"] is not None:
                     full_frames = ft
                     sx0, sy0, sx1, sy1 = box_px(r["box"], a["width"], a["height"])
-                    cw, chh = generation_size(sx1 - sx0, sy1 - sy0, float(p["megapixels"]), int(p["multiple"]))
+                    cw, chh = plan_generation_size(sx1 - sx0, sy1 - sy0, p, int(p["multiple"]))
                     hi = _read_frames(path, src[idx], None)               # source resolution, then crop
                     ft = torch.from_numpy(np.stack([_fit(f[sy0:sy1, sx0:sx1], (cw, chh)) for f in hi])
                                           .astype(np.float32) / 255.0)
@@ -2555,9 +2648,14 @@ class BFSShotPlanner:
                         r["masks"][:, None, by0:by1, bx0:bx1].float(), size=(chh, cw), mode="nearest")[:, 0]
             hist, hist_src = (history_for(path, a, src, s, i, prev_len, queue, rid, W, H, crop, ft)
                               if s["chain"] == "history" and i > 0 else (None, None))
-            shot_prompt = fill_target(fill_details((s["prompt"] or written.get(i) or g_prompt or "").replace(
-                "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else ""),
-                s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"], ref, ref2),
+            template = (s["prompt"] or written.get(i) or g_prompt or "").replace(
+                "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else "")
+            rname, r2name = s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"]
+            separate_details = bool(r2name) or "{details2}" in template
+            if r2name:
+                template = expand_two_ref_prompt(template)
+                separate_details = True
+            shot_prompt = fill_target(fill_details(template, rname, r2name, ref, ref2, separate_details),
                 s.get("target", "") or auto_target.get(i, ""))
             if s.get("color_guide"):
                 shot_prompt = color_guide_prompt(shot_prompt, s.get("color_guide_color") or "#00ff00",
@@ -3966,7 +4064,7 @@ try:
                 cuts, used = find_cuts(path, a, p.get("detector", "adaptive"), float(p["sensitivity"]))
                 return a, segs, cuts, used
             a, segs, cuts, used = await _off_loop(work)
-            W, H = generation_size(a["width"], a["height"], float(p["megapixels"]), int(p["multiple"]))
+            W, H = plan_generation_size(a["width"], a["height"], p, int(p["multiple"]))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"segs": segs, "cuts": cuts, "width": W, "height": H, "detector": used,
@@ -4087,7 +4185,8 @@ try:
                 tcfg = vlm_cfg(p.get("vlm_cfg"))
                 tslot = prompt_slot(seg.get("prompt") or p.get("global_prompt", ""), "{target}") if tcfg.get("fit_prompt", True) else ""
                 desc = describe_target(clip, crop, slot=tslot, temperature=float(tcfg.get("temperature") or 0),
-                                       seed=int(tcfg.get("seed") or 0)) if clip is not None else ""
+                                       seed=int(tcfg.get("seed") or 0),
+                                       image_max_side=int(tcfg.get("image_max_side") or 1024)) if clip is not None else ""
                 ok, buf = cv2.imencode(".jpg", cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 82])
                 return {"desc": desc, "crop": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(),
                         "no_vlm": clip is None}
@@ -4116,11 +4215,27 @@ try:
             def work():
                 out = {}
                 for r1, r2 in sets:
-                    d = tidy_details(vlm_describe(
-                        clip, [_load_image(r1) if r1 else None, _load_image(r2) if r2 else None],
-                        describe_instruction(cfg, slot), int(cfg["max_tokens"]),
-                        float(cfg.get("temperature") or 0), int(cfg.get("seed") or 0)), cfg)
-                    out[ref_set_key(r1, r2)] = tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") == "short" else d
+                    if r2:
+                        prompt = expand_two_ref_prompt(body.get("prompt") or p.get("global_prompt", ""))
+                        separate = {}
+                        for marker, name in (("{details}", r1), ("{details2}", r2)):
+                            if not name:
+                                separate[marker[1:-1]] = ""
+                                continue
+                            field_slot = prompt_slot(prompt, marker) if cfg.get("fit_prompt", True) else ""
+                            d = tidy_details(vlm_describe(
+                                clip, [_load_image(name)], describe_instruction(cfg, field_slot), int(cfg["max_tokens"]),
+                                float(cfg.get("temperature") or 0), int(cfg.get("seed") or 0),
+                                int(cfg.get("image_max_side") or 1024)), cfg)
+                            separate[marker[1:-1]] = (tidy_slot(d, field_slot)
+                                if field_slot and (cfg.get("describe_preset") or "short") == "short" else d)
+                        out[ref_set_key(r1, r2)] = separate
+                    else:
+                        d = tidy_details(vlm_describe(
+                            clip, [_load_image(r1) if r1 else None], describe_instruction(cfg, slot), int(cfg["max_tokens"]),
+                            float(cfg.get("temperature") or 0), int(cfg.get("seed") or 0),
+                            int(cfg.get("image_max_side") or 1024)), cfg)
+                        out[ref_set_key(r1, r2)] = tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") == "short" else d
                 return out
             texts = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001

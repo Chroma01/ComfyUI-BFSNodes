@@ -85,10 +85,25 @@ export function videoTab(c) {
     ]),
   ], { sub: "camera cuts or fixed length, on the model's frame grid" });
 
-  const gen = section("Generation size", h("div", { class: "grid" }, [
-    fld("Megapixels", num("megapixels", 0.01, 0.02), size.w ? `${size.w}×${size.h}` : ""),
-    fld("Size multiple", num("multiple", 8, 8)),
-  ]), { sub: "cropped shots use it for the crop" });
+  const updateSize = () => c.autoSplit(false);
+  const genFields = [
+    fld("Size mode", select(plan.generation_size_mode || "megapixels", [
+      ["megapixels", "Megapixel target"], ["original", "Original video"], ["custom", "Custom dimensions"],
+    ], v => c.setPlan("generation_size_mode", v, updateSize))),
+  ];
+  if ((plan.generation_size_mode || "megapixels") === "megapixels")
+    genFields.push(fld("Megapixels", h("input", { type: "number", step: 0.01, min: 0.02, value: plan.megapixels,
+      onChange: e => c.setPlan("megapixels", parseFloat(e.target.value) || 0.5, updateSize) }), size.w ? `${size.w}×${size.h}` : ""));
+  if (plan.generation_size_mode === "custom") {
+    for (const [key, label] of [["custom_width", "Custom width"], ["custom_height", "Custom height"]])
+      genFields.push(fld(label, h("input", { type: "number", step: 32, min: 32, value: plan[key],
+        onChange: e => c.setPlan(key, Math.max(32, parseInt(e.target.value) || 1024), updateSize) })));
+    if (size.w) genFields.push(fld("Output size", `${size.w}×${size.h}`));
+  }
+  if (plan.generation_size_mode === "original") genFields.push(h("div", { class: "hint" }, "Original resolution is rounded to the size multiple for model compatibility."));
+  genFields.push(fld("Size multiple", h("input", { type: "number", step: 8, min: 8, value: plan.multiple,
+    onChange: e => c.setPlan("multiple", Math.max(8, parseInt(e.target.value) || 32), updateSize) })));
+  const gen = section("Generation size", h("div", { class: "grid" }, genFields), { sub: "cropped shots use it for the crop" });
 
   return h("div", { class: "card" }, [source, an.value ? rng : null, an.value ? split : null, an.value ? gen : null]);
 }

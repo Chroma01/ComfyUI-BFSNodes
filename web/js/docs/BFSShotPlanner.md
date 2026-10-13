@@ -280,6 +280,15 @@ description per reference set: the global references and every shot's. They are 
 the plan and editable. Write **`{details}`** anywhere in a prompt and every shot gets the description of its own
 references; a set without a description is described by the VLM at run time (no click needed).
 
+**Image max side (VLM)** controls the longest side of reference and shot images prepared for VLM analysis (1024 px by
+default). Aspect ratio is preserved; the model's own image processor may resize them further. Increase it when fine
+reference details matter, or lower it to reduce analysis cost. This does not change the generated video size.
+
+When a shot has two references, the planner expands a one-reference template at run time to include `<Subject 2>` and
+`{details2}` for `<Picture 2>`. The Describe refs panel provides a separate description field for each reference.
+Existing one-reference templates remain unchanged in shots with only one reference. You can also use `{details2}`
+explicitly in any template.
+
 **Fit the prompt** (on by default, next to 📝 Describe refs): the VLM gets the sentence of the prompt that holds the
 marker, with a blank in its place (e.g. `<Subject 1> is the ___ shown in <Picture 1>`), and writes the description for
 it, so the description adapts to the prompt and not the other way round (no "the A goblin", no paragraph inside a
@@ -302,12 +311,12 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Max / Min seconds per shot | longest shot sent to the model; shorter shots merge into a neighbour |
 | Timeline fps | the frame rate the planner works on (generation and audio use it) |
 | Max shots | test on the first shots only |
-| Megapixels / Size multiple | generation size at the source's aspect ratio, snapped to the multiple |
+| Generation size | Megapixels (default), source video resolution, or custom width and height; dimensions snap to the size multiple |
 | Run | auto loop (all shots in one run) or queue loop (one shot per run, stored on disk) |
 | Skipped shots in the output | keep the original video there or remove those shots |
 | Mask: padding / expand / feather / temporal expand / blockify | crop context, paste-back growth and softness, flicker hold, square blocks |
 | Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
-| VLM: frames per shot / max tokens | how much the VLM sees and how long it may answer |
+| VLM: frames per shot / max tokens / image max side | how much the VLM sees, its answer limit, and the longest side of images sent for analysis |
 
 ## One seed per shot: BFS Shot Seed (1.94.0)
 

@@ -12,7 +12,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showGuide } from "./bfs_md_view.js";
 import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
-import { h, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
+import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
 import { timelineCard } from "./shotloop/view_timeline.js";
 import { videoTab } from "./shotloop/view_video.js";
@@ -157,7 +157,10 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   // the reference a shot uses: its own or the global one
   const refOf = (s, k) => s[k] || plan["global_" + k] || "";
   const promptOf = s => s.prompt || plan.global_prompt || "";
-  const detailsOf = s => plan.ref_details?.[`${refOf(s, "ref")}|${refOf(s, "ref2")}`] || "";
+  const detailsOf = s => {
+    const value = plan.ref_details?.[`${refOf(s, "ref")}|${refOf(s, "ref2")}`] || "";
+    return typeof value === "object" ? Object.values(value).some(Boolean) : !!value;
+  };
 
   // things worth fixing before a run, per shot (only shots that run)
   const checks = computed(() => {
@@ -172,8 +175,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if ((s.crop || s.inpaint || s.paste) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text, points or a mask video; or the planner's mask input)`);
       if (hasMask(s) && maskPrev.value[segKey(s)]?.empty) add("warn", "the mask preview found nothing");
       if (/\{target\}/.test(p) && !s.target) add("warn", "the prompt uses {target} but the shot has no target description");
-      if (/\{details\}/.test(p) && !detailsOf(s) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its references have no description yet");
-      if (/\{details\}/.test(p) && (plan.vlm_cfg?.describe_preset || "short") !== "short")
+      if (/\{details2?\}/.test(p) && !detailsOf(s) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its references have no description yet");
+      if (/\{details2?\}/.test(p) && (plan.vlm_cfg?.describe_preset || "short") !== "short")
         add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
       if (!refOf(s, "ref")) add("info", "no reference (fine when the node's ref_image input is connected)");
@@ -633,8 +636,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       h("label", { class: "langpick", title: t("Language") }, [
         h("span", { class: "hint" }, "🌐"),
         h("select", { value: uiLanguage.value, "aria-label": t("Language"), onChange: e => setUiLanguage(e.target.value) }, [
-          h("option", { value: "en" }, "English"), h("option", { value: "pt" }, "Português"),
-          h("option", { value: "es" }, "Español"), h("option", { value: "zh" }, "中文"),
+          rawH("option", { value: "en" }, "English"), rawH("option", { value: "pt" }, "Português"),
+          rawH("option", { value: "es" }, "Español"), rawH("option", { value: "zh" }, "中文"),
         ]),
       ]),
       pill(plan.run === "queue" ? "queue loop" : "auto loop"),

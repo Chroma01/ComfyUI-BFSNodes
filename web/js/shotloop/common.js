@@ -19,6 +19,12 @@ const TEXT = {
   "▶ Run": ["▶ Executar", "▶ Ejecutar", "▶ 运行"], "📖 Guide": ["📖 Guia", "📖 Guía", "📖 指南"],
   "🧭 Tour": ["🧭 Tour", "🧭 Recorrido", "🧭 引导"], "Language": ["Idioma", "Idioma", "语言"],
   "Source video": ["Vídeo de origem", "Vídeo de origen", "源视频"], "Range": ["Trecho", "Rango", "范围"],
+  "Timeline": ["Linha do tempo", "Línea de tiempo", "时间轴"], "zoom": ["zoom", "zoom", "缩放"],
+  "Click a shot to select it (← → move between shots) · drag the white handles to move a boundary · double-click the shot bar to split · Delete removes the selected shot's cut": [
+    "Clique em um plano para selecioná-lo (← → navega entre planos) · arraste as alças brancas para mover uma divisão · dê dois cliques na barra para dividir · Delete remove o corte do plano selecionado",
+    "Haz clic en un plano para seleccionarlo (← → cambia de plano) · arrastra los controles blancos para mover un límite · haz doble clic en la barra para dividir · Delete elimina el corte del plano seleccionado",
+    "点击镜头以选中（← → 切换镜头）· 拖动白色控点移动分界 · 双击镜头条进行拆分 · 按 Delete 删除所选镜头的切点",
+  ],
   "Split into shots": ["Dividir em planos", "Dividir en planos", "拆分镜头"], "Generation size": ["Tamanho da geração", "Tamaño de generación", "生成尺寸"],
   "Camera cuts": ["Cortes de câmera", "Cortes de cámara", "镜头切换"], "Fixed length": ["Duração fixa", "Duración fija", "固定时长"],
   "One shot (whole range)": ["Um plano (trecho inteiro)", "Un plano (rango completo)", "单个镜头（整个范围）"],
@@ -26,11 +32,21 @@ const TEXT = {
   "Frame grid": ["Grade de frames", "Múltiplo de fotogramas", "帧步长"], "Max seconds / shot": ["Máx. segundos por plano", "Máx. segundos por plano", "每个镜头最长秒数"],
   "Min seconds / shot": ["Mín. segundos por plano", "Mín. segundos por plano", "每个镜头最短秒数"], "Timeline fps": ["FPS da linha do tempo", "FPS de la línea de tiempo", "时间轴帧率"],
   "Megapixels": ["Megapixels", "Megapíxeles", "百万像素"], "Size multiple": ["Múltiplo do tamanho", "Múltiplo del tamaño", "尺寸倍数"],
+  "Size mode": ["Modo de tamanho", "Modo de tamaño", "尺寸模式"], "Megapixel target": ["Alvo em megapixels", "Objetivo en megapíxeles", "百万像素目标"],
+  "Original video": ["Vídeo original", "Vídeo original", "原视频"], "Custom dimensions": ["Dimensões personalizadas", "Dimensiones personalizadas", "自定义尺寸"],
+  "Output size": ["Tamanho de saída", "Tamaño de salida", "输出尺寸"],
+  "Custom width": ["Largura personalizada", "Ancho personalizado", "自定义宽度"], "Custom height": ["Altura personalizada", "Alto personalizado", "自定义高度"],
+  "Image max side (VLM)": ["Lado máximo da imagem (VLM)", "Lado máximo de imagen (VLM)", "VLM 图像最长边"],
+  "VLM image sizing": ["Redimensiona as imagens enviadas ao VLM, mantendo a proporção. O processador do modelo ainda pode redimensioná-las.", "Ajusta las imágenes enviadas al VLM manteniendo la proporción. El procesador del modelo puede volver a ajustarlas.", "调整发送给 VLM 的图像并保持比例。模型处理器仍可能再次缩放。"],
+  "Original resolution is rounded to the size multiple for model compatibility.": ["A resolução original é arredondada ao múltiplo definido para compatibilidade com o modelo.", "La resolución original se redondea al múltiplo indicado para compatibilidad con el modelo.", "原始分辨率会取整到尺寸倍数，以兼容模型。"],
   "✂ Auto split": ["✂ Dividir automaticamente", "✂ División automática", "✂ 自动拆分"], "↻ Re-analyse": ["↻ Analisar novamente", "↻ Volver a analizar", "↻ 重新分析"],
   "Reference & prompt": ["Referência e prompt", "Referencia y prompt", "参考图和提示词"], "Who is replaced": ["Quem será substituído", "Quién se reemplaza", "替换对象"],
   "Continuity": ["Continuidade", "Continuidad", "连续性"], "Copy to other shots": ["Copiar para outros planos", "Copiar a otros planos", "复制到其他镜头"],
   "Global reference & prompt": ["Referência e prompt globais", "Referencia y prompt globales", "全局参考图和提示词"],
   "Describe references ({details})": ["Descrever referências ({details})", "Describir referencias ({details})", "描述参考图（{details}）"],
+  "Ref 1 description ({details})": ["Descrição da ref. 1 ({details})", "Descripción de ref. 1 ({details})", "参考图 1 描述（{details}）"],
+  "Ref 2 description ({details2})": ["Descrição da ref. 2 ({details2})", "Descripción de ref. 2 ({details2})", "参考图 2 描述（{details2}）"],
+  "no description yet: Describe refs, write your own, or leave it to the VLM at run time": ["sem descrição: use Descrever referências, escreva uma descrição ou deixe o VLM gerar durante a execução", "sin descripción: pulsa Describir referencias, escribe una o deja que el VLM la genere al ejecutar", "暂无描述：点击“描述参考图”、自行填写，或在运行时由 VLM 生成"],
   "VLM": ["VLM", "VLM", "视觉语言模型"], "Use the VLM when the workflow runs": ["Usar o VLM ao executar o workflow", "Usar el VLM al ejecutar el flujo", "运行工作流时使用 VLM"],
   "Fill the mask text": ["Preencher o texto da máscara", "Completar el texto de la máscara", "填写蒙版描述"],
   "Fill {shot} in the prompt": ["Preencher {shot} no prompt", "Completar {shot} en el prompt", "在提示词中填入 {shot}"],
@@ -212,12 +228,15 @@ export function h(type, props, children) {
   if (typeof props === "string" || Array.isArray(props)) return vueH(type, localizeChildren(props));
   return vueH(type, p);
 }
+// Use for literal labels that must keep their native spelling (for example language names).
+export const rawH = (...args) => vueH(...args);
 
 export const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 export const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", global_color_guide_ref1: "#00ff00", global_color_guide_ref2: "#9b30ff", mask_video: "",
-  megapixels: 0.5, multiple: 32, detector: "adaptive", run: "auto", auto_continue: true,
+  megapixels: 0.5, multiple: 32, generation_size_mode: "megapixels", custom_width: 1024, custom_height: 1024,
+  detector: "adaptive", run: "auto", auto_continue: true,
   skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
@@ -228,7 +247,8 @@ export const MASK_DEFAULTS = { threshold: 0.5, max_objects: 4, invert: false, fi
                                padding: 0.15, expand: 16, feather: 12, paste: "mask" };
 
 export const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 1024, auto_segment: true, auto_shot: true, instruction: "",
-                              describe_preset: "short", describe_custom: "", fit_prompt: true, temperature: 0, seed: 0 };
+                              describe_preset: "short", describe_custom: "", fit_prompt: true, temperature: 0, seed: 0,
+                              image_max_side: 1024 };
 
 // hover help for every setting (the 📖 Guide button opens the full documentation)
 export const TIPS = {
