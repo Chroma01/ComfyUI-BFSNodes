@@ -377,7 +377,7 @@ that moves the video, its audio and the other guides past the history; ComfyUI f
 - **BFS Shot H3 Conditioning and BFS Shot H3 Duet** both use it (duet canvas or aligned guide).
 - **Queue loop:** shots run in order and each reads the stored result of the one before. Auto loop: taken from the
   previous render when it matches.
-- Video only for now (the previous audio is not carried). Costs one more 17/34/51-frame condition per shot.
+- Video only for now (the previous audio is not carried). History can use 5, 17, 34 or 51 frames; longer windows use more memory.
 
 ## MiniMax H3 with an aligned guide (example)
 

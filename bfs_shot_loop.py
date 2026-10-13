@@ -2161,8 +2161,16 @@ def chain_image(shot: dict) -> torch.Tensor | None:
     return None
 
 
+def history_frame_count(wanted: int, available: int) -> int:
+    """Return a valid H3 history window: a 5-frame minimum or whole 17-frame groups."""
+    wanted, available = max(0, int(wanted)), max(0, int(available))
+    if wanted == 5:
+        return 5 if available >= 5 else 0
+    return min(wanted, (available // 17) * 17)
+
+
 def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, ft):
-    """Continuity 'history': the end of the previous shot's result (17/34/51 frames) at this shot's size, plus the
+    """Continuity 'history': the end of the previous shot's result (5/17/34/51 frames) at this shot's size, plus the
     source frames under it (the duet panel shows them). Same take only: a camera cut has nothing to carry over."""
     tag = f"[BFS Shot Planner] shot {i + 1}: history"
     if seg["cut_before"]:
@@ -2179,9 +2187,10 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
             print(f"{tag}: the previous shot's result is not there yet (shots run in order)", flush=True)
         return None, None
     avail = min(int(prev_len), prev.shape[0])
-    n = min(want, (avail // 17) * 17)
-    if n < 17:
-        print(f"{tag} skipped: the previous shot has only {avail} frames (needs 17)", flush=True)
+    n = history_frame_count(want, avail)
+    if n == 0:
+        need = 5 if want == 5 else 17
+        print(f"{tag} skipped: the previous shot has only {avail} frames (needs {need})", flush=True)
         return None, None
     hf = prev[avail - n:avail, ..., :3].float() / 255.0
     del prev
@@ -2212,8 +2221,8 @@ def shot_history(shot: dict):
             and _LAST_RESULT.get("count") == int(shot.get("count", 0)):
         prev_len = int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])
         f = _LAST_RESULT["frames"][:prev_len]
-        n = (min(int(shot.get("chain_history") or 17), f.shape[0]) // 17) * 17
-        if n >= 17:
+        n = history_frame_count(int(shot.get("chain_history") or 17), f.shape[0])
+        if n:
             hist = f[f.shape[0] - n:].float()
             hist = hist / 255.0 if hist.max() > 1.5 else hist
     return hist, hsrc

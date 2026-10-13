@@ -16,7 +16,7 @@ import logging
 import torch
 
 LOG = logging.getLogger("bfs.h3_history")
-HISTORY_FRAMES = (17, 34, 51)   # whole H3 VAE groups: 1+4+4+4+4 frames per 5 latent steps
+HISTORY_FRAMES = (5, 17, 34, 51)   # 5 is H3's minimum valid video; longer windows use whole VAE groups
 _PATCH = "_bfs_history_patch"
 
 
@@ -91,11 +91,12 @@ def install() -> bool:
 
 
 def add_history(positive, vae, frames: torch.Tensor):
-    """Appends `frames` ([N,H,W,3] at the video's size, N = 17k: the end of the previous result) as a history keyframe.
+    """Appends 5 or 17k frames ([N,H,W,3]) from the previous shot as an H3 history keyframe.
     Returns (positive, frames used)."""
     import node_helpers
-    n = (int(frames.shape[0]) // 17) * 17
-    if n < 17:
+    available = int(frames.shape[0])
+    n = 5 if available == 5 else (available // 17) * 17
+    if n < 5:
         return positive, 0
     install()
     # encoded from CPU frames; the latent comes back on ComfyUI's intermediate device like any H3 guide, and the VAE

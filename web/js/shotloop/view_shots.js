@@ -205,16 +205,16 @@ function editor(c, cur) {
 
   const cont = section("Continuity", h("div", { class: "row" }, [
     h("select", { value: cur.chain, style: "width:auto", disabled: i === 0,
-      title: "reference: the previous result's frame becomes one more <Picture n> after this shot's own references. first frame: it is anchored at frame 0 of this shot. history: the END of the previous result (17/34/51 frames) goes just before this shot on H3's timeline, so a long take continues its motion and look (same take only, not across a cut).",
+      title: "reference: the previous result's frame becomes one more <Picture n> after this shot's own references. first frame: it is anchored at frame 0 of this shot. history: the END of the previous result (5/17/34/51 frames) goes just before this shot on H3's timeline, so a long take continues its motion and look (same take only, not across a cut).",
       onChange: e => c.setMeta(i, "chain", e.target.value) },
       [h("option", { value: "off" }, "off"), h("option", { value: "reference" }, "previous shot as reference"),
        h("option", { value: "first frame" }, "previous shot as first frame"),
        h("option", { value: "history" }, "previous shot's end as history (long take)")]),
     cur.chain === "history"
       ? h("select", { value: String(cur.chainHistory), style: "width:auto", disabled: i === 0,
-          title: "How much of the previous result's end goes before this shot (whole H3 VAE groups). More carries more motion, costs more memory.",
+          title: "How much of the previous result's end goes before this shot. 5 frames is a short context; longer windows carry more motion and use more memory.",
           onChange: e => c.setMeta(i, "chain_history", Number(e.target.value)) },
-          [17, 34, 51].map(n => h("option", { value: String(n) }, `last ${n} frames (${(n / 24).toFixed(1)} s)`)))
+          [5, 17, 34, 51].map(n => h("option", { value: String(n) }, `last ${n} frames (${(n / 24).toFixed(1)} s)`)))
       : h("select", { value: cur.chainFrame, style: "width:auto", disabled: i === 0 || cur.chain === "off",
           title: "Which frame of the previous shot's result", onChange: e => c.setMeta(i, "chain_frame", e.target.value) },
           [h("option", { value: "first" }, "its first frame"), h("option", { value: "middle" }, "its middle frame"), h("option", { value: "last" }, "its last frame")]),
