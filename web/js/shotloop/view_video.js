@@ -5,7 +5,9 @@ import { GRIDS, fld, select, section, pill, hint, fmtT } from "./common.js";
 export function videoTab(c) {
   const { plan, an, files, size, busy, detectorUsed, maxLen } = c;
   const fps = plan.fps;
-  const num = (k, step = 0.1, min = 0) => h("input", { type: "number", step, min, value: plan[k], onChange: e => c.setPlan(k, parseFloat(e.target.value) || 0) });
+  const num = (k, step = 0.1, min = 0) => h("input", { type: "number", step, min, value: plan[k],
+    onChange: e => c.setPlan(k, parseFloat(e.target.value) || 0,
+      ["max_s", "min_s"].includes(k) ? () => c.autoSplit(true) : undefined) });
   const sel_ = (k, opts, after) => select(plan[k], opts, v =>
     c.setPlan(k, v, after || (k === "mode" ? () => c.autoSplit(true) : undefined)));
   const au = an.value?.audio;
@@ -67,9 +69,9 @@ export function videoTab(c) {
         onChange: e => { const v = parseFloat(e.target.value) || 0;
           c.setRange("end_f", v > 0 ? c.range.value.lo + Math.round(v * plan.fps) : 0); } }),
         `from the start frame · ${c.range.value.hi - c.range.value.lo} frames`),
-      fld("Detector", sel_("detector", [["adaptive", "PySceneDetect adaptive"], ["content", "PySceneDetect content"], ["builtin", "Built-in"]])),
+      fld("Detector", sel_("detector", [["adaptive", "PySceneDetect adaptive"], ["content", "PySceneDetect content"], ["builtin", "Built-in"]], () => c.autoSplit(true))),
       fld(`Sensitivity ${Number(plan.sensitivity).toFixed(2)}`, h("input", { type: "range", min: 0, max: 1, step: 0.05, value: plan.sensitivity,
-        onInput: e => { plan.sensitivity = parseFloat(e.target.value); }, onChange: c.save })),
+        onInput: e => { plan.sensitivity = parseFloat(e.target.value); }, onChange: () => { c.save(); c.autoSplit(true); } })),
       fld("Frame grid", sel_("grid", Object.keys(GRIDS))),
       fld("Max seconds / shot", num("max_s", 0.1, 0.2), `= ${maxLen.value} frames (${(maxLen.value / fps).toFixed(2)} s)`),
       fld("Min seconds / shot", num("min_s", 0.1, 0)),
