@@ -1,4 +1,4 @@
-// 👥 People & masks tab: the cast found by face (each person linked to a reference) and the global SAM 3 mask settings.
+// 👥 People / Filters / Masks tab: cast, shot filters, and global SAM 3 mask settings.
 import { h } from "../vendor/vue.esm-browser.prod.mjs";
 import { fmtT, fld, check, section, pill, hint } from "./common.js";
 
@@ -85,6 +85,32 @@ function maskSection(c) {
          counts.crop + counts.cropmask ? pill(`${counts.crop + counts.cropmask} cropped`, "warn") : null]) });
 }
 
+function filtersSection(c) {
+  const { plan, stats, segs, busy, filtersOn } = c;
+  const F = plan.filters;
+  const chk = (k, label) => check(F[k], v => c.setFilter(k, v), label);
+  const fnum = (k, step, label, help) => fld(label, h("input", { type: "number", step, min: 0, value: F[k], onChange: e => c.setFilter(k, parseFloat(e.target.value) || 0) }), help);
+  const skippedN = segs.value.filter(s => c.skipWhy(s)).length;
+  return section("Shot filters", [
+    h("div", { class: "row", style: "gap:14px;margin-bottom:6px" }, [
+      chk("person", "Needs a person"), chk("face", "Needs a face"), chk("skip_dark", "Skip dark / fades"), chk("skip_static", "Skip static shots"),
+    ]),
+    h("div", { class: "grid" }, [
+      fnum("min_person_area", 0.01, "Min person size (0-1 of frame)", "e.g. 0.03 skips wide shots"),
+      fnum("max_persons", 1, "Max people (0 = any)", "skip crowds"),
+      fnum("min_frames", 1, "Min frames (0 = off)"),
+      fnum("samples", 1, "Frames sampled / shot"),
+      fnum("dark_level", 0.01, "Dark below (0-1)"),
+      fnum("static_level", 0.001, "Static below"),
+    ]),
+    h("div", { class: "row", style: "margin-top:8px" }, [
+      h("button", { class: "pri", disabled: !!busy.value, onClick: c.analyzeContent }, "👤 Analyse people & faces"),
+      hint(stats.value.length ? `stats for ${stats.value.length} shots · YOLO person/face from models/ultralytics` : "runs the detectors on a few frames of every shot"),
+    ]),
+  ], { open: filtersOn.value || stats.value.length > 0, sub: "choose which shots run",
+       right: filtersOn.value ? pill(`${skippedN} skipped`, "warn") : pill("off") });
+}
+
 export function peopleTab(c) {
-  return h("div", { class: "card" }, [castSection(c), maskSection(c)]);
+  return h("div", { class: "card" }, [castSection(c), filtersSection(c), maskSection(c)]);
 }

@@ -145,14 +145,14 @@ function editor(c, cur) {
       h("span", { class: "hint", style: "white-space:nowrap", title: "A black/white video (white = the subject), e.g. rotoscoped in another tool. It replaces SAM 3 for this shot and covers only this shot: its first frame is the shot's first frame." }, "🎞 mask video"),
       h("select", { value: cur.mask.video || "", style: "flex:1;min-width:160px",
         onChange: e => c.setMask(i, "video", e.target.value) },
-        [h("option", { value: "" }, cur.extMask ? "— none: the global mask video (People & masks) —" : "— none: SAM 3 (text / points) —"),
+        [h("option", { value: "" }, cur.extMask ? "— none: the global mask video (People / Filters / Masks) —" : "— none: SAM 3 (text / points) —"),
          ...c.files.videos.map(v => h("option", { value: v }, v))]),
       h("button", { title: "upload a mask video for this shot", onClick: () => c.pickFile("video/*", name => c.setMask(i, "video", name)) }, "⬆ Upload"),
       cur.mask.video ? h("button", { title: "back to SAM 3 / the global mask", onClick: () => c.setMask(i, "video", "") }, "✕") : null,
     ]),
     maskSource(cur) === "video" ? hint("This shot uses its mask video: the text and points are ignored.", "display:block;margin-top:2px")
-      : maskSource(cur) === "global" ? hint("No mask of its own: this shot uses the global mask video (People & masks tab).", "display:block;margin-top:2px")
-      : maskSource(cur) === "track" ? hint("No mask of its own: this shot uses its part of the whole-video track (People & masks tab).", "display:block;margin-top:2px") : null,
+      : maskSource(cur) === "global" ? hint("No mask of its own: this shot uses the global mask video (People / Filters / Masks tab).", "display:block;margin-top:2px")
+      : maskSource(cur) === "track" ? hint("No mask of its own: this shot uses its part of the whole-video track (People / Filters / Masks tab).", "display:block;margin-top:2px") : null,
     mp ? h("div", { class: "mstrip" }, [
       ...mp.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),
       hint(mp.empty ? "nothing found: the shot runs without a mask" : `mask covers ${(mp.coverage * 100).toFixed(1)}%${cur.crop ? " · yellow = crop box" : ""}`),
@@ -174,7 +174,7 @@ function editor(c, cur) {
       hint(cur.strength >= 1 ? "regenerates the masked area completely" : `keeps ~${Math.round(100 - cur.strength * 100)}% of the original inside the mask`),
     ]) : null,
     cur.inpaint ? h("div", { class: "note", style: "margin-bottom:6px" }, [h("b", "Mask only / Crop + mask: "),
-      "set BFS Shot H3 Conditioning → inpaint to ", h("b", "per shot (planner)"), " (the default). Raise Expand (People & masks tab) when the new subject is bigger than the old one."]) : null,
+      "set BFS Shot H3 Conditioning → inpaint to ", h("b", "per shot (planner)"), " (the default). Raise Expand (People / Filters / Masks tab) when the new subject is bigger than the old one."]) : null,
     cur.paste ? h("div", { class: "row", style: "margin-bottom:6px;align-items:center",
       title: "What the NEW subject is, in English, for SAM 3 on the result: BFS Shot Join also pastes its outline (when it is bigger than the old one). E.g. person, dog, cat, car. Empty = person." }, [
       h("span", { style: "white-space:nowrap" }, "new subject"),

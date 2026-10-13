@@ -32,9 +32,9 @@ The planner's panel has five tabs, in the order you work. The timeline stays on 
 |---|---|
 | 🎞 **Video** | pick or upload the video, audio, how it is split into shots (cuts or fixed length), generation size |
 | 🎬 **Shots** | one card per shot (scroll sideways, **← →** move between shots), the preview player and the selected shot's editor: reference & prompt, who is replaced (mask, generation mode, `{target}`), continuity, **Copy to other shots** |
-| 👥 **People & masks** | the cast found by face (a reference per person) and the global mask settings |
+| 👥 **People / Filters / Masks** | the cast found by face, shot filters and the global mask settings |
 | 📝 **Prompts & refs** | the global reference and prompt, the VLM and the reference descriptions (`{details}`) |
-| ▶ **Run** | **Checks** (what to fix before running, with a button to each shot), auto / queue loop, filters, test limits |
+| ▶ **Run** | **Checks** (what to fix before running, with a button to each shot) and auto / queue loop |
 
 Shot cards show badges for what each shot has: 🎯 mask, 🎭 / ✂ generation mode, 🧑 `{target}`, ⛓ continuity and ⚠ problems.
 The header's ⚠ count opens the checks.
@@ -107,7 +107,7 @@ that will not run. The panel shows the shot's start, end and current time (and f
 playhead follows on the timeline, and clicking the timeline seeks. The source video streams from
 the input folder, so only what you play is loaded.
 
-## Filters
+## Shot filters (People / Filters / Masks tab)
 
 Skip shots that should not run, decided per shot from a few sampled frames:
 
@@ -210,7 +210,7 @@ Crop + mask), `{target}`, the setting picture and the comparison overlay. Three 
 | shot editor → **🎞 mask video** | only that shot (its first frame = the shot's first frame) | everything |
 | the shot's own SAM 3 text / points | that shot | the two below |
 | the planner's optional **`mask`** input (MASK or IMAGE batch, e.g. Load Video + Convert Image to Mask) | the whole video, one mask per source frame | the panel's mask video |
-| People & masks → **🎞 Mask video (whole video)** | the whole video, matched by time | SAM 3 for shots without a mask |
+| People / Filters / Masks → **🎞 Mask video (whole video)** | the whole video, matched by time | SAM 3 for shots without a mask |
 
 Any size and frame rate: it is matched to the shot by time and resized. The console says which mask each shot used.
 
@@ -235,7 +235,7 @@ Credit to **Neko (Nekodificador)** and **AbleJones**, whose workflow and nodes t
 ComfyUI builds without native H3 generation masks need a per-row mask patch on the model
 (e.g. ComfyUI-MiniMaxH3-PerRowMasking).
 
-The **People & masks** tab holds the global mask settings, with defaults that work as they are: fill holes on,
+The **People / Filters / Masks** tab holds the global mask settings, with defaults that work as they are: fill holes on,
 temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off
 (16 aligns the mask to H3's latent grid), threshold 0.5, 4 objects. *Show masks on shots* overlays the preview
 on the shot cards. SAM 3 uses the official `sam3.1_multiplex_fp16.safetensors` in `models/checkpoints`,
@@ -445,7 +445,7 @@ Then save:
 **🎯 Track → whole video** (in the points window) is for a person who moves around: the selection is tracked by SAM 3
 through the whole video (or the range), forward and backward from the frame you clicked on, and every shot without
 its own selection takes its part of that track. Also type a short text (e.g. `woman in pink top`): after a camera cut
-the tracker uses it to find the subject again. The People & masks tab shows the track and removes it. The first run
+the tracker uses it to find the subject again. The People / Filters / Masks tab shows the track and removes it. The first run
 tracks the whole range (a minute or two per few hundred frames); the result is cached until the selection changes.
 
 ### 3. Describe the person

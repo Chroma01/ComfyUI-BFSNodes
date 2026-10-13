@@ -33,7 +33,7 @@ const store = {   // per-browser UI conveniences (never the plan itself)
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 const DEFAULT_W = 1180, MIN_W = 1040, MIN_H = 1000;   // node size: wide enough for the four-column settings
-const TABS = [["video", "🎞 Video"], ["shots", "🎬 Shots"], ["people", "👥 People & masks"], ["prompts", "📝 Prompts & refs"], ["run", "▶ Run"]];
+const TABS = [["video", "🎞 Video"], ["shots", "🎬 Shots"], ["people", "👥 People / Filters / Masks"], ["prompts", "📝 Prompts & refs"], ["run", "▶ Run"]];
 
 function Panel(io) {
   const plan = reactive({ ...DEFAULTS });
