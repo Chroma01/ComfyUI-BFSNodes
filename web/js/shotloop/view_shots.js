@@ -26,6 +26,8 @@ function shotCard(c, s, i) {
       s.color_guide ? bdg("🎨 Colored Mark", "on", `${s.color_guide_color || "green"} · opacity ${s.color_guide_opacity ?? 0.35}`) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
       i > 0 && s.chain !== "off" ? bdg("⛓", "on", s.chain === "history" ? `continues the previous shot's last ${s.chainHistory} frames (history)` : s.chain === "head" ? `starts with the previous shot's last ${Math.min(s.chainHistory, 39)} frames, kept as they are (head)` : `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
+      { ok: bdg("💾", "on", "stored and up to date: the next Queue does not generate it again (Run tab → Stored shots to redo it)"),
+        run: bdg("⏳", "", "not stored yet, or its settings changed: the next Queue generates it") }[c.cacheOf(s)] || null,
       warnN ? bdg(`⚠ ${warnN}`, "warn", issues.map(x => x.text).join("\n")) : null,
     ]),
     who ? h("div", { class: "who" }, who.people.length ? who.people.map(id => h("img", {

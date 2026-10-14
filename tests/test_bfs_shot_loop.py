@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 import types
@@ -169,7 +170,7 @@ class JoinTest(unittest.TestCase):
         shots = [_shot(0, 0, 20, count=2, queue=True, run_id="t1"), _shot(1, 20, 45, cut=True, count=2, queue=True, run_id="t1")]
         first = join.join([self._frames(22, 0.1)], [shots[0]], [0])
         self.assertIsInstance(first[0], _Blocker)
-        video, _, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
+        video, _, _, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
         self.assertEqual(video.shape[0], 45)
         self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
 
@@ -281,7 +282,7 @@ class ComparisonTest(unittest.TestCase):
                  dict(_shot(1, 20, 40, cut=True, gen=22), frames=torch.zeros(22, 32, 48, 3), ref=None, ref2=None,
                       prompt="")]
         imgs = [torch.full((22, 32, 48, 3), 0.5), torch.full((22, 32, 48, 3), 0.7)]
-        video, _, _, comp = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True], label=["steps 20"])
+        video, _, _, comp, _ = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True], label=["steps 20"])
         self.assertEqual(video.shape[0], 40)
         self.assertEqual(comp.shape[0], 40)
         self.assertEqual(comp.shape[2] % 16, 0)
@@ -1082,6 +1083,52 @@ class MemoryStatusTest(unittest.TestCase):
         self.assertIn("Test GPU", _json.loads(path.read_text()))
         SL.vram_record(4000)              # no CUDA in use: nothing recorded, nothing started
         self.assertEqual(len(_json.loads(path.read_text())["Test GPU"]["samples"]), 2)
+
+
+class ShotStoreTest(unittest.TestCase):
+    def test_storage_round_trip(self):
+        d = tempfile.mkdtemp(dir=_TMP)
+        y = torch.linspace(0, 1, 48).view(1, 48, 1, 1)
+        frames = (((torch.sin(torch.arange(12).view(12, 1, 1, 1) + 9 * y) + 1) / 2).expand(12, 48, 64, 3) * 255).round().byte()
+        for k, mode in enumerate(("lossless", "raw", "smaller")):
+            SL.store_shot(d, k, frames, {"index": k, "fps": 24.0}, mode)
+            back, meta = SL.load_shot(d, k)
+            self.assertEqual((tuple(back.shape), meta["index"]), ((12, 48, 64, 3), k))
+            diff = int((back.int() - frames.int()).abs().max())
+            if mode == "smaller":
+                self.assertLess(diff, 40)
+            else:
+                self.assertEqual(diff, 0, mode)        # lossless and raw are exact
+        self.assertTrue(os.path.exists(os.path.join(d, "shot_0000.mkv")))
+        self.assertFalse(os.path.exists(os.path.join(d, "shot_0001.mkv")))   # raw: the frames are in the .pt
+
+    def test_status_cascades_through_continuity(self):
+        d = tempfile.mkdtemp(dir=_TMP)
+        for i in range(3):
+            open(os.path.join(d, f"shot_{i:04d}.pt"), "wb").close()
+        st = {"done": [0, 1, 2], "sig": {"0": "a", "1": "b", "2": "c"}, "gen": {"0": "g0", "1": "g1", "2": "g2"},
+              "from": {"1": "g0", "2": "g1"}, "cur": {"sigs": ["a", "b", "c"], "prev": [False, True, False]}}
+        self.assertEqual(SL.shot_status(st, d), [True, True, True])
+        st["gen"]["0"] = "new"                                   # shot 1 was redone: shot 2 continues from it
+        self.assertEqual(SL.shot_status(st, d), [True, False, True])   # shot 3 does not continue (cut)
+        st["cur"]["sigs"][2] = "changed"                          # a setting of shot 3 changed
+        self.assertEqual(SL.shot_status(st, d), [True, False, False])
+
+    def test_join_can_write_an_mp4(self):
+        import cv2
+        d = tempfile.mkdtemp(dir=_TMP)
+        imgs = [torch.full((22, 32, 32, 3), 0.2), torch.full((39, 32, 32, 3), 0.8)]
+        shots = [_shot(0, 0, 20, gen=22), _shot(1, 20, 45, cut=True, gen=39)]
+        audio = {"waveform": torch.zeros(1, 2, 48000 * 3), "sample_rate": 48000}
+        with patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
+            out = SL.BFSShotJoin().join(imgs, shots, [0], audio=[audio], save_to=[SL.SAVE_TO[1]],
+                                        filename_prefix=["test"])
+        self.assertIsInstance(out[0], _Blocker)
+        self.assertTrue(out[4].endswith("test_00001.mp4"))
+        cap = cv2.VideoCapture(out[4]); n = 0
+        while cap.read()[0]:
+            n += 1
+        self.assertEqual(n, 45)
 
 
 class FillDetailsTest(unittest.TestCase):

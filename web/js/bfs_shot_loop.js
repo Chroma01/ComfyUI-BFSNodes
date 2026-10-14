@@ -56,6 +56,7 @@ function Panel(io) {
   watch(sel, () => nextTick(() => rootEl.value?.querySelector(".shots .sc.sel")?.scrollIntoView({ block: "nearest", inline: "nearest" })));
   const hover = ref(null);       // {frame, x}
   const prog = reactive({ done: 0, count: 0 });
+  const cache = reactive({ ok: [], stored: [], mb: 0, folder: "", temp: false, combined: null });
   // what the server learned about memory on this GPU (BFS Shot Join records every shot it receives)
   const vram = reactive({ gpu: "", total_gb: 0, free_gb: 0, max_tokens: 0, max_peak_gb: 0, runs: 0 });
   async function refreshVram() {
@@ -511,12 +512,33 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     inp.onchange = () => inp.files[0] && upload(inp.files[0], cb); inp.click();
   };
   async function progress(reset = false) {
-    if (!plan.video || plan.run === "auto") { prog.done = 0; prog.count = 0; return; }
+    if (!plan.video || plan.run === "auto") { prog.done = 0; prog.count = 0; Object.assign(cache, { ok: [], stored: [], mb: 0 }); return; }
     try {
       const r = await api.fetchApi("/bfs/shotloop/progress", { method: "POST", body: JSON.stringify({ plan: { ...plan }, plan_raw: io.getPlan(), reset }) });
-      const j = await r.json(); if (!j.error) { prog.done = j.done; prog.count = j.count || active.value.length; }
+      const j = await r.json();
+      if (!j.error) { prog.done = j.done; prog.count = j.count || active.value.length; Object.assign(cache, j); }
     } catch { /* ignore */ }
   }
+  // ---- stored shots: redo some, or combine what is stored into an MP4 (low memory, on the server)
+  async function redo(shots, cascade = true) {
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/redo", { method: "POST", body: JSON.stringify({ plan: { ...plan }, shots, cascade }) });
+      const j = await r.json(); if (j.error) error.value = j.error; else { Object.assign(cache, j); prog.done = j.done; }
+    } catch (e) { error.value = `${e}`; }
+  }
+  async function combine() {
+    busy.value = "Combining the stored shots into an MP4";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/combine", { method: "POST", body: JSON.stringify({ plan: { ...plan },
+        crossfade: plan.combine_crossfade ?? 4, crf: plan.combine_crf ?? 17 }) });
+      const j = await r.json();
+      if (j.error) error.value = j.error;
+      else cache.combined = { ...j, url: api.apiURL(`/view?filename=${encodeURIComponent(j.filename)}&subfolder=${encodeURIComponent(j.subfolder)}&type=output`) };
+    } catch (e) { error.value = `${e}`; }
+    busy.value = "";
+  }
+  // a shot of the panel (any, skipped ones too) -> its cache state: "ok" stored and up to date, "run" runs next time
+  const cacheOf = s => { const k = active.value.indexOf(s); return k < 0 || !cache.ok.length ? "" : cache.ok[k] ? "ok" : "run"; };
 
   // ---- editing
   const setVideo = v => {
@@ -695,7 +717,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
-    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour, memory, vram, refreshVram,
+    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour, memory, vram, refreshVram, cache, cacheOf, redo, combine,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, included, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,

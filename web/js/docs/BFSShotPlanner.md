@@ -21,7 +21,7 @@ every shot inside that range.
 | **BFS Shot Repack** | Puts edited pieces back into a shot: Unpack's `shot` output goes to Repack's `shot`, the edited piece (e.g. the reference with its background removed) to its input. Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
 | **BFS Shot H3 Conditioning** | The common MiniMax H3 path with the important controls only: aligned Add Guide and/or native video reference, references, optional audio conditioning, the Planner's inpaint mode and source-subject blur. |
 | **BFS Shot H3 Conditioning (Advanced)** | The full conditioning node, preserving the previous node and old workflows. Adds duet canvas, shifted RoPE, prompt writer, setting reference and experimental mask-guide controls. |
-| **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. With *comparison* on it also returns a side-by-side video (original shot \| references \| result) with the shot's info and your *label* on top and its prompt below, ready for Create Video. |
+| **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. With *comparison* on it also returns a side-by-side video (original shot \| references \| result) with the shot's info and your *label* on top and its prompt below, ready for Create Video. *save to = mp4 file* writes the video (and the comparison) straight to MP4 files instead, one shot in memory at a time (long videos); `video_path` gives the file. |
 | **BFS Shot H3 Duet** | Renders one shot with H3: the shot's clip pinned beside the video (duet, no LoRA), the shot as an aligned guide (for body-swap LoRAs), or both. |
 
 ## The panel
@@ -88,6 +88,49 @@ Three run modes:
 - What makes a shot lighter: lower **Megapixels**, a shorter **Max seconds / shot**, **head 5** instead of 22 (the
   head adds its frames to every shot), **Crop** (the generation is the subject's box), and ComfyUI's own options
   (`--lowvram`, fp8 / GGUF weights, tiled VAE decode).
+- **The final join** (after the last shot) is where long videos used to run out of **RAM** (not VRAM: the process is
+  killed, e.g. `Terminated` under WSL). It now reads one stored shot at a time into the final video. Measured on 11
+  shots at 960×544 (~50 s): **+15.8 GB before, +8.2 GB now** with *save to = images* (that is the video itself, which an
+  IMAGE output must hold), and **+2.1 GB with *save to = mp4 file***, which streams the video to ffmpeg and stays at
+  about one shot whatever the length. For long videos use *mp4 file* (BFS Shot Join), or the panel's **Combine**.
+
+### Stored shots (cache, redo, combine)
+
+In the **shot by shot** and **queue loop** runs every generated shot is stored, and the Run tab's **Stored shots**
+card manages them.
+
+- **Shot cache:** *Keep* (default) stores them in ComfyUI's output folder, `output/bfs_shotloop/<run>`: they survive a
+  restart, so a stopped run resumes and a single shot can be redone. *Temp* uses ComfyUI's temp folder, which ComfyUI
+  **empties at every start** (before 1.104 every run was stored there).
+- **Shot storage** (the format of each stored shot, measured on 145 frames at 1280×720):
+
+  | Storage | Size | Quality |
+  |---|---|---|
+  | **Lossless** (FFV1, default) | ~34 MB | exact: the final video is unchanged |
+  | Smaller (H.264 RGB, crf 8) | ~21 MB | visually lossless (PSNR ~52 dB) |
+  | Smallest (H.264 RGB, crf 14) | ~9 MB | light loss (PSNR ~48 dB) |
+  | Raw frames (`.pt`) | ~401 MB | exact; needs no ffmpeg |
+
+  The final video of a stored run is assembled from the stored shots, and the continuity head reads them: a lossy
+  storage reaches the output (the panel warns). Without ffmpeg a shot falls back to raw frames.
+- **One folder per source video.** Each shot remembers the settings it was made with (its range, prompt, references,
+  mask, crop, continuity, the generation size, the global prompt / references and the references or prompt connected
+  to the planner). The next Queue **runs only the shots that are not stored or whose settings changed**, plus the
+  shots that **continue from a shot that was made again** (head, history, previous shot as reference / first
+  frame), so every seam matches. Shot cards show 💾 (stored, up to date) or ⏳ (runs next time).
+- **Model, LoRA, seed, sampler:** the planner does not see them. After changing them, redo the shots (↻) or *Redo all*,
+  or *Reset loop* (deletes the stored shots of this video).
+- **↻ Redo** a shot (Stored shots card): it runs again on the next Queue, and the shots that continue from it run
+  after it. Tick *↻ redoes only that shot* to keep the next shots as they are (the seam after it may then not match).
+- **🎬 Combine stored shots:** puts the stored shots together into an MP4 in the output folder **now, without
+  generating** (one shot in memory at a time), on the plan's timeline: the soundtrack, the original video where a
+  shot is skipped, and also where a shot is not stored yet or out of date, so it previews a run in progress. A link
+  to the file appears in the card.
+- When every shot is stored, a Queue still runs the last shot again so the join can output the video: use Combine to
+  only assemble.
+- **Recovering a run outside ComfyUI** (e.g. ComfyUI was killed during the final join):
+  `python tools/bfs_assemble_shots.py output/bfs_shotloop/<run> video.mp4 --audio input/<source video>` (ComfyUI's
+  Python, ffmpeg on the PATH) does the same as Combine with one shot in memory; it reads the old raw `.pt` shots too.
 
 ## Guide frames and lengths
 

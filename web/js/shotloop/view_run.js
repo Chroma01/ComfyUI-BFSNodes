@@ -68,6 +68,47 @@ function memorySection(c) {
   ], { sub: { ok: "within what ran here", note: "a bit bigger", warn: "may run out of memory", info: "no data yet" }[m.level] });
 }
 
+function cacheSection(c) {
+  const { plan, cache, active } = c;
+  if (plan.run === "auto") return null;
+  const n = active.value.length, ok = cache.ok || [];
+  const done = ok.filter(Boolean).length;
+  const lossy = plan.shot_storage === "smaller" || plan.shot_storage === "smallest";
+  return section("Stored shots", [
+    h("div", { class: "grid" }, [
+      fld("Shot cache", select(plan.shot_cache || "output", [["output", "Keep (output folder)"], ["temp", "Temp (lost when ComfyUI restarts)"]],
+        v => c.setPlan("shot_cache", v, c.progress))),
+      fld("Shot storage", select(plan.shot_storage || "lossless", [["lossless", "Lossless (FFV1, exact)"], ["smaller", "Smaller (H.264 RGB, visually lossless)"],
+        ["smallest", "Smallest (H.264 RGB, light loss)"], ["raw", "Raw frames (.pt, biggest)"]], v => c.setPlan("shot_storage", v))),
+    ]),
+    lossy ? hint("⚠ The final video is assembled from the stored shots (and the continuity head reads them): a lossy storage "
+      + "slightly changes the output. Lossless keeps it exact.", "display:block;margin-top:4px;color:var(--warn,#d97706)") : null,
+    h("div", { class: "row", style: "margin-top:8px;flex-wrap:wrap;gap:4px" }, ok.length ? ok.map((g, k) => {
+      const i = c.segs.value.indexOf(active.value[k]);
+      return h("span", { class: ["pill", g ? "ok" : ""], title: g ? "stored and up to date" : "runs on the next Queue" }, [
+        `#${(i >= 0 ? i : k) + 1} ${g ? "💾" : "⏳"}`,
+        g ? h("button", { class: "chip", style: "margin-left:4px", title: "generate this shot again on the next Queue"
+          + (plan.redo_only ? " (only this shot)" : " (and the shots that continue from it)"),
+          onClick: () => c.redo([k], !plan.redo_only) }, "↻") : null]);
+    }) : [hint(n ? "Nothing stored yet for this video: Queue the workflow." : "")]),
+    h("div", { class: "row", style: "margin-top:6px;flex-wrap:wrap;gap:6px" }, [
+      hint(ok.length ? `${done}/${ok.length} stored and up to date · ${cache.mb || 0} MB` : ""),
+      h("span", { class: "grow" }),
+      check(!!plan.redo_only, v => c.setPlan("redo_only", v), "↻ redoes only that shot"),
+      ok.length ? h("button", { title: "every stored shot runs again on the next Queue", onClick: () => c.redo(ok.map((_, k) => k), true) }, "↻ Redo all") : null,
+      h("button", { disabled: !done, title: "Put the stored shots together into an MP4 in the output folder now, without generating: "
+        + "one shot in memory at a time, the original video where a shot is skipped or not stored yet, with the soundtrack.",
+        onClick: () => c.combine() }, "🎬 Combine stored shots"),
+    ]),
+    cache.combined ? h("div", { class: "row", style: "margin-top:6px" }, [
+      hint(`✓ ${cache.combined.shots}/${cache.combined.of} shots → `),
+      h("a", { href: cache.combined.url, target: "_blank", style: "margin-left:4px" }, cache.combined.filename)]) : null,
+    hint("Each shot remembers the settings it was made with: the next Queue runs only the shots whose settings changed "
+      + "(and the ones that continue from them). Model, LoRA, seed or sampler changes are not seen by the planner: use ↻ or Redo all. "
+      + (cache.folder ? `Folder: ${cache.folder}` : ""), "display:block;margin-top:6px"),
+  ], { sub: ok.length ? `${done}/${ok.length} stored` : "nothing stored yet" });
+}
+
 export function runTab(c) {
-  return h("div", { class: "card" }, [checksSection(c), memorySection(c), loopSection(c)]);
+  return h("div", { class: "card" }, [checksSection(c), memorySection(c), loopSection(c), cacheSection(c)]);
 }

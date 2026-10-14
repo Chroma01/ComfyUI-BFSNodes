@@ -1,7 +1,7 @@
 """Assemble the shots a BFS Shot Planner run stored on disk into one MP4, one shot at a time (low RAM).
 
 For a run whose final join did not finish (ComfyUI killed, out of memory...). Every shot is stored by BFS Shot Join as
-<run folder>/shot_0000.pt, shot_0001.pt ... already pasted back / uncropped, without its continuity head; this reads
+<run folder>/shot_0000.pt (+ shot_0000.mkv), shot_0001.pt ... already pasted back / uncropped, without its continuity head; this reads
 them in order, trims each to its length, cross-fades joins that are not camera cuts (like BFS Shot Join), and streams
 the frames to ffmpeg, so memory stays at about one shot whatever the video length.
 
@@ -23,7 +23,8 @@ import torch
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("run", help="the run folder with shot_0000.pt ... (ComfyUI temp/bfs_shotloop/<run id>)")
+    ap.add_argument("run", help="the run folder with shot_0000.pt ... (ComfyUI output/bfs_shotloop/<run id>; "
+                                "temp/bfs_shotloop/<run id> before 1.104)")
     ap.add_argument("out", help="output .mp4")
     ap.add_argument("--audio", help="source video to take the sound from", default="")
     ap.add_argument("--crossfade", type=int, default=4, help="frames blended at joins that are not cuts (0 = hard)")
@@ -46,7 +47,14 @@ def main() -> int:
     proc, prev_tail, first_start, last_end, n_out = None, None, None, None, 0
     for f in files:
         d = torch.load(f, map_location="cpu", weights_only=False)
-        frames, meta = d["frames"], d["shot"]          # uint8 [N, H, W, 3]
+        meta = d["shot"]
+        if "frames" in d:                              # raw frames (older runs, Shot storage = raw)
+            frames = d["frames"]                       # uint8 [N, H, W, 3]
+        else:                                          # the frames are in shot_NNNN.mkv next to the .pt
+            n, h, w, _ = d["shape"]
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-i", os.path.join(a.run, d["video"]), "-f", "rawvideo",
+                                  "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            frames = torch.frombuffer(bytearray(raw[:n * h * w * 3]), dtype=torch.uint8).view(n, h, w, 3)
         L = int(meta["length"])
         body = frames[:L]
         if body.shape[0] < L:                          # shorter than planned: hold the last frame

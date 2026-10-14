@@ -448,7 +448,7 @@ DEFAULT_PLAN = {
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
-    "between_shots": "keep",
+    "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless",
 }
 
 
@@ -2243,9 +2243,8 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
     want = int(seg.get("chain_history") or 22)
     prev = None
     if queue:
-        fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
-        if os.path.exists(fp):
-            prev = torch.load(fp, map_location="cpu")["frames"]     # uint8, sliced before any float copy
+        if os.path.exists(os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")):
+            prev = load_shot(run_dir(rid), i - 1)[0]     # uint8, sliced before any float copy
     if prev is None:
         if queue:
             print(f"{tag}: the previous shot's result is not there yet (shots run in order)", flush=True)
@@ -2396,7 +2395,7 @@ def head_for(i, n, prev_len, queue, rid, W, H, crop, ft):
         if queue:
             print(f"{tag}: the previous shot's result is not there yet (shots run in order)", flush=True)
         return None
-    prev = torch.load(fp, map_location="cpu")["frames"]
+    prev = load_shot(run_dir(rid), i - 1)[0]
     avail = min(int(prev_len), prev.shape[0])
     if avail < n:
         print(f"{tag} skipped: the previous shot has only {avail} frames", flush=True)
@@ -2510,14 +2509,134 @@ def _fit_to(img: torch.Tensor, w: int, h: int) -> torch.Tensor:
 # ---------------------------------------------------------------------------- queue loop state
 
 def run_id_for(plan_json: str, path: str) -> str:
+    """Old run id (the whole plan): kept for older callers; runs now use run_key."""
     h = hashlib.sha1((plan_json + str(os.path.getmtime(path))).encode()).hexdigest()[:16]
     return h
 
 
-def run_dir(run_id: str) -> str:
-    d = os.path.join(folder_paths.get_temp_directory(), "bfs_shotloop", run_id)
-    os.makedirs(d, exist_ok=True)
+def run_key(plan: dict, path: str) -> str:
+    """The stored shots of a video: one run folder per source video (its path and date), whatever else changes in the
+    plan; each shot carries the signature of its own settings, so an edit reruns only the shots it changes (and the
+    ones that continue from them). 'tmp_': kept in ComfyUI's temp folder (Shot cache = temp)."""
+    h = hashlib.sha1((os.path.abspath(path) + str(os.path.getmtime(path))).encode()).hexdigest()[:16]
+    return ("tmp_" if plan.get("shot_cache") == "temp" else "") + h
+
+
+def run_dir(run_id: str, create: bool = True) -> str:
+    """The stored shots of a run: in ComfyUI's output folder (output/bfs_shotloop), because ComfyUI empties its temp
+    folder at every start; 'tmp_' runs (Shot cache = temp) stay in temp and are lost on restart."""
+    out = getattr(folder_paths, "get_output_directory", None)
+    base = folder_paths.get_temp_directory() if run_id.startswith("tmp_") or out is None else out()
+    d = os.path.join(base, "bfs_shotloop", run_id)
+    if create:
+        os.makedirs(d, exist_ok=True)
     return d
+
+
+# ---------------------------------------------------------------------------- shot cache (signatures, redo)
+_SIG_SKIP = ("stats", "people", "main", "cast_skip", "skip_reason", "run", "enabled", "force")
+_SIG_PLAN = ("grid", "fps", "megapixels", "generation_size_mode", "custom_width", "custom_height", "multiple",
+             "global_prompt", "global_ref", "global_ref2", "global_color_guide_ref1", "global_color_guide_ref2",
+             "mask_cfg", "vlm_cfg", "ref_details", "audio_mode", "mask_video")
+
+
+def _tensor_sig(t) -> str:
+    if t is None:
+        return ""
+    x = t.detach().cpu()
+    return hashlib.sha1(str(tuple(x.shape)).encode() + x[:, ::8, ::8].float().contiguous().numpy().tobytes()).hexdigest()[:12]
+
+
+def shot_signature(plan: dict, seg: dict, head: int, extra: dict) -> str:
+    """What a stored shot was made from, as far as the planner can see: its own settings (range, prompt, references,
+    mask, crop, continuity...), the plan's shared ones (size, grid, global prompt / references) and the node inputs
+    (references and prompt connected to the planner). Model, LoRA, seed and sampler are outside the planner: after
+    changing those, use Redo or Reset."""
+    doc = {"s": {k: v for k, v in seg.items() if k not in _SIG_SKIP}, "head": int(head),
+           "g": {k: plan.get(k) for k in _SIG_PLAN}, "x": extra}
+    return hashlib.sha1(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def uses_previous(seg: dict) -> bool:
+    """Whether a shot is made from the previous shot's result (so it is redone when that result changes)."""
+    c = seg.get("chain") or "off"
+    return c in ("reference", "first frame") or (c in ("head", "history") and not seg.get("cut_before"))
+
+
+def shot_status(st: dict, d: str) -> list[bool]:
+    """Per shot of the last plan the planner saw (st['cur']): stored and still valid. A shot is valid when it was
+    stored with the same signature and, if it continues from the previous shot, from that shot's current take."""
+    cur = st.get("cur") or {}
+    sigs, prev = cur.get("sigs") or [], cur.get("prev") or []
+    done, sig, gen, frm = set(st.get("done", [])), st.get("sig", {}), st.get("gen", {}), st.get("from", {})
+    ok: list[bool] = []
+    for i, sg in enumerate(sigs):
+        good = i in done and sig.get(str(i)) == sg and os.path.exists(os.path.join(d, f"shot_{i:04d}.pt"))
+        if good and i > 0 and i < len(prev) and prev[i]:
+            good = ok[i - 1] and frm.get(str(i)) == gen.get(str(i - 1))
+        ok.append(good)
+    return ok
+
+
+# a stored shot: shot_NNNN.pt (its info, small) + shot_NNNN.mkv (its frames), in the format of the plan's "Shot
+# storage" (measured on 145 frames at 1280x720: raw 401 MB). The final video of a stored run is assembled from these
+# files, so only the lossy formats can change it; raw frames go inside the .pt (also when ffmpeg cannot write a video).
+SHOT_STORAGE = {
+    "lossless": ["-c:v", "ffv1", "-level", "3", "-pix_fmt", "rgb24"],                         # exact, ~34 MB
+    "smaller": ["-c:v", "libx264rgb", "-preset", "fast", "-crf", "8", "-pix_fmt", "rgb24"],     # PSNR ~52 dB, ~21 MB
+    "smallest": ["-c:v", "libx264rgb", "-preset", "fast", "-crf", "14", "-pix_fmt", "rgb24"],   # PSNR ~48 dB, ~9 MB
+    "raw": None,                                                                                # exact, no ffmpeg
+}
+
+
+def _write_rgb_video(path: str, frames: torch.Tensor, fps: float = 24.0, storage: str = "lossless") -> bool:
+    """uint8 [N,H,W,3] -> a video file in the storage's codec (lossless FFV1 when that codec is missing); False when
+    no video can be written (raw storage, ffmpeg missing...)."""
+    codec = SHOT_STORAGE.get(storage, SHOT_STORAGE["lossless"])
+    if codec is None:
+        return False
+    n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
+    data = frames.contiguous().numpy()
+    for c in (codec, SHOT_STORAGE["lossless"]) if codec is not SHOT_STORAGE["lossless"] else (codec,):
+        try:
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+                                "-r", f"{fps:g}", "-i", "-", *c, path], input=memoryview(data), capture_output=True)
+            if r.returncode == 0 and os.path.getsize(path) > 0:
+                return True
+        except (OSError, ValueError):
+            pass
+    if os.path.exists(path):
+        os.remove(path)
+    return False
+
+
+def _read_rgb_video(path: str, n: int, h: int, w: int) -> torch.Tensor:
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                       capture_output=True, check=True)
+    k = len(r.stdout) // (h * w * 3)
+    if k < n:
+        raise ValueError(f"BFS Shot Loop: {path} holds {k} frames, expected {n}")
+    return torch.from_numpy(np.frombuffer(r.stdout, np.uint8, count=n * h * w * 3).reshape(n, h, w, 3).copy())
+
+
+def store_shot(d: str, index: int, frames: torch.Tensor, meta: dict, storage: str = "lossless") -> None:
+    """Store one generated shot (uint8 [N,H,W,3]) of a run."""
+    pt, vid = os.path.join(d, f"shot_{index:04d}.pt"), os.path.join(d, f"shot_{index:04d}.mkv")
+    if _write_rgb_video(vid, frames, float(meta.get("fps") or 24.0), storage):
+        torch.save({"shot": meta, "video": os.path.basename(vid), "shape": tuple(int(x) for x in frames.shape)}, pt)
+    else:
+        torch.save({"frames": frames, "shot": meta}, pt)
+
+
+def load_shot(d: str, index: int, frames: bool = True):
+    """(uint8 frames or None, info) of a stored shot."""
+    x = torch.load(os.path.join(d, f"shot_{index:04d}.pt"), map_location="cpu", weights_only=False)
+    if not frames:
+        return None, x["shot"]
+    if "frames" in x:
+        return x["frames"], x["shot"]
+    n, h, w, _ = x["shape"]
+    return _read_rgb_video(os.path.join(d, x["video"]), n, h, w), x["shot"]
 
 
 def run_state(run_id: str) -> dict:
@@ -2641,13 +2760,27 @@ class BFSShotPlanner:
         g_ref2 = ref_image_2 if ref_image_2 is not None else _load_image(p.get("global_ref2", ""))
         g_prompt = prompt if prompt is not None else p.get("global_prompt", "")
         queue = p.get("run") in STORED_RUNS
-        rid = run_id_for(plan, path) if queue else ""
+        rid = run_key(p, path) if queue else ""
         todo = list(range(len(segs)))
+        sigs: list[str] = []
+        st: dict = {}
         if queue:
+            extra = {"ref": _tensor_sig(ref_image), "ref2": _tensor_sig(ref_image_2), "prompt": prompt or "",
+                     "mask": _tensor_sig(mask) if mask is not None else "", "size": [W, H]}
+            sigs = [shot_signature(p, s, head_length(segs, i, p["grid"]), extra) for i, s in enumerate(segs)]
             st = run_state(rid)
             st["count"] = len(segs)
+            st["cur"] = {"sigs": sigs, "prev": [bool(i > 0 and uses_previous(s)) for i, s in enumerate(segs)]}
+            ok = shot_status(st, run_dir(rid))
+            pending = [i for i, g in enumerate(ok) if not g]
+            st["pending"] = pending
             save_state(rid, st)
-            pending = [i for i in todo if i not in st["done"]]
+            if pending:
+                print(f"[BFS Shot Planner] shot cache: {len(segs) - len(pending)}/{len(segs)} shots stored and up to "
+                      f"date, {len(pending)} to run (next: shot {pending[0] + 1})", flush=True)
+            else:
+                print(f"[BFS Shot Planner] shot cache: every shot is stored; shot {len(segs)} runs again so the join "
+                      f"outputs the video (the panel's Combine assembles the stored shots without generating)", flush=True)
             todo = pending[:1] if pending else [len(segs) - 1]
         cache_imgs: dict[str, torch.Tensor] = {}
 
@@ -2792,7 +2925,7 @@ class BFSShotPlanner:
             if queue and i > 0 and s["chain"] != "off":
                 fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
                 if os.path.exists(fp):
-                    prev = torch.load(fp, map_location="cpu")["frames"]
+                    prev = load_shot(run_dir(rid), i - 1)[0]
                     chain_img = _fit_to(pick_frame(prev, prev_len, s["chain_frame"]).float() / 255.0, W, H)
                     del prev
             sug = vlm_out.get(i)
@@ -2856,6 +2989,8 @@ class BFSShotPlanner:
                 "audio": _slice_audio(audio, g0 / fps, glen / fps),
                 "run_id": rid, "queue": queue, "run_mode": p.get("run"),
                 "between_shots": p.get("between_shots") or "keep", "grid": p["grid"],
+                "sig": sigs[i] if sigs else "", "prev_gen": (st.get("gen") or {}).get(str(i - 1), "") if sigs else "",
+                "shot_storage": p.get("shot_storage") or "lossless",
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
                 "history": hist, "history_src": hist_src, "head_frames": head_px,
                 "prev_length": prev_len,
@@ -2875,6 +3010,8 @@ class BFSShotPlanner:
                     "segs": [{"start": s["start"], "end": s["end"], "run": s["run"], "cut_before": s["cut_before"],
                               "run_index": segs.index(s) if s["run"] else -1} for s in all_segs],
                     "src": src.tolist(), "n": a["n"]}
+        if queue:   # the panel's Combine assembles the stored shots on this timeline (original video where none ran)
+            torch.save(timeline, os.path.join(run_dir(rid), "timeline.pt"))
         skipped = [(i, s.get("skip_reason") or ("disabled" if not s["enabled"] else "skip")) for i, s in enumerate(all_segs) if not s["run"]]
         lines = [f"{len(segs)} shots, {total} frames ({total / fps:.2f}s) at {fps:g} fps, {W}x{H}"
                  + (f" | queue loop: running shot {shots[0]['index'] + 1}/{len(segs)}" if queue else "")]
@@ -3799,22 +3936,39 @@ class BFSShotJoin:
                          "comparison_mask": ("BOOLEAN", {"default": True, "tooltip": "In the comparison, shots with "
                              "a crop or a generation mask (Mask only / Crop + mask) show the selected mask over the "
                              "original column; Colored Mark uses its selected colors, other masks use red. Crop boxes "
-                             "are yellow."})},
+                             "are yellow."}),
+                         "save_to": (SAVE_TO, {"default": SAVE_TO[0], "tooltip": "images: output the video as IMAGE "
+                             "(connect Create Video / Save Video); the whole video is held in memory. mp4 file: the join "
+                             "writes the video (and the comparison) straight to MP4 files in the output folder, one shot "
+                             "at a time, so memory stays at about one shot: use it for long videos. The images / audio / "
+                             "comparison outputs are then blocked (nodes after them do not run) and video_path gives "
+                             "the file."}),
+                         "filename_prefix": ("STRING", {"default": "bfs_shot_loop", "tooltip":
+                             "mp4 file: the file name in the output folder (a counter is added)."}),
+                         "mp4_crf": ("INT", {"default": 17, "min": 0, "max": 51, "tooltip":
+                             "mp4 file: H.264 quality (lower = better and bigger; 0 = lossless, 17 = visually "
+                             "lossless, 23 = ffmpeg's default)."})},
             # recursive run: the join expands the graph for the next shot
             "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID"},
         }
 
     INPUT_IS_LIST = True
-    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "IMAGE")
-    RETURN_NAMES = ("images", "audio", "fps", "comparison")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "IMAGE", "STRING")
+    RETURN_NAMES = ("images", "audio", "fps", "comparison", "video_path")
     FUNCTION = "join"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
              comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
-             seamless_edges=None, paste_new_outline=None, dynprompt=None, unique_id=None):
+             seamless_edges=None, paste_new_outline=None, save_to=None, filename_prefix=None, mp4_crf=None,
+             dynprompt=None, unique_id=None):
         tl = timeline[0] if timeline else None
+        self._to_file = None
+        if save_to and save_to[0] == SAVE_TO[1]:
+            self._to_file = {"path": _next_output_path((filename_prefix[0] if filename_prefix else "") or "bfs_shot_loop"),
+                             "crf": int(mp4_crf[0]) if mp4_crf else 17}
+        self._label = None
         self._dynprompt = dynprompt[0] if dynprompt else None
         self._unique_id = unique_id[0] if unique_id else None
         fin = dict(edge_hardness=float(edge_hardness[0]) if edge_hardness else 0.0,
@@ -3837,17 +3991,30 @@ class BFSShotJoin:
                          for img, sh in zip(images, shots)), default=0))
         cut = [drop_head(img, sh) for img, sh in zip(images, shots)]
         images, shots = [c[0] for c in cut], [c[1] for c in cut]
+        self._label = lab
         if shots and shots[0].get("queue"):
             out = self._join_queue(images, shots, crossfade, audio, tl)
+            if isinstance(out, dict):   # recursive run, not the last shot: the graph for the next one
+                return out
+            if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
+                return out + (out[0], out[0])
         else:
-            out = self._join_all(images, shots, crossfade, audio, tl)
-        if isinstance(out, dict):   # recursive run, not the last shot: the graph for the next one
-            return out
-        if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
-            return out + (out[0],)
-        video = out[0]
-        comp = comparison_video(video, self._parts, lab, self._comp_h, self._comp_mask) if want else video[:1]
-        return tuple(out) + (comp,)
+            if len(images) != len(shots):
+                raise ValueError(f"BFS Shot Join: got {len(images)} image batches for {len(shots)} shots. "
+                                 "Connect the decoded images of the same shot list.")
+            out = self._assemble(list(shots), lambda j: images[j], crossfade, audio, tl, self._to_file, lab)
+        return self._outputs(out)
+
+    def _outputs(self, out):
+        video, a, fps, comp = out
+        if self._to_file:
+            from comfy_execution.graph_utils import ExecutionBlocker
+            path, comp_path = self._files
+            print(f"[BFS Shot Join] video written to {path}" + (f", comparison to {comp_path}" if comp_path else ""),
+                  flush=True)
+            blocker = ExecutionBlocker(None)
+            return (blocker, blocker, fps, blocker, path)
+        return (video, a, fps, comp if comp is not None else video[:1], "")
 
     def _join_queue(self, images, shots, crossfade, audio, tl=None):
         from comfy_execution.graph_utils import ExecutionBlocker
@@ -3872,14 +4039,28 @@ class BFSShotJoin:
                         meta["comparison_mark_regions"] = _comparison_mark_regions(shot, src, h)
                     except Exception as e:  # keep the video join available if its optional comparison overlay fails
                         print(f"[BFS Shot Join] no Colored Mark overlay for shot {shot.get('index', 0) + 1}: {e}")
-        torch.save({"frames": (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(), "shot": meta},
-                   os.path.join(d, f"shot_{shot['index']:04d}.pt"))
+        store_shot(d, int(shot["index"]), (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(), meta,
+                   shot.get("shot_storage") or "lossless")
         st = run_state(rid)
-        if shot["index"] not in st["done"]:
-            st["done"].append(shot["index"])
+        i = int(shot["index"])
+        if i not in st["done"]:
+            st["done"].append(i)
         st["count"] = shot["count"]
+        take = hashlib.sha1(f"{rid}:{i}:{time.time()}".encode()).hexdigest()[:10]   # this take of the shot
+        st.setdefault("sig", {})[str(i)] = shot.get("sig", "")
+        st.setdefault("gen", {})[str(i)] = take
+        st.setdefault("from", {})[str(i)] = shot.get("prev_gen", "")
+        if st.get("keep_next", {}).pop(str(i), None) and str(i + 1) in st.get("from", {}):
+            st["from"][str(i + 1)] = take   # Redo "only this shot": the next shot keeps its take
         save_state(rid, st)
-        done = len(set(st["done"]))
+        if st.get("cur"):   # stored and valid shots of the current plan (a new take invalidates the shots after it)
+            ok = shot_status(st, d)
+            done = sum(ok)
+            if done < len(ok):
+                print(f"[BFS Shot Join] shot {i + 1} stored; {len(ok) - done} shot(s) still to run "
+                      f"(next: shot {ok.index(False) + 1})", flush=True)
+        else:
+            done = len(set(st["done"]))
         _notify("bfs-shotloop-progress", {"run_id": rid, "done": done, "count": shot["count"]})
         if done < shot["count"]:
             if shot.get("run_mode") == "recursive" and getattr(self, "_dynprompt", None) is not None:
@@ -3891,10 +4072,12 @@ class BFSShotJoin:
             _notify("bfs-shotloop-next", {"run_id": rid, "done": done, "count": shot["count"]})
             blocker = ExecutionBlocker(None)
             return (blocker, blocker, blocker)
-        stored = [torch.load(os.path.join(d, f"shot_{i:04d}.pt")) for i in range(shot["count"])]
-        imgs = [x["frames"].float() / 255.0 for x in stored]
-        meta = [x["shot"] for x in stored]
-        return self._join_all(imgs, meta, crossfade, audio, tl)
+        # the whole video from the stored shots, one shot in memory at a time
+        del images, shots, img
+        _release_between_shots(False)
+        metas = [load_shot(d, i, frames=False)[1] for i in range(shot["count"])]
+        return self._assemble(metas, lambda j: load_shot(d, int(metas[j]["index"]))[0], crossfade, audio, tl,
+                              self._to_file, getattr(self, "_label", "") or "")
 
     def _recurse(self, dynprompt, unique_id: str) -> dict:
         """Recursive run: the nodes between BFS Shot Planner and this join (the shot's body: conditioning, sampler,
@@ -3959,113 +4142,284 @@ class BFSShotJoin:
         return {"result": tuple(rec.out(i) for i in range(len(self.RETURN_TYPES))), "expand": graph.finalize()}
 
     def _join_all(self, images, shots, crossfade, audio=None, tl=None):
-        if tl is not None and any(not s["run"] for s in tl["segs"]):
-            return self._join_timeline(images, shots, crossfade, audio, tl)
-        xf = int(crossfade[0]) if crossfade else 0
+        """The shots in memory, joined (video, audio, fps)."""
         if len(images) != len(shots):
             raise ValueError(f"BFS Shot Join: got {len(images)} image batches for {len(shots)} shots. "
                              "Connect the decoded images of the same shot list.")
-        order = sorted(range(len(shots)), key=lambda i: shots[i]["index"])
-        H, W = images[order[0]].shape[1:3]
-        out = []
-        prev_tail = None  # frames the previous shot generated past its end
-        for j in order:
-            img = images[j]
-            if img.shape[1:3] != (H, W):
-                img = torch.nn.functional.interpolate(img.movedim(-1, 1), size=(H, W), mode="bilinear",
-                                                      align_corners=False).movedim(1, -1)
-            L = shots[j]["length"]
-            body = img[:L]
-            if body.shape[0] < L:   # shorter than planned: hold the last frame
-                body = torch.cat([body, body[-1:].expand(L - body.shape[0], -1, -1, -1)], 0)
-            if xf > 0 and prev_tail is not None and not shots[j]["cut_before"]:
-                n = min(xf, prev_tail.shape[0], body.shape[0])
-                if n > 0:
-                    w = torch.linspace(0, 1, n + 2)[1:-1].view(-1, 1, 1, 1)
-                    body = body.clone()
-                    body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
-            out.append(body)
-            if hasattr(self, "_parts"):
-                self._parts.append((shots[j], L, shots[j].get("full_frames") if shots[j].get("full_frames") is not None
-                                    else shots[j].get("frames")))
-            prev_tail = img[L:]
-        video = torch.cat(out, 0)
-        fps = float(shots[order[0]]["fps"])
+        return self._assemble(list(shots), lambda j: images[j], crossfade, audio, tl)[:3]
+
+    def _assemble(self, metas: list, frames_of, crossfade, audio=None, tl=None, to_file: dict | None = None,
+                  label: str = ""):
+        """Put the shots together one at a time: each is read (frames_of(j): uint8 or float frames of metas[j]),
+        trimmed to its length, cross-faded with the one before when no cut separates them, and written into the
+        final video, so memory holds the output plus one shot (not every shot twice over). With a timeline, shots
+        that did not run (or are missing) are the original video, or dropped, and the soundtrack follows.
+        to_file ({"path", "crf"}): the video (and the comparison, when asked) are streamed to MP4 files instead, so
+        memory stays at about one shot whatever the length. Returns (video or None, audio, fps, comparison or None)."""
+        xf = int(crossfade[0]) if isinstance(crossfade, (list, tuple)) else int(crossfade or 0)
+        order = sorted(range(len(metas)), key=lambda j: int(metas[j]["index"]))
+        by_idx = {int(metas[j]["index"]): j for j in order}
+        on_tl = tl is not None and any(not g["run"] or g["run_index"] not in by_idx for g in tl["segs"])
+        fill = (tl or {}).get("fill", "original")
+        if on_tl:
+            pieces = [(by_idx[g["run_index"]] if g["run"] and g["run_index"] in by_idx else None, g) for g in tl["segs"]]
+            pieces = [(j, g) for j, g in pieces if j is not None or fill != "drop"]
+        else:
+            pieces = [(j, None) for j in order]
+        if not pieces:
+            raise ValueError("BFS Shot Join: nothing to join")
+        fps = float(tl["fps"]) if on_tl else float(metas[order[0]].get("fps") or 24.0)
+        length = lambda j, g: int(metas[j]["length"]) if j is not None else int(g["end"]) - int(g["start"])
+        total = sum(length(j, g) for j, g in pieces)
+
+        # the soundtrack first (an MP4 is written with it in one pass)
         a = audio[0] if audio else None
-        if not _usable(a):   # no soundtrack: a silent one, so Create Video always gets valid audio
-            return (video, silence(video.shape[0] / fps), fps)
-        if a is not None:
-            n = int(round(video.shape[0] / fps * a["sample_rate"]))
+        if on_tl:
+            if a is None or (isinstance(a, dict) and a.get("bfs_runs_only") and tl.get("audio") is not None):
+                a = tl.get("audio") or a   # the planner's own soundtrack covers only the shots that ran
+            if _usable(a) and fill == "drop":
+                sr, base = a["sample_rate"], tl["segs"][0]["start"]
+                a = {"waveform": torch.cat([a["waveform"][..., int(round((int(g["start"]) - base) / fps * sr)):
+                                                          int(round((int(g["start"]) - base + length(j, g)) / fps * sr))]
+                                            for j, g in pieces], -1), "sample_rate": sr}
+        if _usable(a):
+            n = int(round(total / fps * a["sample_rate"]))
             wf = a["waveform"][..., :n]
             if wf.shape[-1] < n:
                 wf = torch.nn.functional.pad(wf, (0, n - wf.shape[-1]))
             a = {"waveform": wf, "sample_rate": a["sample_rate"]}
-        return (video, a, fps)
-
-
-def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
-    """Rebuild the whole timeline: generated shots where they ran, original video (or nothing) elsewhere."""
-    xf = int(crossfade[0]) if crossfade else 0
-    by_idx = {shots[j]["index"]: images[j] for j in range(len(shots))}
-    meta = {s["index"]: s for s in shots}
-    first = images[0]
-    H, W = first.shape[1:3]
-    fps = float(tl["fps"])
-    src = np.asarray(tl["src"])
-    out, kept = [], []
-    prev_tail = None
-    for seg in tl["segs"]:
-        L = seg["end"] - seg["start"]
-        if seg["run"]:
-            img = by_idx[seg["run_index"]]
-            if img.shape[1:3] != (H, W):
-                img = torch.nn.functional.interpolate(img.movedim(-1, 1), size=(H, W), mode="bilinear",
-                                                      align_corners=False).movedim(1, -1)
-            body = img[:L]
-            if body.shape[0] < L:
-                body = torch.cat([body, body[-1:].expand(L - body.shape[0], -1, -1, -1)], 0)
-            if xf > 0 and prev_tail is not None and not seg["cut_before"]:
-                n = min(xf, prev_tail.shape[0], body.shape[0])
-                if n > 0:
-                    w = torch.linspace(0, 1, n + 2)[1:-1].view(-1, 1, 1, 1)
-                    body = body.clone(); body[:n] = prev_tail[:n] * (1 - w) + body[:n] * w
-            out.append(body); kept.append((seg["start"], L))
-            if hasattr(self, "_parts"):
-                sm = meta.get(seg["run_index"]) or {}
-                self._parts.append((sm, L, sm.get("full_frames") if sm.get("full_frames") is not None else sm.get("frames")))
-            prev_tail = img[L:]
         else:
-            prev_tail = None
-            if tl.get("fill", "original") == "drop":
-                continue
-            frames = _read_frames(tl["path"], src[seg["start"]:seg["end"]], (W, H))
-            orig = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
-            out.append(orig); kept.append((seg["start"], L))
-            if hasattr(self, "_parts"):
-                self._parts.append(({"skipped": True, "start": seg["start"], "end": seg["end"], "fps": fps,
-                                     "cut_before": seg["cut_before"]}, L, orig))
-    video = torch.cat(out, 0)
-    a = audio[0] if audio else None
-    if a is None or (isinstance(a, dict) and a.get("bfs_runs_only") and tl.get("audio") is not None):
-        a = tl.get("audio") or a   # the planner's own soundtrack covers only the shots that ran
-    if not _usable(a):
-        return (video, silence(video.shape[0] / fps), fps)
-    if a is not None:
-        sr = a["sample_rate"]; base = tl["segs"][0]["start"]
-        if tl.get("fill", "original") == "drop":
-            parts = [a["waveform"][..., int(round((st - base) / fps * sr)):int(round((st - base + L) / fps * sr))] for st, L in kept]
-            wf = torch.cat(parts, -1)
+            a = silence(total / fps)
+
+        want = bool(getattr(self, "_want", False))
+        comp_h, comp_mask = getattr(self, "_comp_h", 360), getattr(self, "_comp_mask", True)
+        count = sum(1 for j, _ in pieces if j is not None)
+        first = frames_of(order[0])
+        H, W = int(first.shape[1]), int(first.shape[2])
+        video = None if to_file else torch.empty((total, H, W, 3), dtype=torch.float32)
+        vw = cw = None
+        comp_size = None
+        comp_parts, parts = [], []
+        if to_file:
+            vw = _Mp4Writer(to_file["path"], W, H, fps, a, int(to_file.get("crf", 17)))
+            if want:
+                cw_path = to_file["path"][:-4] + "_comparison.mp4"
+        pos, k, prev_tail = 0, 0, None
+        try:
+            for j, g in pieces:
+                L = length(j, g)
+                if j is not None:
+                    fr = first if j == order[0] and first is not None else frames_of(j)
+                    if j == order[0]:
+                        first = None
+                    meta = metas[j]
+                    body = fr[:L]
+                    if body.shape[0] < L:   # shorter than planned: hold the last frame
+                        body = torch.cat([body, body[-1:].expand(L - body.shape[0], -1, -1, -1)], 0)
+                    body = body[..., :3].float() / 255.0 if body.dtype == torch.uint8 else body[..., :3].float()
+                    if tuple(body.shape[1:3]) != (H, W):
+                        body = _scale_batch(body, H, W)
+                    cut = (g or meta).get("cut_before")
+                    if xf > 0 and prev_tail is not None and not cut:
+                        m = min(xf, prev_tail.shape[0], body.shape[0])
+                        if m > 0:
+                            w = torch.linspace(0, 1, m + 2)[1:-1].view(-1, 1, 1, 1)
+                            body = body.clone()
+                            body[:m] = prev_tail[:m] * (1 - w) + body[:m] * w
+                    tail = fr[L:L + max(xf, 0)]
+                    prev_tail = None if not tail.shape[0] else (
+                        tail[..., :3].float() / 255.0 if tail.dtype == torch.uint8 else tail[..., :3].float())
+                    if prev_tail is not None and tuple(prev_tail.shape[1:3]) != (H, W):
+                        prev_tail = _scale_batch(prev_tail, H, W)
+                    del fr
+                    k += 1
+                    part = (meta, L, meta.get("full_frames") if meta.get("full_frames") is not None else meta.get("frames"))
+                else:
+                    prev_tail = None
+                    src = np.asarray(tl["src"])
+                    body = torch.from_numpy(np.stack(_read_frames(tl["path"], src[int(g["start"]):int(g["end"])], (W, H)))
+                                            .astype(np.float32) / 255.0)
+                    small = body if not want else _scale_batch(body, min(H, comp_h or H),
+                                                                 max(16, int(W * min(H, comp_h or H) / H)))
+                    part = ({"skipped": True, "start": g["start"], "end": g["end"], "fps": fps,
+                             "cut_before": g["cut_before"]}, L, small if want else None)
+                if to_file:
+                    vw.write(body)
+                    if want:
+                        c = comparison_video(body, [part], label, comp_h, comp_mask, first_k=k - (j is not None), count=count)
+                        if comp_size is None:
+                            comp_size = tuple(c.shape[1:3])
+                            cw = _Mp4Writer(cw_path, comp_size[1], comp_size[0], fps, a, int(to_file.get("crf", 17)))
+                        cw.write(_fit_canvas(c, *comp_size))
+                else:
+                    video[pos:pos + L] = body
+                    parts.append(part)
+                pos += L
+                del body
+            path = vw.close() if vw else None
+            comp_path = cw.close() if cw else None
+        except BaseException:
+            for w_ in (vw, cw):
+                if w_:
+                    w_.abort()
+            raise
+        if to_file:
+            self._files = (path, comp_path)
+            return None, a, fps, None
+        comp = None
+        if want:
+            comp = comparison_video(video, parts, label, comp_h, comp_mask)
+        return video, a, fps, comp
+
+
+def cache_status(plan: dict, reset: bool = False) -> dict:
+    """The panel's view of the shot cache of a plan's video (as of the last time the planner ran)."""
+    path = _input_path(plan["video"])
+    rid = run_key(plan, path)
+    d = run_dir(rid, create=False)
+    if reset:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+    if not os.path.isdir(d):   # nothing stored for this video (no folder is made just to look)
+        return {"run_id": rid, "folder": d, "count": 0, "done": 0, "ok": [], "stored": [], "mb": 0.0,
+                "temp": rid.startswith("tmp_")}
+    st = run_state(rid)
+    ok = shot_status(st, d) if st.get("cur") else []
+    files = os.listdir(d)
+    stored = sorted(int(f[5:9]) for f in files if f.startswith("shot_") and f.endswith(".pt"))
+    size = sum(os.path.getsize(os.path.join(d, f)) for f in files if f.startswith("shot_"))
+    return {"run_id": rid, "folder": d, "count": len(ok) or st.get("count", 0), "done": sum(ok),
+            "ok": ok, "stored": stored, "mb": round(size / 1e6, 1), "temp": rid.startswith("tmp_")}
+
+
+def redo_shots(plan: dict, shots: list[int], cascade: bool = True) -> dict:
+    """Mark stored shots to run again on the next Queue. cascade: the shots that continue from them are redone too
+    (automatically, once the new take exists); off: they keep their take (the join may show a seam there)."""
+    rid = run_key(plan, _input_path(plan["video"]))
+    st = run_state(rid)
+    for i in shots:
+        if int(i) in st.get("done", []):
+            st["done"].remove(int(i))
+        if cascade:
+            st.get("keep_next", {}).pop(str(int(i)), None)
         else:
-            wf = a["waveform"]
-        n = int(round(video.shape[0] / fps * sr))
-        wf = wf[..., :n]
-        if wf.shape[-1] < n:
-            wf = torch.nn.functional.pad(wf, (0, n - wf.shape[-1]))
-        a = {"waveform": wf, "sample_rate": sr}
-    return (video, a, fps)
+            st.setdefault("keep_next", {})[str(int(i))] = True
+    save_state(rid, st)
+    return cache_status(plan)
 
 
-BFSShotJoin._join_timeline = _join_timeline_impl
+def combine_stored(plan: dict, crossfade: int = 4, crf: int = 17, prefix: str = "bfs_shot_loop") -> dict:
+    """Assemble the stored shots of a plan's video into an MP4 (output folder), one shot in memory at a time, on the
+    timeline of the last planner run: the soundtrack, skipped shots as original video, and shots not stored (or out of
+    date) as original video too, so it also previews a run in progress."""
+    rid = run_key(plan, _input_path(plan["video"]))
+    d = run_dir(rid)
+    tf = os.path.join(d, "timeline.pt")
+    if not os.path.exists(tf):
+        raise ValueError("no stored run for this video yet: Queue the workflow first")
+    tl = torch.load(tf, map_location="cpu", weights_only=False)
+    st = run_state(rid)
+    ok = shot_status(st, d) if st.get("cur") else []
+    runs = {g["run_index"]: g for g in tl["segs"] if g["run"]}
+    metas = []
+    for i, good in enumerate(ok):
+        if good and i in runs:
+            m = load_shot(d, i, frames=False)[1]
+            if int(m.get("start", -1)) == int(runs[i]["start"]) and int(m.get("end", -1)) == int(runs[i]["end"]):
+                metas.append(m)
+    if not metas:
+        raise ValueError("no stored shot is up to date with this plan yet")
+    tl = dict(tl, segs=[dict(g, run=g["run"] and any(int(m["index"]) == g["run_index"] for m in metas))
+                        for g in tl["segs"]])
+    join = BFSShotJoin()
+    join._want, join._parts = False, []
+    out = {"path": _next_output_path(prefix), "crf": int(crf)}
+    done = [0]
+
+    def frames_of(j):
+        done[0] += 1
+        _status("Combining stored shots", done[0], len(metas), force=True)
+        return load_shot(d, int(metas[j]["index"]))[0]
+
+    join._assemble(metas, frames_of, int(crossfade), None, tl, out)
+    path = join._files[0]
+    root = getattr(folder_paths, "get_output_directory", folder_paths.get_temp_directory)()
+    rel = os.path.relpath(path, root)
+    return {"path": path, "filename": os.path.basename(rel), "subfolder": os.path.dirname(rel),
+            "shots": len(metas), "of": len(ok)}
+
+
+SAVE_TO = ["images (output)", "mp4 file (long videos, low memory)"]
+
+
+def _next_output_path(prefix: str) -> str:
+    """<output>/<prefix>_00001.mp4, the first free number (the prefix may hold sub folders)."""
+    out = getattr(folder_paths, "get_output_directory", folder_paths.get_temp_directory)()
+    prefix = prefix.strip().strip("/\\") or "bfs_shot_loop"
+    base = os.path.normpath(os.path.join(out, prefix))
+    if not base.startswith(os.path.normpath(out)):
+        raise ValueError("BFS Shot Join: filename_prefix must stay inside the output folder")
+    os.makedirs(os.path.dirname(base), exist_ok=True)
+    i = 1
+    while os.path.exists(f"{base}_{i:05d}.mp4"):
+        i += 1
+    return f"{base}_{i:05d}.mp4"
+
+
+def _fit_canvas(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    """Crop / pad (dark) a batch to h x w: every chunk of a streamed comparison has the same size."""
+    out = torch.full((x.shape[0], h, w, 3), 18 / 255)
+    hh, ww = min(h, x.shape[1]), min(w, x.shape[2])
+    out[:, :hh, :ww] = x[:, :hh, :ww, :3]
+    return out
+
+
+class _Mp4Writer:
+    """Frames streamed to ffmpeg (H.264, yuv420p, even size), with the soundtrack muxed in the same pass."""
+
+    def __init__(self, path: str, w: int, h: int, fps: float, audio: dict | None, crf: int = 17):
+        import tempfile
+        import wave
+        self.path, self.wav = path, None
+        cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:g}",
+               "-i", "-"]
+        if _usable(audio):
+            fd, self.wav = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            wf = audio["waveform"][0].clamp(-1, 1)
+            with wave.open(self.wav, "wb") as f:
+                f.setnchannels(int(wf.shape[0]))
+                f.setsampwidth(2)
+                f.setframerate(int(audio["sample_rate"]))
+                f.writeframes((wf.t().contiguous() * 32767).round().short().numpy().tobytes())
+            cmd += ["-i", self.wav, "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(int(crf)), "-pix_fmt", "yuv420p",
+                "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-movflags", "+faststart", path]
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def write(self, frames: torch.Tensor) -> None:
+        self.proc.stdin.write((frames[..., :3].clamp(0, 1) * 255).round().to(torch.uint8).contiguous().numpy().tobytes())
+
+    def close(self) -> str:
+        self.proc.stdin.close()
+        err = self.proc.stderr.read().decode(errors="replace")
+        self.proc.wait()
+        self._cleanup()
+        if self.proc.returncode != 0:
+            raise RuntimeError(f"BFS Shot Join: ffmpeg could not write {self.path}: {err.strip()[-400:]}")
+        return self.path
+
+    def abort(self) -> None:
+        try:
+            self.proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        self._cleanup()
+
+    def _cleanup(self) -> None:
+        if self.wav and os.path.exists(self.wav):
+            os.remove(self.wav)
 
 
 def _font(size: int):
@@ -4186,7 +4540,7 @@ def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
 
 
 def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: int = 480,
-                     show_mask: bool = True) -> torch.Tensor:
+                     show_mask: bool = True, first_k: int = 0, count: int | None = None) -> torch.Tensor:
     """original | references | result for every output frame, with shot info on top and the prompt below.
     Built at `height` px per column (0 = full size) so long videos stay light. With show_mask, selected regions appear
     over the original column in their Colored Mark colors, or red for other masks; crop boxes are yellow."""
@@ -4196,9 +4550,9 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
     rw = max(32, W // 2 // 2 * 2)
     total_w = W * 2 + rw
     size = max(12, total_w // 70)
-    count = sum(1 for sh, _, _ in parts if sh and not sh.get("skipped"))
+    count = count if count is not None else sum(1 for sh, _, _ in parts if sh and not sh.get("skipped"))
     cols = _column_labels([("original", W), ("references", rw), ("result", W)], size)
-    pieces, pos, k = [], 0, 0
+    pieces, pos, k = [], 0, int(first_k)
     for shot, L, orig in parts:
         shot = shot or {}
         fps = float(shot.get("fps") or 24.0)
@@ -4683,16 +5037,29 @@ try:
     async def _bfs_shot_progress(request):
         body = await request.json()
         try:
-            plan_json = json.dumps(body.get("plan", {}))
-            p = _load_plan(plan_json)
-            rid = run_id_for(body.get("plan_raw") or plan_json, _input_path(p["video"]))
-            st = run_state(rid)
-            if body.get("reset"):
-                import shutil
-                shutil.rmtree(run_dir(rid), ignore_errors=True)
-                st = {"done": [], "count": st.get("count", 0)}
+            return web.json_response(cache_status(_load_plan(json.dumps(body.get("plan", {}))), bool(body.get("reset"))))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-        return web.json_response({"run_id": rid, "done": len(set(st["done"])), "count": st.get("count", 0)})
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/redo")
+    async def _bfs_shot_redo(request):
+        body = await request.json()
+        try:
+            return web.json_response(redo_shots(_load_plan(json.dumps(body.get("plan", {}))),
+                                                [int(x) for x in body.get("shots", [])], bool(body.get("cascade", True))))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+
+    @PromptServer.instance.routes.post("/bfs/shotloop/combine")
+    async def _bfs_shot_combine(request):
+        body = await request.json()
+        try:
+            import asyncio
+            p = _load_plan(json.dumps(body.get("plan", {})))
+            res = await asyncio.get_running_loop().run_in_executor(None, lambda: combine_stored(
+                p, int(body.get("crossfade", 4)), int(body.get("crf", 17)), str(body.get("prefix") or "bfs_shot_loop")))
+            return web.json_response(res)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 except Exception as _exc:  # noqa: BLE001 - nodes still work without the panel
     print(f"[BFSNodes] Shot loop HTTP routes not registered: {_exc!r}")
