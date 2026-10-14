@@ -1131,6 +1131,43 @@ class ShotStoreTest(unittest.TestCase):
         self.assertEqual(n, 45)
 
 
+class JoinRamGuardTest(unittest.TestCase):
+    def test_images_join_falls_back_to_mp4_when_ram_is_short(self):
+        d = tempfile.mkdtemp(dir=_TMP)
+        imgs = [torch.full((22, 32, 32, 3), 0.2), torch.full((39, 32, 32, 3), 0.8)]
+        shots = [_shot(0, 0, 20, gen=22), _shot(1, 20, 45, cut=True, gen=39)]
+        with patch.object(SL, "_ram_available", lambda: 1000), \
+                patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
+            out = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True])
+        self.assertIsInstance(out[0], _Blocker)          # images / audio / comparison blocked
+        self.assertTrue(os.path.exists(out[4]) and os.path.exists(out[4][:-4] + "_comparison.mp4"))
+        normal = SL.BFSShotJoin().join(imgs, shots, [0])  # enough RAM: images as before
+        self.assertEqual((normal[0].shape[0], normal[4]), (45, ""))
+
+    def test_join_bytes(self):
+        self.assertEqual(SL._join_bytes(10, 100, 200, False, 360), 10 * 100 * 200 * 12)
+        self.assertGreater(SL._join_bytes(10, 100, 200, True, 1024), SL._join_bytes(10, 100, 200, True, 50))
+
+
+class StoredComparisonTest(unittest.TestCase):
+    def test_originals_go_to_a_video_not_the_pt(self):
+        rid = "cmp_" + str(id(self))
+        y = torch.linspace(0, 1, 64).view(1, 64, 1, 1)
+        src = [((torch.sin(torch.arange(n).view(n, 1, 1, 1) + 7 * y) + 1) / 2).expand(n, 64, 64, 3).clone() for n in (22, 39)]
+        shots = [dict(_shot(0, 0, 20, count=2, queue=True, run_id=rid, gen=22), frames=src[0]),
+                 dict(_shot(1, 20, 45, cut=True, count=2, queue=True, run_id=rid, gen=39), frames=src[1])]
+        SL.BFSShotJoin().join([src[0] * 0.5], [shots[0]], [0], comparison=[True], comparison_height=[64])
+        out = SL.BFSShotJoin().join([src[1] * 0.5], [shots[1]], [0], comparison=[True], comparison_height=[64])
+        d = SL.run_dir(rid)
+        self.assertLess(os.path.getsize(os.path.join(d, "shot_0000.pt")), 50_000)          # info only
+        self.assertTrue(os.path.exists(os.path.join(d, "shot_0000_orig.mkv")))
+        video, comp = out[0], out[3]
+        self.assertEqual(video.shape[0], 45)
+        self.assertEqual(comp.shape[0], 45)
+        # the original column (left) shows the source, not the dark filler of a missing original
+        self.assertGreater(float(comp[:, comp.shape[1] // 2, 5:60].mean()), 0.2)
+
+
 class FillDetailsTest(unittest.TestCase):
     def test_render_node_fills_details_with_its_vlm(self):
         old = SL.vlm_describe

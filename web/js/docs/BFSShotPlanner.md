@@ -92,7 +92,15 @@ Three run modes:
   killed, e.g. `Terminated` under WSL). It now reads one stored shot at a time into the final video. Measured on 11
   shots at 960×544 (~50 s): **+15.8 GB before, +8.2 GB now** with *save to = images* (that is the video itself, which an
   IMAGE output must hold), and **+2.1 GB with *save to = mp4 file***, which streams the video to ffmpeg and stays at
-  about one shot whatever the length. For long videos use *mp4 file* (BFS Shot Join), or the panel's **Combine**.
+  about one shot whatever the length (also with the comparison, which is streamed 16 frames at a time: +2.1 GB
+  measured at *comparison_height* 1024, against ~32 GB as images). For long videos use *mp4 file* (BFS Shot Join), or
+  the panel's **Combine**.
+- **RAM guard:** before an *images* join, BFS Shot Join asks ComfyUI's cache to drop earlier outputs and estimates
+  what the video (and the comparison) need; when that does not fit in the free RAM it writes MP4 files instead (the
+  images / comparison outputs are then blocked and `video_path` gives the file) and says so in the console, instead of
+  the whole ComfyUI being killed.
+- **comparison_height** is the height of each column: the comparison is three columns wide plus text bars, so it
+  costs about 3× the video at the same height. 360–512 is plenty to review a long video.
 
 ### Stored shots (cache, redo, combine)
 
@@ -112,7 +120,9 @@ card manages them.
   | Raw frames (`.pt`) | ~401 MB | exact; needs no ffmpeg |
 
   The final video of a stored run is assembled from the stored shots, and the continuity head reads them: a lossy
-  storage reaches the output (the panel warns). Without ffmpeg a shot falls back to raw frames.
+  storage reaches the output (the panel warns). Without ffmpeg a shot falls back to raw frames. With *comparison* on,
+  the shot's source frames for the comparison's original column are kept as `shot_NNNN_orig.mkv` (visually lossless:
+  they are only shown); the `.pt` itself holds only the shot's info (a few KB).
 - **One folder per source video.** Each shot remembers the settings it was made with (its range, prompt, references,
   mask, crop, continuity, the generation size, the global prompt / references and the references or prompt connected
   to the planner). The next Queue **runs only the shots that are not stored or whose settings changed**, plus the

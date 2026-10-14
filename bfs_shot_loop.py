@@ -2620,8 +2620,15 @@ def _read_rgb_video(path: str, n: int, h: int, w: int) -> torch.Tensor:
 
 
 def store_shot(d: str, index: int, frames: torch.Tensor, meta: dict, storage: str = "lossless") -> None:
-    """Store one generated shot (uint8 [N,H,W,3]) of a run."""
+    """Store one generated shot (uint8 [N,H,W,3]) of a run. The source frames kept for the comparison's original
+    column (meta['frames']) go to shot_NNNN_orig.mkv (visually lossless: they are only shown), not into the .pt."""
     pt, vid = os.path.join(d, f"shot_{index:04d}.pt"), os.path.join(d, f"shot_{index:04d}.mkv")
+    orig = meta.get("frames")
+    if isinstance(orig, torch.Tensor) and orig.dtype == torch.uint8 and orig.shape[0]:
+        ov = os.path.join(d, f"shot_{index:04d}_orig.mkv")
+        if _write_rgb_video(ov, orig, float(meta.get("fps") or 24.0), "smaller"):
+            meta = {k: v for k, v in meta.items() if k != "frames"}
+            meta["frames_video"] = [os.path.basename(ov), [int(x) for x in orig.shape]]
     if _write_rgb_video(vid, frames, float(meta.get("fps") or 24.0), storage):
         torch.save({"shot": meta, "video": os.path.basename(vid), "shape": tuple(int(x) for x in frames.shape)}, pt)
     else:
@@ -2637,6 +2644,17 @@ def load_shot(d: str, index: int, frames: bool = True):
         return x["frames"], x["shot"]
     n, h, w, _ = x["shape"]
     return _read_rgb_video(os.path.join(d, x["video"]), n, h, w), x["shot"]
+
+
+def shot_originals(d: str, meta: dict):
+    """The comparison's original frames of a stored shot (uint8), or None."""
+    if isinstance(meta.get("frames"), torch.Tensor):
+        return meta["frames"]
+    fv = meta.get("frames_video")
+    if not fv or not os.path.exists(os.path.join(d, fv[0])):
+        return None
+    n, h, w, _ = fv[1]
+    return _read_rgb_video(os.path.join(d, fv[0]), n, h, w)
 
 
 def run_state(run_id: str) -> dict:
@@ -3965,6 +3983,7 @@ class BFSShotJoin:
              dynprompt=None, unique_id=None):
         tl = timeline[0] if timeline else None
         self._to_file = None
+        self._prefix = (filename_prefix[0] if filename_prefix else "") or "bfs_shot_loop"
         if save_to and save_to[0] == SAVE_TO[1]:
             self._to_file = {"path": _next_output_path((filename_prefix[0] if filename_prefix else "") or "bfs_shot_loop"),
                              "crf": int(mp4_crf[0]) if mp4_crf else 17}
@@ -4059,6 +4078,8 @@ class BFSShotJoin:
             if done < len(ok):
                 print(f"[BFS Shot Join] shot {i + 1} stored; {len(ok) - done} shot(s) still to run "
                       f"(next: shot {ok.index(False) + 1})", flush=True)
+            else:
+                print(f"[BFS Shot Join] shot {i + 1} stored; every shot is stored: putting the video together", flush=True)
         else:
             done = len(set(st["done"]))
         _notify("bfs-shotloop-progress", {"run_id": rid, "done": done, "count": shot["count"]})
@@ -4076,6 +4097,7 @@ class BFSShotJoin:
         del images, shots, img
         _release_between_shots(False)
         metas = [load_shot(d, i, frames=False)[1] for i in range(shot["count"])]
+        self._run_dir = d
         return self._assemble(metas, lambda j: load_shot(d, int(metas[j]["index"]))[0], crossfade, audio, tl,
                               self._to_file, getattr(self, "_label", "") or "")
 
@@ -4196,6 +4218,17 @@ class BFSShotJoin:
         count = sum(1 for j, _ in pieces if j is not None)
         first = frames_of(order[0])
         H, W = int(first.shape[1]), int(first.shape[2])
+        if not to_file:   # an IMAGE output holds the whole video (and the comparison): never more than the RAM left
+            need = _join_bytes(total, H, W, want, comp_h)
+            _make_room(need)
+            free = _ram_available()
+            if need > 0.85 * free:
+                to_file = {"path": _next_output_path(getattr(self, "_prefix", "") or "bfs_shot_loop"), "crf": 17}
+                self._to_file = to_file
+                print(f"[BFS Shot Join] the video{' and its comparison' if want else ''} would need ~{need / 2 ** 30:.1f} GB "
+                      f"of RAM as images, {free / 2 ** 30:.1f} GB is free: writing MP4 files instead ({to_file['path']}). "
+                      f"For long videos set save_to = mp4 file{', or a lower comparison_height' if want else ''}.",
+                      flush=True)
         video = None if to_file else torch.empty((total, H, W, 3), dtype=torch.float32)
         vw = cw = None
         comp_size = None
@@ -4233,7 +4266,10 @@ class BFSShotJoin:
                         prev_tail = _scale_batch(prev_tail, H, W)
                     del fr
                     k += 1
-                    part = (meta, L, meta.get("full_frames") if meta.get("full_frames") is not None else meta.get("frames"))
+                    orig = meta.get("full_frames") if meta.get("full_frames") is not None else meta.get("frames")
+                    if orig is None and want and meta.get("frames_video") and getattr(self, "_run_dir", None):
+                        orig = shot_originals(self._run_dir, meta)   # stored shot: its original column, read now
+                    part = (meta, L, orig)
                 else:
                     prev_tail = None
                     src = np.asarray(tl["src"])
@@ -4245,12 +4281,14 @@ class BFSShotJoin:
                              "cut_before": g["cut_before"]}, L, small if want else None)
                 if to_file:
                     vw.write(body)
-                    if want:
-                        c = comparison_video(body, [part], label, comp_h, comp_mask, first_k=k - (j is not None), count=count)
-                        if comp_size is None:
-                            comp_size = tuple(c.shape[1:3])
-                            cw = _Mp4Writer(cw_path, comp_size[1], comp_size[0], fps, a, int(to_file.get("crf", 17)))
-                        cw.write(_fit_canvas(c, *comp_size))
+                    if want:   # streamed 16 frames at a time, at the first shot's canvas size
+                        def sink(chunk):
+                            nonlocal cw
+                            if cw is None:
+                                cw = _Mp4Writer(cw_path, chunk.shape[2], chunk.shape[1], fps, a, int(to_file.get("crf", 17)))
+                            cw.write(chunk)
+                        comp_size = comparison_video(body, [part], label, comp_h, comp_mask, first_k=k - (j is not None),
+                                                     count=count, sink=sink, canvas=comp_size)
                 else:
                     video[pos:pos + L] = body
                     parts.append(part)
@@ -4350,6 +4388,41 @@ def combine_stored(plan: dict, crossfade: int = 4, crf: int = 17, prefix: str = 
 
 
 SAVE_TO = ["images (output)", "mp4 file (long videos, low memory)"]
+
+
+def _join_bytes(frames: int, h: int, w: int, comparison: bool, comp_h: int) -> int:
+    """RAM an images-output join needs: the video as float32, plus the comparison (three columns at its height, which
+    is never above the video's, with the info / prompt bars)."""
+    need = frames * h * w * 3 * 4
+    if comparison:
+        ch = h if not comp_h or comp_h <= 0 else min(int(comp_h), h)
+        cw = max(16, w * ch // h)
+        need += frames * int(ch * 1.45) * (2 * cw + cw // 2) * 3 * 4 + frames * ch * cw * 3   # + its original column
+    return int(need)
+
+
+def _ram_available() -> int:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:  # noqa: BLE001
+        return 1 << 62
+
+
+def _make_room(nbytes: int) -> None:
+    """Ask ComfyUI's RAM-pressure cache to drop cached outputs (the earlier shots' frames, decoded videos...) until
+    this much RAM is free, the same release ComfyUI does between nodes; nothing happens with other cache modes."""
+    import gc
+    try:
+        import comfy.memory_management as cm
+        release = getattr(cm, "extra_ram_release", None)
+        if callable(release):
+            freed = int(release(int(nbytes) + (2 << 30), free_active=True) or 0)
+            if freed:
+                print(f"[BFS Shot Join] freed {freed / 2 ** 30:.1f} GB of cached outputs for the join", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    gc.collect()
 
 
 def _next_output_path(prefix: str) -> str:
@@ -4502,8 +4575,9 @@ def _scale_batch(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
     return y.movedim(1, -1).clamp(0, 1)
 
 
-def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
-    """Overlay selection masks and an optional crop box on the original comparison column [L,H,W,3]."""
+def _mask_overlay(o: torch.Tensor, crop: dict, L: int, start: int = 0) -> torch.Tensor:
+    """Overlay selection masks and an optional crop box on the original comparison column [L,H,W,3] (frames start ..
+    start + L of the shot)."""
     H, W = o.shape[1:3]
     regions = crop.get("regions") or [{"mask": crop.get("mask"), "color": "#ff283c", "opacity": 0.45}]
     for region in regions:
@@ -4519,7 +4593,7 @@ def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
             continue
         if m.ndim == 2:
             m = m[None]
-        idx = torch.clamp(torch.arange(L), max=m.shape[0] - 1)
+        idx = torch.clamp(torch.arange(start, start + L), max=m.shape[0] - 1)
         mm = torch.nn.functional.interpolate(m[idx].float()[:, None], size=(H, W), mode="nearest")[:, 0].clamp(0, 1)
         color = str(region.get("color") or "#ff283c")
         try:
@@ -4540,7 +4614,8 @@ def _mask_overlay(o: torch.Tensor, crop: dict, L: int) -> torch.Tensor:
 
 
 def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: int = 480,
-                     show_mask: bool = True, first_k: int = 0, count: int | None = None) -> torch.Tensor:
+                     show_mask: bool = True, first_k: int = 0, count: int | None = None, sink=None,
+                     canvas: tuple[int, int] | None = None):
     """original | references | result for every output frame, with shot info on top and the prompt below.
     Built at `height` px per column (0 = full size) so long videos stay light. With show_mask, selected regions appear
     over the original column in their Colored Mark colors, or red for other masks; crop boxes are yellow."""
@@ -4577,34 +4652,47 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
                                                                     if H - rh * len(refs) else []), 0)
         else:
             col = _fit_box(None, rw, H)
-        res = _scale_batch(video[pos:pos + L], H, W)
-        if orig is not None and orig.shape[0]:
-            idx = torch.clamp(torch.arange(L), max=orig.shape[0] - 1)
-            o = orig[idx]
-            o = _scale_batch(o.float() / 255.0 if o.dtype == torch.uint8 else o, H, W)
-            ov = overlay_of(shot) if show_mask else None
-            if ov is not None:
-                o = _mask_overlay(o, ov, L)
-        else:
-            o = torch.full((L, H, W, 3), 0.1)
-        body = torch.cat([o, col[None].expand(L, -1, -1, -1), res], 2)
-        pieces.append((top, body, bottom))
+        pieces.append((top, bottom, shot, L, orig, pos, col))
         pos += L
     if not pieces:
         return video[:1]
     # same height for every frame, and both sides on a multiple of 16: video encoders (x264 / yuv420p) need even sizes
-    hmax = max(t.shape[0] + b.shape[1] + bt.shape[0] for t, b, bt in pieces)
-    H16, W16 = -(-hmax // 16) * 16, -(-total_w // 16) * 16
-    out = torch.full((sum(b.shape[0] for _, b, _ in pieces), H16, W16, 3), 18 / 255)
+    # the frame's bars are known first, then the columns are built 16 frames at a time and written straight into the
+    # output (or handed to `sink`, which streams them to a file, at the fixed `canvas` size): never every piece at once
+    hmax = max(t.shape[0] + H + bt.shape[0] for t, bt, *_ in pieces)
+    H16, W16 = canvas or (-(-hmax // 16) * 16, -(-total_w // 16) * 16)
+    out = None if sink else torch.full((sum(p[3] for p in pieces), H16, W16, 3), 18 / 255)
+
+    def put(buf, y, x0, x1, t):   # clipped to the canvas
+        hh, ww = min(t.shape[-3], H16 - y), min(x1, W16) - x0
+        if hh > 0 and ww > 0:
+            buf[:, y:y + hh, x0:x0 + ww] = t[..., :hh, :ww, :]
+
     i = 0
-    for top, body, bottom in pieces:
-        n = body.shape[0]
-        y = 0
-        out[i:i + n, y:y + top.shape[0], :total_w] = top; y += top.shape[0]
-        out[i:i + n, y:y + body.shape[1], :total_w] = body; y += body.shape[1]
-        out[i:i + n, y:y + bottom.shape[0], :total_w] = bottom
-        i += n
-    return out
+    for top, bottom, shot, L, orig, pos, col in pieces:
+        ov = overlay_of(shot) if show_mask and orig is not None and orig.shape[0] else None
+        for a in range(0, L, 16):
+            n = min(16, L - a)
+            buf = out[i + a:i + a + n] if out is not None else torch.full((n, H16, W16, 3), 18 / 255)
+            res = _scale_batch(video[pos + a:pos + a + n], H, W)
+            if orig is not None and orig.shape[0]:
+                o = orig[torch.clamp(torch.arange(a, a + n), max=orig.shape[0] - 1)]
+                o = _scale_batch(o.float() / 255.0 if o.dtype == torch.uint8 else o, H, W)
+                if ov is not None:
+                    o = _mask_overlay(o, ov, n, a)
+            else:
+                o = torch.full((n, H, W, 3), 0.1)
+            y = top.shape[0]
+            put(buf, 0, 0, total_w, top)
+            put(buf, y, 0, W, o)
+            put(buf, y, W, W + col.shape[1], col[None].expand(n, -1, -1, -1))
+            put(buf, y, W + col.shape[1], total_w, res)
+            put(buf, y + H, 0, total_w, bottom)
+            if sink:
+                sink(buf)
+            del o, res, buf
+        i += L
+    return (H16, W16) if sink else out
 
 
 class BFSShotSeed:
