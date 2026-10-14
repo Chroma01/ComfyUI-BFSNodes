@@ -1123,9 +1123,12 @@ class ShotStoreTest(unittest.TestCase):
         with patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
             out = SL.BFSShotJoin().join(imgs, shots, [0], audio=[audio], save_to=[SL.SAVE_TO[1]],
                                         filename_prefix=["test"])
-        self.assertIsInstance(out[0], _Blocker)
-        self.assertTrue(out[4].endswith("test_00001.mp4"))
-        cap = cv2.VideoCapture(out[4]); n = 0
+        res = out["result"]
+        self.assertEqual(res[0].shape[0], 45)                 # the output still carries the video (read back)
+        self.assertAlmostEqual(float(res[0][30].mean()), 0.8, places=1)
+        self.assertTrue(res[4].endswith("test_00001.mp4"))
+        self.assertEqual(out["ui"]["images"][0]["filename"], "test_00001.mp4")   # shown on the node
+        cap = cv2.VideoCapture(res[4]); n = 0
         while cap.read()[0]:
             n += 1
         self.assertEqual(n, 45)
@@ -1139,8 +1142,10 @@ class JoinRamGuardTest(unittest.TestCase):
         with patch.object(SL, "_ram_available", lambda: 1000), \
                 patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
             out = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True])
-        self.assertIsInstance(out[0], _Blocker)          # images / audio / comparison blocked
-        self.assertTrue(os.path.exists(out[4]) and os.path.exists(out[4][:-4] + "_comparison.mp4"))
+        res = out["result"]
+        self.assertTrue(os.path.exists(res[4]) and os.path.exists(res[4][:-4] + "_comparison.mp4"))
+        self.assertEqual(res[0].shape[0], 45)                                   # never an empty output node
+        self.assertTrue(res[0].shape[1] < 32 and res[3].shape[0] == 45)          # scaled down to the (tiny) free RAM
         normal = SL.BFSShotJoin().join(imgs, shots, [0])  # enough RAM: images as before
         self.assertEqual((normal[0].shape[0], normal[4]), (45, ""))
 

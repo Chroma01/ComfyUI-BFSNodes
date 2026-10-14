@@ -4030,9 +4030,9 @@ class BFSShotJoin:
                          "save_to": (SAVE_TO, {"default": SAVE_TO[0], "tooltip": "images: output the video as IMAGE "
                              "(connect Create Video / Save Video); the whole video is held in memory. mp4 file: the join "
                              "writes the video (and the comparison) straight to MP4 files in the output folder, one shot "
-                             "at a time, so memory stays at about one shot: use it for long videos. The images / audio / "
-                             "comparison outputs are then blocked (nodes after them do not run) and video_path gives "
-                             "the file."}),
+                             "at a time, so memory stays at about one shot: use it for long videos. The images and comparison "
+                             "outputs still carry the video, read back from the files at a size that fits the free RAM "
+                             "(the files keep the full size), the node shows the files, and video_path gives the path."}),
                          "filename_prefix": ("STRING", {"default": "bfs_shot_loop", "tooltip":
                              "mp4 file: the file name in the output folder (a counter is added)."}),
                          "mp4_crf": ("INT", {"default": 17, "min": 0, "max": 51, "tooltip":
@@ -4101,12 +4101,26 @@ class BFSShotJoin:
     def _outputs(self, out):
         video, a, fps, comp = out
         if self._to_file:
-            from comfy_execution.graph_utils import ExecutionBlocker
             path, comp_path = self._files
             print(f"[BFS Shot Join] video written to {path}" + (f", comparison to {comp_path}" if comp_path else ""),
                   flush=True)
-            blocker = ExecutionBlocker(None)
-            return (blocker, blocker, fps, blocker, path)
+            # the outputs still carry the video (and the comparison), read back from the files at a size that fits the
+            # free RAM, so the nodes after the join always show the result; the files keep the full quality
+            budget = 0.35 * _ram_available()
+            try:
+                video, sv = _read_video(path, budget * (0.6 if comp_path else 1.0))
+                comp, sc = _read_video(comp_path, budget * 0.4) if comp_path else (video[:1], 1.0)
+            except Exception as e:  # noqa: BLE001 - the files are written; only the preview failed
+                from comfy_execution.graph_utils import ExecutionBlocker
+                print(f"[BFS Shot Join] outputs not filled ({e}): see the files", flush=True)
+                blocker = ExecutionBlocker(None)
+                return (blocker, a, fps, blocker, path)
+            if sv < 1 or (comp_path and sc < 1):
+                print(f"[BFS Shot Join] outputs at {sv * 100:.0f}% size" + (f" (comparison {sc * 100:.0f}%)" if comp_path else "")
+                      + " to fit the free RAM; the MP4 files keep the full size", flush=True)
+            files = [{"filename": os.path.basename(p_), "subfolder": os.path.relpath(os.path.dirname(p_), _output_root()),
+                      "type": "output"} for p_ in (path, comp_path) if p_]
+            return {"ui": {"images": files, "animated": (True,)}, "result": (video, a, fps, comp, path)}
         return (video, a, fps, comp if comp is not None else video[:1], "")
 
     def _join_queue(self, images, shots, crossfade, audio, tl=None):
@@ -4496,6 +4510,33 @@ def combine_stored(plan: dict, crossfade: int = 4, crf: int = 17, prefix: str = 
 
 
 SAVE_TO = ["images (output)", "mp4 file (long videos, low memory)"]
+
+
+def _output_root() -> str:
+    return getattr(folder_paths, "get_output_directory", folder_paths.get_temp_directory)()
+
+
+def _read_video(path: str, budget: float) -> tuple[torch.Tensor, float]:
+    """A video file as IMAGE, scaled down (never up) so it takes at most `budget` bytes; streamed into one tensor."""
+    info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                                      "stream=width,height,nb_read_packets", "-of", "json", path],
+                                     capture_output=True, check=True).stdout)["streams"][0]
+    w, h, n = int(info["width"]), int(info["height"]), int(info["nb_read_packets"])
+    s = min(1.0, math.sqrt(max(budget, 1.0) / max(1, n * h * w * 3 * 4)))
+    W, H = max(16, int(w * s) // 2 * 2), max(16, int(h * s) // 2 * 2)
+    out = torch.empty((n, H, W, 3), dtype=torch.float32)
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-vf", f"scale={W}:{H}:flags=area", "-f", "rawvideo",
+                             "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    fb, i = W * H * 3, 0
+    while i < n:
+        raw = proc.stdout.read(fb * 16)
+        if not raw:
+            break
+        k = len(raw) // fb
+        out[i:i + k] = torch.frombuffer(bytearray(raw[:k * fb]), dtype=torch.uint8).view(k, H, W, 3).float() / 255.0
+        i += k
+    proc.stdout.close(); proc.wait()
+    return out[:max(1, i)], s
 
 
 def _join_bytes(frames: int, h: int, w: int, comparison: bool, comp_h: int) -> int:
