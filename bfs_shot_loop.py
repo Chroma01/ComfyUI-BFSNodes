@@ -446,9 +446,14 @@ DEFAULT_PLAN = {
     "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
     "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
-    "detector": "adaptive", "run": "queue", "filters": {}, "skip_fill": "original",
+    "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
+
+
+# runs that render one shot at a time and store it on disk: "queue" (the panel re-queues the workflow after each
+# shot) and "recursive" (BFS Shot Join expands the graph for the next shot inside the same prompt)
+STORED_RUNS = ("queue", "recursive")
 
 
 def _load_plan(plan_json: str) -> dict:
@@ -2286,6 +2291,17 @@ def shot_history(shot: dict):
     return hist, hsrc
 
 
+def _release_between_shots() -> None:
+    """Recursive run: free what the stored shot no longer needs before the next one starts (models stay loaded)."""
+    import gc
+    gc.collect()
+    try:
+        import comfy.model_management as mm
+        mm.soft_empty_cache()
+    except Exception:
+        pass
+
+
 def head_length(segs: list, i: int, grid: str) -> int:
     """Continuity 'head': how many frames of the previous shot's end start this shot (5/22/39), 0 when it cannot:
     first shot, a camera cut, a skipped shot in between, or a grid other than H3's."""
@@ -2519,7 +2535,7 @@ class BFSShotPlanner:
     @classmethod
     def IS_CHANGED(cls, plan, **kwargs):
         try:
-            if _load_plan(plan).get("run") == "queue":
+            if _load_plan(plan).get("run") in STORED_RUNS:
                 return float("nan")   # the next shot depends on the loop state on disk
         except ValueError:
             pass
@@ -2551,7 +2567,7 @@ class BFSShotPlanner:
         g_ref = ref_image if ref_image is not None else _load_image(p.get("global_ref", ""))
         g_ref2 = ref_image_2 if ref_image_2 is not None else _load_image(p.get("global_ref2", ""))
         g_prompt = prompt if prompt is not None else p.get("global_prompt", "")
-        queue = p.get("run") == "queue"
+        queue = p.get("run") in STORED_RUNS
         rid = run_id_for(plan, path) if queue else ""
         todo = list(range(len(segs)))
         if queue:
@@ -2765,7 +2781,7 @@ class BFSShotPlanner:
                 "ref": ref, "ref2": ref2,
                 "prompt": shot_prompt,
                 "audio": _slice_audio(audio, g0 / fps, glen / fps),
-                "run_id": rid, "queue": queue,
+                "run_id": rid, "queue": queue, "run_mode": p.get("run"),
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
                 "history": hist, "history_src": hist_src, "head_frames": head_px,
                 "prev_length": prev_len,
@@ -3707,6 +3723,8 @@ class BFSShotJoin:
                              "a crop or a generation mask (Mask only / Crop + mask) show the selected mask over the "
                              "original column; Colored Mark uses its selected colors, other masks use red. Crop boxes "
                              "are yellow."})},
+            # recursive run: the join expands the graph for the next shot
+            "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID"},
         }
 
     INPUT_IS_LIST = True
@@ -3718,8 +3736,10 @@ class BFSShotJoin:
 
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
              comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
-             seamless_edges=None, paste_new_outline=None):
+             seamless_edges=None, paste_new_outline=None, dynprompt=None, unique_id=None):
         tl = timeline[0] if timeline else None
+        self._dynprompt = dynprompt[0] if dynprompt else None
+        self._unique_id = unique_id[0] if unique_id else None
         fin = dict(edge_hardness=float(edge_hardness[0]) if edge_hardness else 0.0,
                    match_colors=float(match_colors[0]) if match_colors else 0.0,
                    match_region=match_region[0] if match_region else MATCH_REGIONS[0],
@@ -3741,6 +3761,8 @@ class BFSShotJoin:
             out = self._join_queue(images, shots, crossfade, audio, tl)
         else:
             out = self._join_all(images, shots, crossfade, audio, tl)
+        if isinstance(out, dict):   # recursive run, not the last shot: the graph for the next one
+            return out
         if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
             return out + (out[0],)
         video = out[0]
@@ -3780,6 +3802,10 @@ class BFSShotJoin:
         done = len(set(st["done"]))
         _notify("bfs-shotloop-progress", {"run_id": rid, "done": done, "count": shot["count"]})
         if done < shot["count"]:
+            if shot.get("run_mode") == "recursive" and getattr(self, "_dynprompt", None) is not None:
+                del images, shots
+                _release_between_shots()
+                return self._recurse(self._dynprompt, str(self._unique_id))
             _notify("bfs-shotloop-next", {"run_id": rid, "done": done, "count": shot["count"]})
             blocker = ExecutionBlocker(None)
             return (blocker, blocker, blocker)
@@ -3787,6 +3813,68 @@ class BFSShotJoin:
         imgs = [x["frames"].float() / 255.0 for x in stored]
         meta = [x["shot"] for x in stored]
         return self._join_all(imgs, meta, crossfade, audio, tl)
+
+    def _recurse(self, dynprompt, unique_id: str) -> dict:
+        """Recursive run: the nodes between BFS Shot Planner and this join (the shot's body: conditioning, sampler,
+        decode...), cloned with ComfyUI's node expansion, so the same prompt renders the next shot after this one has
+        been stored. The planner's clone reads the stored shots and hands out the next one, so each shot can read the
+        result of the one before (continuity head / history). Nodes outside the body (models, loaders) are shared.
+        Graph walk adapted from Ethanfel's MiniMax H3 Context Loop / SxCP loop nodes (GPL-3.0)."""
+        from comfy_execution.graph_utils import GraphBuilder, is_link
+        feeds: dict[str, list[str]] = {}   # node -> the nodes it feeds, among this join's ancestors
+
+        def explore(nid):
+            for v in dynprompt.get_node(nid).get("inputs", {}).values():
+                if is_link(v):
+                    pid = str(v[0])
+                    if pid not in feeds:
+                        feeds[pid] = []
+                        explore(pid)
+                    feeds[pid].append(nid)
+
+        explore(unique_id)
+        planners = [n for n in feeds if dynprompt.get_node(n).get("class_type") == "BFSShotPlanner"]
+        if len(planners) != 1:
+            raise ValueError(f"BFS Shot Join: the recursive run needs exactly one BFS Shot Planner before the join "
+                             f"(found {len(planners)}). Use the queue loop for this graph.")
+        body, stack = {unique_id, planners[0]}, [planners[0]]
+        while stack:
+            for child in feeds.get(stack.pop(), []):
+                if child not in body:
+                    body.add(child)
+                    stack.append(child)
+        # output nodes fed by the body (e.g. a preview of each decoded shot) run for every shot too
+        shown = {dynprompt.get_display_node_id(n): n for n in body if n != unique_id}
+        outputs = {}
+        try:
+            import nodes as comfy_nodes
+            for oid, node in dynprompt.get_original_prompt().items():
+                cls = comfy_nodes.NODE_CLASS_MAPPINGS.get(node.get("class_type"))
+                if cls is not None and getattr(cls, "OUTPUT_NODE", False) and oid not in shown and any(
+                        is_link(v) and str(v[0]) in shown for v in node.get("inputs", {}).values()):
+                    outputs[oid] = node
+        except Exception as e:   # previews are optional
+            print(f"[BFS Shot Join] recursive run: shot previews not repeated ({e})", flush=True)
+        graph = GraphBuilder()
+        clone = {n: ("Recurse" if n == unique_id else n) for n in body}
+        for n in body:
+            graph.node(dynprompt.get_node(n)["class_type"], clone[n]).set_override_display_id(
+                dynprompt.get_display_node_id(n))
+        for n in body:
+            node = graph.lookup_node(clone[n])
+            for key, v in dynprompt.get_node(n).get("inputs", {}).items():
+                node.set_input(key, graph.lookup_node(clone[str(v[0])]).out(v[1]) if is_link(v) and str(v[0]) in body
+                               else v)
+        for oid, onode in outputs.items():
+            node = graph.node(onode["class_type"], f"shot_out_{oid}")
+            node.set_override_display_id(oid)
+            for key, v in onode.get("inputs", {}).items():
+                node.set_input(key, graph.lookup_node(clone[shown[str(v[0])]]).out(v[1])
+                               if is_link(v) and str(v[0]) in shown else v)
+        rec = graph.lookup_node("Recurse")
+        print(f"[BFS Shot Join] recursive run: next shot ({len(body)} nodes cloned"
+              f"{', ' + str(len(outputs)) + ' preview(s)' if outputs else ''})", flush=True)
+        return {"result": tuple(rec.out(i) for i in range(len(self.RETURN_TYPES))), "expand": graph.finalize()}
 
     def _join_all(self, images, shots, crossfade, audio=None, tl=None):
         if tl is not None and any(not s["run"] for s in tl["segs"]):

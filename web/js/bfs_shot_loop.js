@@ -183,8 +183,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
       if (!refOf(s, "ref")) add("info", "no reference (fine when the node's ref_image input is connected)");
-      if (i > 0 && plan.run !== "queue" && (s.chain === "head" || s.chain === "history") && !s.cut)
-        add("warn", `continuity '${s.chain}' needs Run = queue loop: in the auto loop the previous result does not exist yet, so it is not used`);
+      if (i > 0 && plan.run === "auto" && (s.chain === "head" || s.chain === "history") && !s.cut)
+        add("warn", `continuity '${s.chain}' does not work in the auto loop (the previous result does not exist yet): use Run = one run, shot by shot`);
     });
     return out;
   });
@@ -485,7 +485,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     inp.onchange = () => inp.files[0] && upload(inp.files[0], cb); inp.click();
   };
   async function progress(reset = false) {
-    if (!plan.video || plan.run !== "queue") return;
+    if (!plan.video || plan.run === "auto") return;
     try {
       const r = await api.fetchApi("/bfs/shotloop/progress", { method: "POST", body: JSON.stringify({ plan: { ...plan }, plan_raw: io.getPlan(), reset }) });
       const j = await r.json(); if (!j.error) { prog.done = j.done; prog.count = j.count || active.value.length; }
@@ -671,7 +671,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
           rawH("option", { value: "es" }, "Español"), rawH("option", { value: "zh" }, "中文"),
         ]),
       ]),
-      pill(plan.run === "queue" ? "queue loop" : "auto loop"),
+      pill({ queue: "queue loop", recursive: "shot by shot" }[plan.run] || "auto loop"),
       h("button", { title: t("Shot Planner tour"), onClick: () => { tour.value = 1; tab.value = "video"; } }, t("🧭 Tour")),
       h("button", { title: "Open the full guide (every setting explained, with examples)", onClick: () => showGuide(guideUrl) }, "📖 Guide"),
     ]);

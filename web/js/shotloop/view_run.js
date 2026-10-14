@@ -24,18 +24,22 @@ function loopSection(c) {
   const { plan, prog, active } = c;
   return section("Run", [
     h("div", { class: "grid" }, [
-      fld("Run", select(plan.run, [["auto", "Auto loop (one run)"], ["queue", "Queue loop (one shot per run)"]], v => c.setPlan("run", v, c.progress))),
+      fld("Run", select(plan.run, [["recursive", "One run, shot by shot (recommended)"], ["queue", "Queue loop (one shot per run)"],
+        ["auto", "Auto loop (all shots at once)"]], v => c.setPlan("run", v, c.progress))),
       fld("Skipped shots in the output", select(plan.skip_fill, [["original", "Keep original video"], ["drop", "Remove them"]], v => c.setPlan("skip_fill", v))),
     ]),
-    plan.run === "queue" ? h("div", { style: "margin-top:8px" }, [
-      h("div", { class: "row", style: "margin-bottom:4px" }, [h("b", "Queue loop"), h("span", { class: "grow" }),
+    plan.run !== "auto" ? h("div", { style: "margin-top:8px" }, [
+      h("div", { class: "row", style: "margin-bottom:4px" }, [h("b", plan.run === "queue" ? "Queue loop" : "Shot by shot"), h("span", { class: "grow" }),
         hint(`${prog.done}/${prog.count || active.value.length} shots done`)]),
       h("div", { class: "prog" }, [h("div", { style: `width:${(100 * prog.done / Math.max(1, prog.count || active.value.length)).toFixed(1)}%` })]),
       h("div", { class: "row", style: "margin-top:6px" }, [
-        check(plan.auto_continue, v => c.setPlan("auto_continue", v), "Auto-queue the next shot"),
+        plan.run === "queue" ? check(plan.auto_continue, v => c.setPlan("auto_continue", v), "Auto-queue the next shot") : null,
         h("button", { onClick: () => c.progress(false) }, "↻ Status"), h("button", { class: "dng", onClick: () => c.progress(true) }, "⟲ Reset loop"),
       ]),
-      hint("Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video.", "display:block;margin-top:4px"),
+      hint(plan.run === "queue"
+        ? "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."
+        : "One Queue renders every shot in order inside the same run: each shot is stored, then BFS Shot Join starts the next one, so continuity can read the shot before. After a failure, Queue again to resume from the stored shots.",
+        "display:block;margin-top:4px"),
     ]) : null,
   ], { sub: `${active.value.length} shot(s) will run` });
 }
