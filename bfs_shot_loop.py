@@ -4046,7 +4046,7 @@ class BFSShotJoin:
                              "mp4 file: H.264 quality (lower = better and bigger; 0 = lossless, 17 = visually "
                              "lossless, 23 = ffmpeg's default)."})},
             # recursive run: the join expands the graph for the next shot
-            "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID"},
+            "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID", "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
 
     INPUT_IS_LIST = True
@@ -4059,10 +4059,14 @@ class BFSShotJoin:
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
              comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
              seamless_edges=None, paste_new_outline=None, keep_colors=None, keep_colors_strength=None, save_to=None,
-             filename_prefix=None, mp4_crf=None, dynprompt=None, unique_id=None):
+             filename_prefix=None, mp4_crf=None, dynprompt=None, unique_id=None, prompt=None, extra_pnginfo=None):
         tl = timeline[0] if timeline else None
         self._keep_colors = (bool(keep_colors[0]) if keep_colors else True,
                              float(keep_colors_strength[0]) if keep_colors_strength else 1.0)
+        # the MP4s the join writes carry the workflow like Save Video's (drag one back into ComfyUI)
+        self._file_meta = dict((extra_pnginfo[0] if extra_pnginfo and extra_pnginfo[0] else None) or {})
+        if prompt and prompt[0] is not None:
+            self._file_meta["prompt"] = prompt[0]
         self._to_file = None
         self._prefix = (filename_prefix[0] if filename_prefix else "") or "bfs_shot_loop"
         if save_to and save_to[0] == SAVE_TO[1]:
@@ -4363,7 +4367,7 @@ class BFSShotJoin:
         comp_size = None
         comp_parts, parts = [], []
         if to_file:
-            vw = _Mp4Writer(to_file["path"], W, H, fps, a, int(to_file.get("crf", 17)))
+            vw = _Mp4Writer(to_file["path"], W, H, fps, a, int(to_file.get("crf", 17)), getattr(self, "_file_meta", None))
             if want:
                 cw_path = to_file["path"][:-4] + "_comparison.mp4"
         pos, k, prev_tail = 0, 0, None
@@ -4414,7 +4418,8 @@ class BFSShotJoin:
                         def sink(chunk):
                             nonlocal cw
                             if cw is None:
-                                cw = _Mp4Writer(cw_path, chunk.shape[2], chunk.shape[1], fps, a, int(to_file.get("crf", 17)))
+                                cw = _Mp4Writer(cw_path, chunk.shape[2], chunk.shape[1], fps, a, int(to_file.get("crf", 17)),
+                                                getattr(self, "_file_meta", None))
                             cw.write(chunk)
                         comp_size = comparison_video(body, [part], label, comp_h, comp_mask, first_k=k - (j is not None),
                                                      count=count, sink=sink, canvas=comp_size)
@@ -4606,12 +4611,13 @@ def _fit_canvas(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
 class _Mp4Writer:
     """Frames streamed to ffmpeg (H.264, yuv420p, even size), with the soundtrack muxed in the same pass."""
 
-    def __init__(self, path: str, w: int, h: int, fps: float, audio: dict | None, crf: int = 17):
+    def __init__(self, path: str, w: int, h: int, fps: float, audio: dict | None, crf: int = 17,
+                 metadata: dict | None = None):
         import tempfile
         import wave
-        self.path, self.wav = path, None
-        cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:g}",
-               "-i", "-"]
+        self.path, self.wav, self.meta = path, None, None
+        inputs = ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:g}", "-i", "-"]
+        maps, outs = ["-map", "0:v"], []
         if _usable(audio):
             fd, self.wav = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
@@ -4621,9 +4627,21 @@ class _Mp4Writer:
                 f.setsampwidth(2)
                 f.setframerate(int(audio["sample_rate"]))
                 f.writeframes((wf.t().contiguous() * 32767).round().short().numpy().tobytes())
-            cmd += ["-i", self.wav, "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k"]
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(int(crf)), "-pix_fmt", "yuv420p",
-                "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-movflags", "+faststart", path]
+            inputs += ["-i", self.wav]
+            maps += ["-map", "1:a"]
+            outs += ["-c:a", "aac", "-b:a", "192k"]
+        if metadata:   # the same tags Save Video writes (prompt, workflow...), JSON, through an ffmetadata file
+            fd, self.meta = tempfile.mkstemp(suffix=".txt")
+            esc = lambda v: re.sub(r"([=;#\\\n])", r"\\\1", v)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(";FFMETADATA1\n")
+                for k, v in metadata.items():
+                    f.write(f"{esc(str(k))}={esc(v if isinstance(v, str) else json.dumps(v))}\n")
+            maps += ["-map_metadata", str(inputs.count("-i"))]
+            inputs += ["-f", "ffmetadata", "-i", self.meta]
+        cmd = ["ffmpeg", "-v", "error", "-y", *inputs, *maps, *outs,
+               "-c:v", "libx264", "-preset", "medium", "-crf", str(int(crf)), "-pix_fmt", "yuv420p",
+               "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-movflags", "+use_metadata_tags+faststart", path]
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -4647,8 +4665,9 @@ class _Mp4Writer:
         self._cleanup()
 
     def _cleanup(self) -> None:
-        if self.wav and os.path.exists(self.wav):
-            os.remove(self.wav)
+        for f in (self.wav, self.meta):
+            if f and os.path.exists(f):
+                os.remove(f)
 
 
 def _font(size: int):

@@ -1134,6 +1134,20 @@ class ShotStoreTest(unittest.TestCase):
         self.assertEqual(n, 45)
 
 
+class JoinFileMetadataTest(unittest.TestCase):
+    def test_mp4_carries_prompt_and_workflow(self):
+        import json, subprocess
+        d = tempfile.mkdtemp(dir=_TMP)
+        wf = {"nodes": [{"id": 1, "widgets_values": ["a=b; c#d \\ e\nnew line"]}]}
+        pr = {"1": {"class_type": "BFSShotPlanner", "inputs": {"plan": "{}"}}}
+        with patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
+            out = SL.BFSShotJoin().join([torch.rand(22, 32, 32, 3)], [_shot(0, 0, 20, gen=22)], [0], save_to=[SL.SAVE_TO[1]],
+                                        filename_prefix=["m"], prompt=[pr], extra_pnginfo=[{"workflow": wf}])
+        tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json",
+                                          out["result"][4]], capture_output=True).stdout)["format"]["tags"]
+        self.assertEqual((json.loads(tags["workflow"]), json.loads(tags["prompt"])), (wf, pr))
+
+
 class JoinRamGuardTest(unittest.TestCase):
     def test_images_join_falls_back_to_mp4_when_ram_is_short(self):
         d = tempfile.mkdtemp(dir=_TMP)
