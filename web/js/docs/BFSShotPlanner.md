@@ -96,9 +96,11 @@ Three run modes:
   measured at *comparison_height* 1024, against ~32 GB as images). For long videos use *mp4 file* (BFS Shot Join), or
   the panel's **Combine**.
 - **RAM guard:** before an *images* join, BFS Shot Join asks ComfyUI's cache to drop earlier outputs and estimates
-  what the video (and the comparison) need; when that does not fit in the free RAM it writes MP4 files instead (the
-  images / comparison outputs are then blocked and `video_path` gives the file) and says so in the console, instead of
-  the whole ComfyUI being killed.
+  what the video (and the comparison) need; when that does not fit in the free RAM it writes MP4 files instead and
+  says so in the console, instead of the whole ComfyUI being killed.
+- **The outputs are never empty:** with *mp4 file* (chosen or by the RAM guard) the `images` and `comparison` outputs
+  still carry the video, read back from the written files at a size that fits the free RAM (the console says the
+  scale; the files keep the full size), the join shows the files on its node, and `video_path` gives the path.
 - **comparison_height** is the height of each column: the comparison is three columns wide plus text bars, so it
   costs about 3× the video at the same height. 360–512 is plenty to review a long video.
 
