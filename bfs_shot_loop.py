@@ -448,6 +448,7 @@ DEFAULT_PLAN = {
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
+    "between_shots": "keep",
 }
 
 
@@ -2291,15 +2292,87 @@ def shot_history(shot: dict):
     return hist, hsrc
 
 
-def _release_between_shots() -> None:
-    """Recursive run: free what the stored shot no longer needs before the next one starts (models stay loaded)."""
+def _release_between_shots(free: bool = False) -> None:
+    """Between two stored shots: drop what the stored shot no longer needs. free (plan 'Between shots = free memory',
+    for low VRAM): also unload every model, so the next shot starts from an empty GPU (they load again, slower)."""
     import gc
-    gc.collect()
     try:
         import comfy.model_management as mm
+        if free:
+            mm.unload_all_models()
+        gc.collect()
         mm.soft_empty_cache()
+        if free:
+            print("[BFS Shot Join] between shots: models unloaded and memory freed", flush=True)
     except Exception:
+        gc.collect()
+
+
+# ---------------------------------------------------------------------------- memory status (learned on this GPU)
+# There is no honest fixed "GB per frame" for H3 (ComfyUI offloads weights as needed), so the panel compares each shot
+# with the biggest shot that already ran on this GPU: a shot's size is its latent tokens (generated frames x
+# resolution); every shot the join receives was generated, so it is recorded with the peak VRAM of its run.
+_VRAM_FILE = "bfs_shotloop_vram.json"
+
+
+def shot_tokens(gen_frames: int, width: int, height: int, grid: str = DEFAULT_GRID) -> int:
+    """Latent tokens of one generated shot: H3 latent steps (17 frames -> 5, minus the 3 the VAE drops) x 16 px cells;
+    other grids: ~4 frames per step. A size to compare shots, not an exact memory figure."""
+    g = max(1, int(gen_frames))
+    steps = 5 * math.ceil(g / 17) - 3 if GRIDS.get(grid) == GRIDS[DEFAULT_GRID] else math.ceil(g / 4)
+    return max(1, steps) * math.ceil(int(height) / 16) * math.ceil(int(width) / 16)
+
+
+def _vram_path() -> str:
+    user = getattr(folder_paths, "get_user_directory", None)
+    return os.path.join(user() if user else folder_paths.get_temp_directory(), _VRAM_FILE)
+
+
+def _cuda_on() -> bool:
+    """CUDA in use by this process (always, inside ComfyUI); never starts it just for the status."""
+    return torch.cuda.is_available() and torch.cuda.is_initialized()
+
+
+def _gpu_name() -> str:
+    return torch.cuda.get_device_name(torch.cuda.current_device()) if _cuda_on() else ""
+
+
+def vram_record(tokens: int) -> None:
+    """The biggest shot of a join that just ran, with the peak VRAM since the last record (then reset)."""
+    if not _cuda_on() or tokens <= 0:
+        return
+    try:
+        peak = torch.cuda.max_memory_allocated() / 2 ** 30
+        torch.cuda.reset_peak_memory_stats()
+        path = _vram_path()
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        g = data.setdefault(_gpu_name(), {"max_tokens": 0, "max_peak_gb": 0.0, "samples": []})
+        if tokens >= g["max_tokens"]:
+            g["max_tokens"], g["max_peak_gb"] = int(tokens), round(peak, 2)
+        g["samples"] = (g["samples"] + [{"tokens": int(tokens), "peak_gb": round(peak, 2), "t": int(time.time())}])[-40:]
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except Exception as e:   # the status is optional
+        print(f"[BFS Shot Join] memory status not recorded: {e}", flush=True)
+
+
+def vram_status() -> dict:
+    out = {"gpu": _gpu_name(), "total_gb": 0.0, "free_gb": 0.0, "max_tokens": 0, "max_peak_gb": 0.0, "runs": 0}
+    if _cuda_on():
+        free, total = torch.cuda.mem_get_info()
+        out.update(total_gb=round(total / 2 ** 30, 1), free_gb=round(free / 2 ** 30, 1))
+    try:
+        with open(_vram_path()) as f:
+            g = json.load(f).get(out["gpu"]) or {}
+        out.update(max_tokens=int(g.get("max_tokens", 0)), max_peak_gb=float(g.get("max_peak_gb", 0)),
+                   runs=len(g.get("samples", [])))
+    except (OSError, ValueError):
         pass
+    return out
 
 
 def head_length(segs: list, i: int, grid: str) -> int:
@@ -2782,6 +2855,7 @@ class BFSShotPlanner:
                 "prompt": shot_prompt,
                 "audio": _slice_audio(audio, g0 / fps, glen / fps),
                 "run_id": rid, "queue": queue, "run_mode": p.get("run"),
+                "between_shots": p.get("between_shots") or "keep", "grid": p["grid"],
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
                 "history": hist, "history_src": hist_src, "head_frames": head_px,
                 "prev_length": prev_len,
@@ -3758,6 +3832,9 @@ class BFSShotJoin:
         images = [uncrop(img, sh, **fin) if sh.get("crop") and sh.get("full_frames") is not None
                   else paste_back(img, sh, outline, **fin) if sh.get("paste") and sh.get("mask_src") else img
                   for img, sh in zip(images, shots)]
+        vram_record(max((shot_tokens(int(sh.get("gen_length") or img.shape[0]), int(sh.get("width") or img.shape[2]),
+                                     int(sh.get("height") or img.shape[1]), sh.get("grid") or DEFAULT_GRID)
+                         for img, sh in zip(images, shots)), default=0))
         cut = [drop_head(img, sh) for img, sh in zip(images, shots)]
         images, shots = [c[0] for c in cut], [c[1] for c in cut]
         if shots and shots[0].get("queue"):
@@ -3807,8 +3884,10 @@ class BFSShotJoin:
         if done < shot["count"]:
             if shot.get("run_mode") == "recursive" and getattr(self, "_dynprompt", None) is not None:
                 del images, shots
-                _release_between_shots()
+                _release_between_shots(shot.get("between_shots") == "free")
                 return self._recurse(self._dynprompt, str(self._unique_id))
+            if shot.get("between_shots") == "free":
+                _release_between_shots(True)
             _notify("bfs-shotloop-next", {"run_id": rid, "done": done, "count": shot["count"]})
             blocker = ExecutionBlocker(None)
             return (blocker, blocker, blocker)
@@ -4592,6 +4671,13 @@ try:
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"people": c["people"], "step": c["step"], "samples": len(c["samples"])})
+
+    @PromptServer.instance.routes.get("/bfs/shotloop/vram")
+    async def _bfs_shot_vram(request):
+        try:
+            return web.json_response(vram_status())
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 
     @PromptServer.instance.routes.post("/bfs/shotloop/progress")
     async def _bfs_shot_progress(request):

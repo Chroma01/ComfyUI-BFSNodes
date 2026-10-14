@@ -1058,6 +1058,32 @@ class ShotHeadTest(unittest.TestCase):
                     sys.modules[k] = v
 
 
+class MemoryStatusTest(unittest.TestCase):
+    def test_shot_tokens(self):
+        # 107 H3 frames -> 7 clips -> 32 latent steps; 960x544 -> 60 x 34 cells
+        self.assertEqual(SL.shot_tokens(107, 960, 544), 32 * 34 * 60)
+        self.assertEqual(SL.shot_tokens(22, 32, 32), 7 * 2 * 2)
+        self.assertGreater(SL.shot_tokens(90, 960, 544), SL.shot_tokens(73, 960, 544))   # a head makes the shot bigger
+        self.assertEqual(SL.shot_tokens(81, 32, 32, "LTX / Wan (8n+1)"), 21 * 2 * 2)
+
+    def test_record_and_status(self):
+        import json as _json
+        path = Path(_TMP) / SL._VRAM_FILE
+        path.unlink(missing_ok=True)
+        cuda = types.SimpleNamespace(is_available=lambda: True, is_initialized=lambda: True, current_device=lambda: 0,
+                                     get_device_name=lambda d: "Test GPU", max_memory_allocated=lambda: 12 * 2 ** 30,
+                                     reset_peak_memory_stats=lambda: None, mem_get_info=lambda: (8 * 2 ** 30, 32 * 2 ** 30))
+        with patch.object(SL.torch, "cuda", cuda):
+            SL.vram_record(5000)
+            SL.vram_record(3000)          # smaller: the biggest stays
+            st = SL.vram_status()
+        self.assertEqual((st["gpu"], st["max_tokens"], st["max_peak_gb"], st["runs"], st["total_gb"], st["free_gb"]),
+                         ("Test GPU", 5000, 12.0, 2, 32.0, 8.0))
+        self.assertIn("Test GPU", _json.loads(path.read_text()))
+        SL.vram_record(4000)              # no CUDA in use: nothing recorded, nothing started
+        self.assertEqual(len(_json.loads(path.read_text())["Test GPU"]["samples"]), 2)
+
+
 class FillDetailsTest(unittest.TestCase):
     def test_render_node_fills_details_with_its_vlm(self):
         old = SL.vlm_describe

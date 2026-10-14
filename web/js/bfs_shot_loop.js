@@ -56,6 +56,11 @@ function Panel(io) {
   watch(sel, () => nextTick(() => rootEl.value?.querySelector(".shots .sc.sel")?.scrollIntoView({ block: "nearest", inline: "nearest" })));
   const hover = ref(null);       // {frame, x}
   const prog = reactive({ done: 0, count: 0 });
+  // what the server learned about memory on this GPU (BFS Shot Join records every shot it receives)
+  const vram = reactive({ gpu: "", total_gb: 0, free_gb: 0, max_tokens: 0, max_peak_gb: 0, runs: 0 });
+  async function refreshVram() {
+    try { const r = await api.fetchApi("/bfs/shotloop/vram"); const j = await r.json(); if (!j.error) Object.assign(vram, j); } catch { /* optional */ }
+  }
   const tlEl = ref(null);
   const stats = ref([]);         // per-shot content stats from /bfs/shotloop/filters
   const people = ref([]);        // cast from /bfs/shotloop/cast: [{id, thumb, share, first, last}]
@@ -168,6 +173,23 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
 
   // things worth fixing before a run, per shot (only shots that run)
+  // ---- memory status: each shot's size (latent tokens = generated frames x resolution) against the biggest shot that
+  // already ran on this GPU. Not a GB figure: ComfyUI offloads weights as needed, so only what ran here is a reference.
+  const H3G = "H3 (17n+5)";
+  const headOf = (s, i) => plan.run !== "auto" && s.chain === "head" && i > 0 && !s.cut && (plan.grid || H3G) === H3G
+    ? Math.min(s.chainHistory || 22, 39) : 0;
+  const shotTokens = (s, i) => {
+    const hd = headOf(s, i), gen = hd ? snapUp(s.len + hd, plan.grid) : s.gen;
+    const steps = (plan.grid || H3G) === H3G ? 5 * Math.ceil(gen / 17) - 3 : Math.ceil(gen / 4);
+    return Math.max(1, steps) * Math.ceil((size.h || 0) / 16) * Math.ceil((size.w || 0) / 16);
+  };
+  const memory = computed(() => {
+    const list = segs.value.map((s, i) => ({ i, tok: skipWhy(s) ? 0 : shotTokens(s, i), gen: s.gen + headOf(s, i) })).filter(x => x.tok > 0);
+    const top = list.reduce((a, b) => (b.tok > a.tok ? b : a), { i: -1, tok: 0, gen: 0 });
+    const ratio = vram.max_tokens ? top.tok / vram.max_tokens : 0;
+    const level = !top.tok || !size.w ? "" : !vram.max_tokens ? "info" : ratio <= 1.05 ? "ok" : ratio <= 1.3 ? "note" : "warn";
+    return { list, top, ratio, level };
+  });
   const checks = computed(() => {
     const out = [];
     segs.value.forEach((s, i) => {
@@ -185,6 +207,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
       if (!refOf(s, "ref")) add("info", "no reference (fine when the node's ref_image input is connected)");
+      if (vram.max_tokens && shotTokens(s, i) > 1.3 * vram.max_tokens)
+        add("warn", "much bigger than any shot that ran on this GPU (over 1.3×): it may run out of memory. Lower Megapixels or Max seconds / shot, use head 5, or set Between shots = free memory (Run tab)");
       if (i > 0 && plan.run === "auto" && (s.chain === "head" || s.chain === "history") && !s.cut)
         add("warn", `continuity '${s.chain}' does not work in the auto loop (the previous result does not exist yet): use Run = one run, shot by shot`);
     });
@@ -595,13 +619,13 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const seek = f => { const v = vid.value; if (v) { v.currentTime = f / plan.fps + 1e-3; play.frame = f; } };
 
   // ---- queue loop events
-  const onProg = e => { prog.done = e.detail.done; prog.count = e.detail.count; };
+  const onProg = e => { prog.done = e.detail.done; prog.count = e.detail.count; refreshVram(); };
   const onStatus = e => { if (busy.value || modal.busy) Object.assign(status, e.detail || {}); };
   let clock = 0;
   const onVlm = e => { if (e.detail?.video === plan.video) mergeSug(e.detail.segs); };
   const onNext = e => { onProg(e); if (plan.run === "queue" && plan.auto_continue) setTimeout(() => app.queuePrompt(0, 1), 300); };
   onMounted(() => {
-    load(); refreshFiles(); analyze(); progress(); raf = requestAnimationFrame(loop);
+    load(); refreshFiles(); analyze(); progress(); refreshVram(); raf = requestAnimationFrame(loop);
     if (!plan.video) tab.value = "video";
     api.addEventListener("bfs-shotloop-progress", onProg); api.addEventListener("bfs-shotloop-next", onNext);
     api.addEventListener("bfs-shotloop-vlm", onVlm);
@@ -610,6 +634,29 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   });
   onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); api.removeEventListener("bfs-shotloop-vlm", onVlm); api.removeEventListener("bfs-shotloop-status", onStatus); clearInterval(clock); });
   io.expose({ reload: () => { load(); analyze(); progress(); } });
+
+  // 🧠 the memory status at the top: the plan's biggest shot against the biggest one that ran on this GPU
+  const kTok = n => (n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : `${n}`);
+  function memTip(m) {
+    const gpu = vram.gpu ? `${vram.gpu} · ${vram.total_gb} GB (${vram.free_gb} GB free now)` : "no CUDA GPU seen by the server";
+    const top = m.top.i >= 0 ? `Biggest shot in this plan: #${m.top.i + 1}, ${m.top.gen} frames at ${size.w}×${size.h} = ${kTok(m.top.tok)} tokens` : "";
+    const ref = vram.max_tokens
+      ? `Biggest shot that ran on this GPU: ${kTok(vram.max_tokens)} tokens, peak ${vram.max_peak_gb} GB (${vram.runs} run(s) recorded)`
+      : "No shot has run on this GPU yet: after the first one, this status compares every shot with what already ran here.";
+    const say = { ok: "✓ Every shot is within what already ran on this GPU.",
+      note: "A bit bigger than anything that ran here: it will probably fit (ComfyUI offloads weights), maybe slower.",
+      warn: "⚠ Much bigger than anything that ran here: it may run out of memory. Lower Megapixels or Max seconds / shot, use head 5, or set Between shots = free memory (Run tab).",
+      info: "" }[m.level];
+    return [gpu, top, ref, say, "Size = generated frames (with the continuity head) × resolution; skipped shots are not counted."].filter(Boolean).join("\n");
+  }
+  function memPill() {
+    const m = memory.value;
+    if (!m.level) return null;
+    const text = { ok: "🧠 memory ✓", note: `🧠 ${m.ratio.toFixed(2)}× biggest run`, warn: `🧠 ⚠ ${m.ratio.toFixed(1)}× biggest run · may OOM`,
+      info: "🧠 no memory data yet" }[m.level];
+    return h("span", { class: ["pill", { ok: "ok", warn: "warn" }[m.level] || ""], style: "cursor:pointer", title: memTip(m),
+      onClick: () => { tab.value = "run"; refreshVram(); } }, text);
+  }
 
   // ---- references
   // the last 10 references picked, remembered across workflows (per browser)
@@ -648,7 +695,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
-    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour,
+    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour, memory, vram, refreshVram,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, included, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
@@ -673,6 +720,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
           rawH("option", { value: "es" }, "Español"), rawH("option", { value: "zh" }, "中文"),
         ]),
       ]),
+      memPill(),
       pill({ queue: "queue loop", recursive: "shot by shot" }[plan.run] || "auto loop"),
       h("button", { title: t("Shot Planner tour"), onClick: () => { tour.value = 1; tab.value = "video"; } }, t("🧭 Tour")),
       h("button", { title: "Open the full guide (every setting explained, with examples)", onClick: () => showGuide(guideUrl) }, "📖 Guide"),

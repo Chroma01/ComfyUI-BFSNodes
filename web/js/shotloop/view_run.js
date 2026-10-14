@@ -26,6 +26,8 @@ function loopSection(c) {
     h("div", { class: "grid" }, [
       fld("Run", select(plan.run, [["recursive", "One run, shot by shot (recommended)"], ["queue", "Queue loop (one shot per run)"],
         ["auto", "Auto loop (all shots at once)"]], v => c.setPlan("run", v, c.progress))),
+      plan.run !== "auto" ? fld("Between shots", select(plan.between_shots || "keep", [["keep", "Keep models loaded (fastest)"],
+        ["free", "Free memory: unload models (low VRAM)"]], v => c.setPlan("between_shots", v))) : null,
       fld("Skipped shots in the output", select(plan.skip_fill, [["original", "Keep original video"], ["drop", "Remove them"]], v => c.setPlan("skip_fill", v))),
     ]),
     plan.run !== "auto" ? h("div", { style: "margin-top:8px" }, [
@@ -44,6 +46,28 @@ function loopSection(c) {
   ], { sub: `${active.value.length} shot(s) will run` });
 }
 
+function memorySection(c) {
+  const { memory, vram, size } = c;
+  const m = memory.value;
+  if (!m.level) return null;
+  const k = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+  const pct = vram.max_tokens ? Math.min(100, 100 * m.top.tok / (1.3 * vram.max_tokens)) : 0;
+  return section("Memory", [
+    h("div", { class: "grid" }, [
+      fld("GPU", vram.gpu ? `${vram.gpu} · ${vram.total_gb} GB` : "—"),
+      fld("Biggest shot in this plan", m.top.i >= 0 ? `#${m.top.i + 1} · ${m.top.gen} frames · ${size.w}×${size.h} · ${k(m.top.tok)} tokens` : "—"),
+      fld("Biggest that ran here", vram.max_tokens ? `${k(vram.max_tokens)} tokens · peak ${vram.max_peak_gb} GB` : "nothing recorded yet"),
+    ]),
+    vram.max_tokens ? h("div", { class: "prog", style: "margin-top:6px", title: "100% = 1.3× the biggest shot that ran on this GPU" },
+      [h("div", { style: `width:${pct.toFixed(1)}%;${m.level === "warn" ? "background:var(--warn,#d97706)" : ""}` })]) : null,
+    hint({ ok: "✓ Every shot is within what already ran on this GPU.",
+      note: "A bit bigger than anything that ran here: it will probably fit, maybe slower.",
+      warn: "⚠ Much bigger than anything that ran here: it may run out of memory. Lower Megapixels or Max seconds / shot, use head 5, or set Between shots = free memory.",
+      info: "No shot has run on this GPU yet: after the first one, every shot is compared with what already ran here." }[m.level],
+      "display:block;margin-top:4px"),
+  ], { sub: { ok: "within what ran here", note: "a bit bigger", warn: "may run out of memory", info: "no data yet" }[m.level] });
+}
+
 export function runTab(c) {
-  return h("div", { class: "card" }, [checksSection(c), loopSection(c)]);
+  return h("div", { class: "card" }, [checksSection(c), memorySection(c), loopSection(c)]);
 }
