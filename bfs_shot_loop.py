@@ -2360,7 +2360,8 @@ def vram_record(tokens: int) -> None:
 
 
 def vram_status() -> dict:
-    out = {"gpu": _gpu_name(), "total_gb": 0.0, "free_gb": 0.0, "max_tokens": 0, "max_peak_gb": 0.0, "runs": 0}
+    out = {"gpu": _gpu_name(), "total_gb": 0.0, "free_gb": 0.0, "max_tokens": 0, "max_peak_gb": 0.0, "runs": 0,
+           "ram_free_gb": round(_ram_available() / 2 ** 30, 1)}
     if _cuda_on():
         free, total = torch.cuda.mem_get_info()
         out.update(total_gb=round(total / 2 ** 30, 1), free_gb=round(free / 2 ** 30, 1))

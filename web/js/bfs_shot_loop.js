@@ -58,7 +58,7 @@ function Panel(io) {
   const prog = reactive({ done: 0, count: 0 });
   const cache = reactive({ ok: [], stored: [], mb: 0, folder: "", temp: false, combined: null });
   // what the server learned about memory on this GPU (BFS Shot Join records every shot it receives)
-  const vram = reactive({ gpu: "", total_gb: 0, free_gb: 0, max_tokens: 0, max_peak_gb: 0, runs: 0 });
+  const vram = reactive({ gpu: "", total_gb: 0, free_gb: 0, max_tokens: 0, max_peak_gb: 0, runs: 0, ram_free_gb: 0 });
   async function refreshVram() {
     try { const r = await api.fetchApi("/bfs/shotloop/vram"); const j = await r.json(); if (!j.error) Object.assign(vram, j); } catch { /* optional */ }
   }
@@ -191,8 +191,19 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const level = !top.tok || !size.w ? "" : !vram.max_tokens ? "info" : ratio <= 1.05 ? "ok" : ratio <= 1.3 ? "note" : "warn";
     return { list, top, ratio, level };
   });
+  // the final video as images (BFS Shot Join, save_to = images) is held in RAM whole: about 12 bytes per pixel per frame,
+  // ~3.5x more with the comparison. Long videos should be written straight to a file instead.
+  const joinRam = computed(() => {
+    const frames = segs.value.reduce((t, s) => t + (skipWhy(s) && plan.skip_fill === "drop" ? 0 : s.len), 0);
+    const gb = frames * (size.w || 0) * (size.h || 0) * 12 / 2 ** 30;
+    return { frames, gb, long: vram.ram_free_gb > 0 && gb * 3.5 > 0.6 * vram.ram_free_gb };
+  });
   const checks = computed(() => {
     const out = [];
+    if (joinRam.value.long && active.value.length)
+      out.push({ lvl: "warn", shot: 0, text: `long video: as images the final video needs ~${joinRam.value.gb.toFixed(1)} GB of RAM `
+        + `(~${(joinRam.value.gb * 3.5).toFixed(1)} GB with the comparison) and ${vram.ram_free_gb} GB is free. Set BFS Shot Join `
+        + `save_to = mp4 file: it writes the video straight to disk, shows it on the node and still gives the result to the next nodes` });
     segs.value.forEach((s, i) => {
       if (skipWhy(s)) return;
       const add = (lvl, text) => out.push({ lvl, shot: i, text });

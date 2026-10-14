@@ -101,6 +101,9 @@ Three run modes:
 - **The outputs are never empty:** with *mp4 file* (chosen or by the RAM guard) the `images` and `comparison` outputs
   still carry the video, read back from the written files at a size that fits the free RAM (the console says the
   scale; the files keep the full size), the join shows the files on its node, and `video_path` gives the path.
+- **Default: save_to = images** (the result comes out inside ComfyUI, for the next nodes). The panel's Checks warn when
+  the video is long for this machine (as images it needs about 12 bytes per pixel per frame, ~3.5x with the
+  comparison, against the free RAM) and advise *mp4 file* for that video.
 - **comparison_height** is the height of each column: the comparison is three columns wide plus text bars, so it
   costs about 3× the video at the same height. 360–512 is plenty to review a long video.
 
