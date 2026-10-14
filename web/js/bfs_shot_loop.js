@@ -183,6 +183,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
       if (!refOf(s, "ref")) add("info", "no reference (fine when the node's ref_image input is connected)");
+      if (i > 0 && plan.run !== "queue" && (s.chain === "head" || s.chain === "history") && !s.cut)
+        add("warn", `continuity '${s.chain}' needs Run = queue loop: in the auto loop the previous result does not exist yet, so it is not used`);
     });
     return out;
   });

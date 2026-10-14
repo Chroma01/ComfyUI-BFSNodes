@@ -57,11 +57,14 @@ back (it is an `INPUT_IS_LIST` node) and puts the video together.
 
 Two run modes:
 
-- **Auto loop (one run)**: every shot in one queue run. Simple; holds all decoded shots in memory.
-- **Queue loop (one shot per run)**: each run generates the next pending shot and stores it on
+- **Queue loop (one shot per run, default)**: each run generates the next pending shot and stores it on
   disk. The join blocks every node after it until the last shot, then outputs the full video,
-  so a Save Video node only fires once. With *Auto-queue the next shot* on, the panel re-queues
-  the workflow after each shot. *Reset loop* starts over. Changing the plan starts a new run.
+  so a Save Video node only fires once. With *Auto-queue the next shot* on (default), the panel re-queues
+  the workflow after each shot, so one click still renders the whole video (keep the ComfyUI tab open: the panel
+  does the re-queue). *Reset loop* starts over. Changing the plan starts a new run. It resumes from the stored
+  shots after a failure, and continuity *head* / *history* needs it: each shot reads the result of the one before.
+- **Auto loop (one run)**: every shot in one queue run. Simple; holds all decoded shots in memory. Continuity
+  *head* / *history* does not work here (all shots are conditioned before any is sampled).
 
 ## Guide frames and lengths
 
