@@ -3024,6 +3024,12 @@ class BFSShotPlanner:
             if s.get("crop"):
                 spec = sspec
                 r = shot_mask(path, a, g0, glen, spec)
+                # the box holds the frames the shot delivers (as the panel's preview shows it): the head before them and
+                # the frames generated past the end (often a different scene after a cut) are cut by the join anyway
+                L = s["end"] - s["start"]
+                own = r["masks"][head:head + L]
+                if own.shape[0] and bool(own.any()):
+                    r = dict(r, box=crop_box(own, float(spec["padding"])))
                 if r["box"] is not None:
                     full_frames = ft
                     sx0, sy0, sx1, sy1 = box_px(r["box"], a["width"], a["height"])
