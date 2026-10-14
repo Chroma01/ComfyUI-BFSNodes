@@ -24,7 +24,7 @@ function loopSection(c) {
   const { plan, prog, active } = c;
   return section("Run", [
     h("div", { class: "grid" }, [
-      fld("Run", select(plan.run, [["queue", "Queue loop (one shot per run)"], ["recursive", "One run, shot by shot (new)"],
+      fld("Run", select(plan.run, [["recursive", "One run, shot by shot (recommended)"], ["queue", "Queue loop (one shot per run)"],
         ["auto", "Auto loop (all shots at once)"]], v => c.setPlan("run", v, c.progress))),
       fld("Skipped shots in the output", select(plan.skip_fill, [["original", "Keep original video"], ["drop", "Remove them"]], v => c.setPlan("skip_fill", v))),
     ]),

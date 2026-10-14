@@ -446,7 +446,7 @@ DEFAULT_PLAN = {
     "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
     "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
-    "detector": "adaptive", "run": "queue", "filters": {}, "skip_fill": "original",
+    "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
 }
 
