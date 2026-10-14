@@ -57,14 +57,14 @@ back (it is an `INPUT_IS_LIST` node) and puts the video together.
 
 Three run modes:
 
-- **One run, shot by shot (default)**: one Queue renders every shot **in order inside the same run**. Each shot is
+- **One run, shot by shot (new)**: one Queue renders every shot **in order inside the same run**. Each shot is
   stored on disk; then BFS Shot Join expands the part of the graph between the planner and itself (ComfyUI node
   expansion) for the next shot, so that shot is conditioned *after* the previous one exists and continuity
   (*head* / *history*) works. No browser re-queue (the tab can be closed), Save Video fires once with the full video,
   and after a failure a new Queue resumes from the stored shots (*Reset loop* starts over). Previews connected inside
   the shot's part of the graph show every shot. Needs exactly one BFS Shot Planner before the join. Same idea as the
   recursive loop of Ethanfel's MiniMax H3 Context Loop.
-- **Queue loop (one shot per run)**: each run generates the next pending shot and stores it on
+- **Queue loop (one shot per run, default)**: each run generates the next pending shot and stores it on
   disk. The join blocks every node after it until the last shot, then outputs the full video,
   so a Save Video node only fires once. With *Auto-queue the next shot* on (default), the panel re-queues
   the workflow after each shot, so one click still renders the whole video (keep the ComfyUI tab open: the panel
@@ -323,7 +323,7 @@ Every setting in the panel has a hover tooltip (ⓘ). The main ones:
 | Timeline fps | the frame rate the planner works on (generation and audio use it) |
 | Max shots | test on the first shots only |
 | Generation size | Megapixels (default), source video resolution, or custom width and height; dimensions snap to the size multiple |
-| Run | one run, shot by shot (default) / queue loop (one shot per run) / auto loop (all shots at once) |
+| Run | queue loop (one shot per run, default) / one run, shot by shot (new) / auto loop (all shots at once) |
 | Skipped shots in the output | keep the original video there or remove those shots |
 | Mask: padding / expand / feather / temporal expand / blockify | crop context, paste-back growth and softness, flicker hold, square blocks |
 | Mask: threshold / max objects / paste back | SAM 3 text matching, objects tracked, paste only the mask or the whole box |
