@@ -255,7 +255,7 @@ ComfyUI builds without native H3 generation masks need a per-row mask patch on t
 (e.g. ComfyUI-MiniMaxH3-PerRowMasking).
 
 The **People / Filters / Masks** tab holds the global mask settings, with defaults that work as they are: fill holes on,
-temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste by mask, blockify off
+temporal expand 2 frames (less flicker), expand 16 px, feather 12 px, padding 15 %, paste the whole box with feathered edges, blockify off
 (16 aligns the mask to H3's latent grid), threshold 0.5, 4 objects. *Show masks on shots* overlays the preview
 on the shot cards. SAM 3 uses the official `sam3.1_multiplex_fp16.safetensors` in `models/checkpoints`,
 downloaded from Comfy-Org/sam3.1 the first time.

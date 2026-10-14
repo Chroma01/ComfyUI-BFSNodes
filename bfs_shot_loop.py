@@ -930,7 +930,7 @@ _MASK_CACHE: dict[tuple, dict] = {}
 # global mask settings (the planner's Mask card); a shot only says what to segment (text / points / key frame)
 DEFAULT_MASK = {"text": "", "points": [], "key": 0, "threshold": 0.5, "max_objects": 4, "invert": False,
                 "fill_holes": True, "temporal_expand": 2, "blockify": 0, "padding": 0.15, "expand": 16,
-                "feather": 12, "paste": "mask"}
+                "feather": 12, "paste": "box"}
 SHOT_MASK_KEYS = ("text", "points", "key")
 
 
@@ -3573,7 +3573,7 @@ class BFSShotJoin:
                              "Where the colour statistics are measured. 'around the subject (swap)': a ring of background "
                              "around the mask, so a new person keeps their own colours and only the scene's light drift "
                              "is fixed. 'inside the subject': inside the mask (retouching the same person/content)."}),
-                         "seamless_edges": ("BOOLEAN", {"default": False, "tooltip": "Cropped / Frame + paste shots: Poisson blend "
+                         "seamless_edges": ("BOOLEAN", {"default": True, "tooltip": "Cropped / Frame + paste shots: Poisson blend "
                              "(OpenCV seamlessClone) for stubborn seams. Slower; can shift colours near the edge. From "
                              "NKD Inpaint Stitch."}),
                          "paste_new_outline": ("BOOLEAN", {"default": True, "tooltip": "'Frame + paste' shots: also paste "
@@ -3600,7 +3600,7 @@ class BFSShotJoin:
         fin = dict(edge_hardness=float(edge_hardness[0]) if edge_hardness else 0.0,
                    match_colors=float(match_colors[0]) if match_colors else 0.0,
                    match_region=match_region[0] if match_region else MATCH_REGIONS[0],
-                   seamless=bool(seamless_edges[0]) if seamless_edges else False)
+                   seamless=bool(seamless_edges[0]) if seamless_edges else True)
         self._comp_mask = bool(comparison_mask[0]) if comparison_mask else True
         want = bool(comparison[0]) if comparison else False
         self._comp_h = int(comparison_height[0]) if comparison_height else 360

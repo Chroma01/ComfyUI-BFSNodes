@@ -381,7 +381,7 @@ export const DEFAULTS = {
 
 // global mask settings (same defaults as the server's DEFAULT_MASK)
 export const MASK_DEFAULTS = { threshold: 0.5, max_objects: 4, invert: false, fill_holes: true, temporal_expand: 2, blockify: 0,
-                               padding: 0.15, expand: 16, feather: 12, paste: "mask" };
+                               padding: 0.15, expand: 16, feather: 12, paste: "box" };
 
 export const VLM_DEFAULTS = { enabled: false, frames: 3, max_tokens: 1024, auto_segment: true, auto_shot: true, instruction: "",
                               describe_preset: "short", describe_custom: "", fit_prompt: true, temperature: 0, seed: 0,
