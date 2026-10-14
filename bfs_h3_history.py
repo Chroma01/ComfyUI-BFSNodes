@@ -16,7 +16,21 @@ import logging
 import torch
 
 LOG = logging.getLogger("bfs.h3_history")
-HISTORY_FRAMES = (5, 17, 34, 51)   # 5 is H3's minimum valid video; longer windows use whole VAE groups
+# H3's VAE encodes 17-frame clips into 5 tokens (1+4+4+4+4 frames) and drops the last 3 tokens of the whole video, so only
+# 17k+5 frames encode without loss: 17 frames come back as 2 tokens = the FIRST 5 frames, leaving a 12-frame hole between
+# the history and the shot it sits before
+HISTORY_FRAMES = (5, 22, 39, 56)
+
+
+def history_length(wanted: int, available: int) -> int:
+    """The longest valid history (17k+5 frames) up to `wanted` and `available`; 0 when not even 5 fit. A wanted value
+    off the grid (old plans saved 17/34/51) is read as the next valid one up (22/39/56)."""
+    wanted, available = max(0, int(wanted)), max(0, int(available))
+    if wanted < 5:
+        return 0
+    wanted = 5 + -(-(wanted - 5) // 17) * 17
+    n = min(wanted, available)
+    return 0 if n < 5 else 5 + ((n - 5) // 17) * 17
 _PATCH = "_bfs_history_patch"
 
 
@@ -91,11 +105,10 @@ def install() -> bool:
 
 
 def add_history(positive, vae, frames: torch.Tensor):
-    """Appends 5 or 17k frames ([N,H,W,3]) from the previous shot as an H3 history keyframe.
+    """Appends the last 17k+5 frames of `frames` ([N,H,W,3]) from the previous shot as an H3 history keyframe.
     Returns (positive, frames used)."""
     import node_helpers
-    available = int(frames.shape[0])
-    n = 5 if available == 5 else (available // 17) * 17
+    n = history_length(frames.shape[0], frames.shape[0])
     if n < 5:
         return positive, 0
     install()
@@ -106,3 +119,45 @@ def add_history(positive, vae, frames: torch.Tensor):
     kfs = list(positive[0][1].get("minimax_keyframes", []))
     kfs.append({"resolved_frame_index": 0, "latent": lat, "anchor": "history"})
     return node_helpers.conditioning_set_values(positive, {"minimax_keyframes": kfs}), n
+
+
+def pin_head(latent: dict, vae, frames: torch.Tensor):
+    """Continuity 'head': the end of the previous shot's result (17k+5 frames, [N,H,W,3]) encoded over the FIRST latent
+    steps of this shot's video, with the sampler's noise mask at 0 there, so those frames are kept exactly as they were
+    (no new swap on them) and the rest of the shot is generated continuing from them. BFS Shot Join cuts them off again.
+    Same masked-prefix idea as Ethanfel's Context Loop 'masked AV' continuation. Returns (latent, frames pinned)."""
+    import comfy.nested_tensor
+    n = history_length(frames.shape[0], frames.shape[0])
+    samples = latent["samples"]
+    nested = getattr(samples, "is_nested", False)
+    video = samples.tensors[0] if nested else samples
+    T, h, w = int(video.shape[2]), int(video.shape[3]), int(video.shape[4])
+    if n < 5:
+        return latent, 0
+    px = frames[-n:, ..., :3].float().cpu()
+    if tuple(px.shape[1:3]) != (h * 16, w * 16):
+        px = torch.nn.functional.interpolate(px.movedim(-1, 1), size=(h * 16, w * 16), mode="bilinear",
+                                             align_corners=False).movedim(1, -1)
+    with torch.no_grad():
+        enc = vae.encode(px).to(video)
+    t = int(enc.shape[2])
+    if t >= T:
+        LOG.warning("H3 head: %d pinned latent steps leave nothing to generate in a %d-step video", t, T)
+        return latent, 0
+    video = video.clone()
+    video[:, :, :t] = enc
+    old = latent.get("noise_mask")
+    vm = old.tensors[0] if getattr(old, "is_nested", False) else old
+    vm = torch.ones((1, 1, T, h, w), dtype=torch.float32) if vm is None else vm.float().clone()
+    vm = torch.broadcast_to(vm, (vm.shape[0], vm.shape[1], T, h, w)).clone()
+    vm[:, :, :t] = 0.0
+    out = dict(latent)
+    if nested:
+        audio = samples.tensors[1]
+        am = old.tensors[1] if getattr(old, "is_nested", False) else torch.ones_like(audio)
+        out["samples"] = comfy.nested_tensor.NestedTensor((video, audio))
+        out["noise_mask"] = comfy.nested_tensor.NestedTensor((vm.to(video.device), am))
+    else:
+        out["samples"], out["noise_mask"] = video, vm.to(video.device)
+    LOG.info("H3 head: first %d frames (%d latent steps) pinned from the previous shot", n, t)
+    return out, n

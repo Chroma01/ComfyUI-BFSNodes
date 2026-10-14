@@ -490,9 +490,9 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["ref"] = m.get("ref") or ""
         s["ref2"] = m.get("ref2") or ""
         s["prompt"] = m.get("prompt") or ""
-        s["chain"] = m.get("chain") or "history"   # a continuing take carries the previous end (cuts skip it)
+        s["chain"] = m.get("chain") or "head"   # a continuing take starts on the previous end (cuts skip it)
         s["chain_frame"] = m.get("chain_frame") or "first"
-        s["chain_history"] = int(m.get("chain_history") or 17)
+        s["chain_history"] = int(m.get("chain_history") or 22)
         s["crop"] = bool(m.get("crop"))
         s["inpaint"] = bool(m.get("inpaint"))
         s["paste"] = bool(m.get("paste")) and not s["crop"] and not s["inpaint"]
@@ -2185,7 +2185,7 @@ def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task:
 
 # ---------------------------------------------------------------------------- continuity between shots
 
-CHAIN_MODES = ("off", "reference", "first frame", "history")
+CHAIN_MODES = ("off", "reference", "first frame", "history", "head")
 try:
     from .bfs_source_blur import SOURCE_BLUR, blur_source
 except ImportError:
@@ -2202,6 +2202,7 @@ def pick_frame(frames: torch.Tensor, length: int, which: str) -> torch.Tensor:
 
 def remember_result(shot: dict, frames: torch.Tensor) -> None:
     _LAST_RESULT.clear()
+    frames = frames[int(shot.get("head") or 0):]   # the head is the previous shot's end, not this shot
     _LAST_RESULT.update(index=int(shot.get("index", 0)), count=int(shot.get("count", 0)), frames=frames.detach().cpu())
 
 
@@ -2218,21 +2219,22 @@ def chain_image(shot: dict) -> torch.Tensor | None:
 
 
 def history_frame_count(wanted: int, available: int) -> int:
-    """Return a valid H3 history window: a 5-frame minimum or whole 17-frame groups."""
-    wanted, available = max(0, int(wanted)), max(0, int(available))
-    if wanted == 5:
-        return 5 if available >= 5 else 0
-    return min(wanted, (available // 17) * 17)
+    """Return a valid H3 history window (17k+5 frames: 5, 22, 39, 56); see bfs_h3_history.history_length."""
+    try:
+        from .bfs_h3_history import history_length
+    except ImportError:
+        from bfs_h3_history import history_length
+    return history_length(wanted, available)
 
 
 def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, ft):
-    """Continuity 'history': the end of the previous shot's result (5/17/34/51 frames) at this shot's size, plus the
+    """Continuity 'history': the end of the previous shot's result (5/22/39/56 frames) at this shot's size, plus the
     source frames under it (the duet panel shows them). Same take only: a camera cut has nothing to carry over."""
     tag = f"[BFS Shot Planner] shot {i + 1}: history"
     if seg["cut_before"]:
         print(f"{tag} skipped: a camera cut starts this shot", flush=True)
         return None, None
-    want = int(seg.get("chain_history") or 17)
+    want = int(seg.get("chain_history") or 22)
     prev = None
     if queue:
         fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt")
@@ -2245,7 +2247,7 @@ def history_for(path, analysis, src, seg, i, prev_len, queue, rid, W, H, crop, f
     avail = min(int(prev_len), prev.shape[0])
     n = history_frame_count(want, avail)
     if n == 0:
-        need = 5 if want == 5 else 17
+        need = 5
         print(f"{tag} skipped: the previous shot has only {avail} frames (needs {need})", flush=True)
         return None, None
     hf = prev[avail - n:avail, ..., :3].float() / 255.0
@@ -2277,11 +2279,86 @@ def shot_history(shot: dict):
             and _LAST_RESULT.get("count") == int(shot.get("count", 0)):
         prev_len = int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])
         f = _LAST_RESULT["frames"][:prev_len]
-        n = history_frame_count(int(shot.get("chain_history") or 17), f.shape[0])
+        n = history_frame_count(int(shot.get("chain_history") or 22), f.shape[0])
         if n:
             hist = f[f.shape[0] - n:].float()
             hist = hist / 255.0 if hist.max() > 1.5 else hist
     return hist, hsrc
+
+
+def head_length(segs: list, i: int, grid: str) -> int:
+    """Continuity 'head': how many frames of the previous shot's end start this shot (5/22/39), 0 when it cannot:
+    first shot, a camera cut, a skipped shot in between, or a grid other than H3's."""
+    s = segs[i]
+    if s.get("chain") != "head" or i == 0 or s.get("cut_before") or GRIDS.get(grid) != GRIDS[DEFAULT_GRID]:
+        return 0
+    prev = segs[i - 1]
+    if prev["end"] != s["start"]:
+        return 0
+    return history_frame_count(min(int(s.get("chain_history") or 22), 39), prev["end"] - prev["start"])
+
+
+def head_for(i, n, prev_len, queue, rid, W, H, crop, ft):
+    """Continuity 'head': the last `n` delivered frames of the previous shot's result, cut like this shot (its crop box,
+    its generation size), as uint8. None when the result is not there (the head is then generated from the guide)."""
+    tag = f"[BFS Shot Planner] shot {i + 1}: head"
+    fp = os.path.join(run_dir(rid), f"shot_{i - 1:04d}.pt") if queue else ""
+    if not fp or not os.path.exists(fp):
+        if queue:
+            print(f"{tag}: the previous shot's result is not there yet (shots run in order)", flush=True)
+        return None
+    prev = torch.load(fp, map_location="cpu")["frames"]
+    avail = min(int(prev_len), prev.shape[0])
+    if avail < n:
+        print(f"{tag} skipped: the previous shot has only {avail} frames", flush=True)
+        return None
+    hf = prev[avail - n:avail, ..., :3].float() / 255.0
+    del prev
+    if crop is not None:
+        x0, y0, x1, y1 = box_px(crop["box"], W, H)
+        hf = _fit_to(_fit_to(hf, W, H)[:, y0:y1, x0:x1], ft.shape[2], ft.shape[1])
+    elif tuple(hf.shape[1:3]) != tuple(ft.shape[1:3]):
+        hf = _fit_to(hf, ft.shape[2], ft.shape[1])
+    print(f"{tag}: the last {n} frames of shot {i} start this shot, kept as they are", flush=True)
+    return _to_u8(hf)
+
+
+def shot_head(shot: dict):
+    """The previous shot's end that starts this shot (continuity 'head'), as float frames, taken OUT of the shot; auto
+    loop: from the previous render kept in memory (not with a crop). None when there is none."""
+    n = int(shot.get("head") or 0)
+    if shot.get("chain") != "head" or not n:
+        return None
+    hf = _from_u8(shot.pop("head_frames", None))
+    if hf is None and not shot.get("crop") and _LAST_RESULT.get("index") == int(shot["index"]) - 1 \
+            and _LAST_RESULT.get("count") == int(shot.get("count", 0)):
+        f = _LAST_RESULT["frames"][:int(shot.get("prev_length") or _LAST_RESULT["frames"].shape[0])]
+        if f.shape[0] >= n:
+            hf = f[f.shape[0] - n:].float()
+            hf = hf / 255.0 if hf.max() > 1.5 else hf
+    return hf
+
+
+def drop_head(img: torch.Tensor, shot: dict):
+    """A generated shot without its continuity head (the frames that are the previous shot's end), and the shot's
+    source frames cut the same way, so the rest of the join sees the shot as if it started at its own first frame."""
+    n = int(shot.get("head") or 0)
+    if not n:
+        return img, shot
+    sh = dict(shot, head=0, gen_length=int(shot.get("gen_length") or img.shape[0]) - n)
+    for k in ("frames", "full_frames"):
+        if isinstance(sh.get(k), torch.Tensor) and sh[k].shape[0] > n:
+            sh[k] = sh[k][n:]
+    if sh.get("crop"):   # the comparison draws the crop's masks frame by frame
+        sh["crop"] = dict(sh["crop"], **{k: v[n:] for k, v in sh["crop"].items()
+                                         if k in ("mask", "crop_mask") and isinstance(v, torch.Tensor) and v.shape[0] > n})
+    sh["mask_skip"] = n   # masks segmented on the whole window (mask_src) still start with the head
+    return img[n:], sh
+
+
+def _skip_head(masks: torch.Tensor, shot: dict) -> torch.Tensor:
+    n = int(shot.get("mask_skip") or 0)
+    return masks[n:] if n and masks.ndim == 3 and masks.shape[0] > n else masks
 
 
 def fill_details_now(text: str, vlm, refs: list, tag: str = "") -> str:
@@ -2608,7 +2685,14 @@ class BFSShotPlanner:
         for i, s in enumerate(segs):
             if i not in todo:
                 continue
-            idx = np.arange(s["start"], s["start"] + s["gen_len"])
+            # continuity 'head': the window starts `head` frames early, on the previous shot's end (cut again by the join)
+            head = head_length(segs, i, p["grid"]) if queue else 0
+            if not queue and i > 0 and s["chain"] == "head" and not s["cut_before"]:
+                print(f"[BFS Shot Planner] shot {i + 1}: head needs the queue loop (the previous result is not there "
+                      "yet in the auto loop): generated without it", flush=True)
+            g0 = s["start"] - head
+            glen = snap_up(s["end"] - g0, p["grid"]) if head else s["gen_len"]
+            idx = np.arange(g0, g0 + glen)
             idx = np.clip(idx, 0, a["n"] - 1)          # past the end: hold the last frame
             frames = _read_frames(path, src[idx], (W, H))
             ft = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
@@ -2631,10 +2715,10 @@ class BFSShotPlanner:
             sspec = plan_spec(p, s.get("mask"), path)
             if not s.get("crop") and spec_has_mask(sspec):
                 # mask without crop: segmented only if the conditioning asks for it (inpaint "only the mask")
-                mask_src = {"path": path, "analysis": a, "start": s["start"], "length": s["gen_len"], "spec": sspec}
+                mask_src = {"path": path, "analysis": a, "start": g0, "length": glen, "spec": sspec}
             if s.get("crop"):
                 spec = sspec
-                r = shot_mask(path, a, s["start"], s["gen_len"], spec)
+                r = shot_mask(path, a, g0, glen, spec)
                 if r["box"] is not None:
                     full_frames = ft
                     sx0, sy0, sx1, sy1 = box_px(r["box"], a["width"], a["height"])
@@ -2650,6 +2734,7 @@ class BFSShotPlanner:
                         r["masks"][:, None, by0:by1, bx0:bx1].float(), size=(chh, cw), mode="nearest")[:, 0]
             hist, hist_src = (history_for(path, a, src, s, i, prev_len, queue, rid, W, H, crop, ft)
                               if s["chain"] == "history" and i > 0 else (None, None))
+            head_px = head_for(i, head, prev_len, queue, rid, W, H, crop, ft) if head else None
             template = (s["prompt"] or written.get(i) or g_prompt or "").replace(
                 "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else "")
             rname, r2name = s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"]
@@ -2665,7 +2750,7 @@ class BFSShotPlanner:
                                                  if s.get("color_guide_text2") or s.get("color_guide_points2") else "")
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
-                "length": s["end"] - s["start"], "gen_length": s["gen_len"], "fps": fps,
+                "length": s["end"] - s["start"], "gen_length": glen, "head": head, "fps": fps,
                 "cut_before": s["cut_before"], "width": ft.shape[2], "height": ft.shape[1], "frames": ft,
                 "crop": crop, "full_frames": full_frames, "mask_src": mask_src,
                 "inpaint": bool(s.get("inpaint")), "inpaint_strength": float(s.get("strength") or 1.0),
@@ -2679,10 +2764,10 @@ class BFSShotPlanner:
                 "color_guide_key2": int(s.get("color_guide_key2") or 0),
                 "ref": ref, "ref2": ref2,
                 "prompt": shot_prompt,
-                "audio": _slice_audio(audio, s["start"] / fps, s["gen_len"] / fps),
+                "audio": _slice_audio(audio, g0 / fps, glen / fps),
                 "run_id": rid, "queue": queue,
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
-                "history": hist, "history_src": hist_src,
+                "history": hist, "history_src": hist_src, "head_frames": head_px,
                 "prev_length": prev_len,
                 "source": {"path": path, "frames": [int(x) for x in src[idx]]},
             })
@@ -2707,7 +2792,8 @@ class BFSShotPlanner:
                          f"{' (' + g['reason'] + ')' if g['reason'] else ''} | {g['shot']}")
         for s in shots:
             lines.append(f"#{s['index'] + 1}: frames {s['start']}-{s['end'] - 1} ({s['length']} -> generate "
-                         f"{s['gen_length']}){' cut' if s['cut_before'] else ''}"
+                         f"{s['gen_length']}{', the first ' + str(s['head']) + ' = previous end' if s.get('head') else ''})"
+                         f"{' cut' if s['cut_before'] else ''}"
                          f"{' ref' if s['ref'] is not None else ''}{' ref2' if s['ref2'] is not None else ''}")
         return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline, used_refs, used_refs2)
 
@@ -3082,16 +3168,16 @@ def overlay_of(shot: dict) -> dict | None:
             if ms:
                 try:
                     r1 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
-                    regions.append({"mask": r1["masks"], "color": shot.get("color_guide_color") or "#00ff00",
-                                    "opacity": opacity})
+                    regions.append({"mask": _skip_head(r1["masks"], shot),
+                                    "color": shot.get("color_guide_color") or "#00ff00", "opacity": opacity})
                     text2 = str(shot.get("color_guide_text2") or "").strip()
                     points2 = shot.get("color_guide_points2") or []
                     if text2 or points2:
                         spec2 = dict(DEFAULT_MASK, text=text2, points=points2,
                                      key=shot.get("color_guide_key2", 0), max_objects=1)
                         r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
-                        regions.append({"mask": r2["masks"], "color": shot.get("color_guide_color2") or "#9b30ff",
-                                        "opacity": opacity})
+                        regions.append({"mask": _skip_head(r2["masks"], shot),
+                                        "color": shot.get("color_guide_color2") or "#9b30ff", "opacity": opacity})
                 except Exception as e:  # the comparison picture is optional
                     print(f"[BFS Shot Join] no Colored Mark overlay for shot {shot.get('index', 0) + 1}: {e}")
         return {"regions": regions, "box": crop.get("box") if crop else None}
@@ -3103,7 +3189,7 @@ def overlay_of(shot: dict) -> dict | None:
     try:
         if not shot.get("inpaint") and _mask_key(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"]) not in _MASK_CACHE:
             return None
-        return {"mask": generation_mask(shot)}
+        return {"mask": _skip_head(generation_mask(shot), shot)}
     except Exception as e:   # the picture is optional
         print(f"[BFS Shot Join] no mask overlay for shot {shot.get('index', 0) + 1}: {e}")
         return None
@@ -3122,7 +3208,7 @@ def _comparison_mark_regions(shot: dict, source: torch.Tensor, height: int) -> l
         masks.append((crop["mask"], shot.get("color_guide_color") or "#00ff00"))
     elif ms:
         r1 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
-        masks.append((r1["masks"], shot.get("color_guide_color") or "#00ff00"))
+        masks.append((_skip_head(r1["masks"], shot), shot.get("color_guide_color") or "#00ff00"))
     if not crop and ms:
         text2 = str(shot.get("color_guide_text2") or "").strip()
         points2 = shot.get("color_guide_points2") or []
@@ -3130,7 +3216,7 @@ def _comparison_mark_regions(shot: dict, source: torch.Tensor, height: int) -> l
             spec2 = dict(DEFAULT_MASK, text=text2, points=points2,
                          key=shot.get("color_guide_key2", 0), max_objects=1)
             r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
-            masks.append((r2["masks"], shot.get("color_guide_color2") or "#9b30ff"))
+            masks.append((_skip_head(r2["masks"], shot), shot.get("color_guide_color2") or "#9b30ff"))
     packed = []
     for mask, color in masks:
         if mask.ndim == 2:
@@ -3453,7 +3539,44 @@ class BFSShotH3Conditioning:
                     raise ValueError("duet 'shifted RoPE' needs the model input (and its model output in the sampler)")
                 model = patch_model_rope(model, info, rope_gap)
         positive = self._history(shot, positive, vae, gtag, on_canvas, duet, panel_position, panel_size)
+        latent = self._head(shot, latent, vae, gtag, on_canvas, duet, panel_position, panel_size)
         return (positive, latent, model, text)
+
+    @staticmethod
+    def _head(shot, latent, vae, tag, on_canvas, duet, panel_position, panel_size):
+        """Continuity 'head': the shot's first frames are the previous result's end, written into the latent and kept
+        by the sampler (noise mask 0), so they are not swapped again and the new frames continue from them."""
+        n = int(shot.get("head") or 0)
+        if not n:
+            return latent
+        hf = shot_head(shot)
+        if hf is None:
+            print(f"{tag}: head: no previous result, its {n} frames are generated from the guide (and cut by the join)",
+                  flush=True)
+            return latent
+        if duet == "shifted RoPE":
+            print(f"{tag}: head is not used with duet 'shifted RoPE' (use canvas)", flush=True)
+            return latent
+        W, H = int(shot["width"]), int(shot["height"])
+        hf = _fit_to(hf, W, H) if tuple(hf.shape[1:3]) != (H, W) else hf
+        if on_canvas:   # the canvas holds the panel too: the source frames under the head go in its strip
+            try:
+                from .bfs_h3_side_panel import compose, strip_frames
+            except ImportError:
+                from bfs_h3_side_panel import compose, strip_frames
+            src = shot["frames"][:n]
+            strip = strip_frames(src, list(range(n)), W, H, panel_position, panel_size, 0, "contain")
+            hf = compose(hf.cpu(), strip, panel_position)
+            del strip
+        try:
+            from .bfs_h3_history import pin_head
+        except ImportError:
+            from bfs_h3_history import pin_head
+        latent, used = pin_head(latent, vae, hf)
+        if used:
+            print(f"{tag}: head = the last {used} frames of the previous shot start this one, kept as they are "
+                  f"(not generated again); BFS Shot Join cuts them", flush=True)
+        return latent
 
     @staticmethod
     def _history(shot, positive, vae, tag, on_canvas, duet, panel_position, panel_size):
@@ -3612,6 +3735,8 @@ class BFSShotJoin:
         images = [uncrop(img, sh, **fin) if sh.get("crop") and sh.get("full_frames") is not None
                   else paste_back(img, sh, outline, **fin) if sh.get("paste") and sh.get("mask_src") else img
                   for img, sh in zip(images, shots)]
+        cut = [drop_head(img, sh) for img, sh in zip(images, shots)]
+        images, shots = [c[0] for c in cut], [c[1] for c in cut]
         if shots and shots[0].get("queue"):
             out = self._join_queue(images, shots, crossfade, audio, tl)
         else:

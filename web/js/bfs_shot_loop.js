@@ -14,6 +14,8 @@ import { showGuide } from "./bfs_md_view.js";
 import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
 import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
+// history lengths H3's VAE encodes whole (17k+5); old plans saved 17/34/51, read as the next valid one up
+const historyLen = n => (n = Number(n) || 22) <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
 import { timelineCard } from "./shotloop/view_timeline.js";
 import { videoTab } from "./shotloop/view_video.js";
 import { shotsTab } from "./shotloop/view_shots.js";
@@ -111,7 +113,7 @@ function Panel(io) {
       const m = plan.segs[out.length] || {};
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
-                 force: m.force || "auto", chain: m.chain || "history", chainFrame: m.chain_frame || "first", chainHistory: m.chain_history || 17,
+                 force: m.force || "auto", chain: m.chain || "head", chainFrame: m.chain_frame || "first", chainHistory: historyLen(m.chain_history),
                  color_guide: !!m.color_guide, color_guide_color: m.color_guide_color || "",
                  color_guide_opacity: m.color_guide_opacity ?? 0.35,
                  color_guide_text2: m.color_guide_text2 || "", color_guide_color2: m.color_guide_color2 || "",
@@ -218,7 +220,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (apply) {
         plan.bounds = j.segs.slice(1).map(s => s.start);
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
-          chain: keep[i]?.chain || "history", chain_frame: keep[i]?.chain_frame || "first", chain_history: keep[i]?.chain_history || 17,
+          chain: keep[i]?.chain || "head", chain_frame: keep[i]?.chain_frame || "first", chain_history: historyLen(keep[i]?.chain_history),
           crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "",
           color_guide: !!keep[i]?.color_guide, color_guide_color: keep[i]?.color_guide_color || "", color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
           color_guide_text2: keep[i]?.color_guide_text2 || "", color_guide_color2: keep[i]?.color_guide_color2 || "",

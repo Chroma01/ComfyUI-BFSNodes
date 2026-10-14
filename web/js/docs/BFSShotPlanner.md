@@ -386,15 +386,14 @@ own frame from the source video.
 
 ### History: a long take, window by window (1.87.0)
 
-*Continuity* = **previous shot's end as history** carries the **last 17, 34 or 51 frames of the previous shot's
+*Continuity* = **previous shot's end as history** carries the **last 5, 22, 39 or 56 frames of the previous shot's
 result** into the next shot as clean frames placed **just before frame 0 on H3's timeline**: the model sees them as
 the immediate past of the video it is generating, so motion, camera, light and the new look continue across the join
 (instead of one still frame). Idea from Akatz's [H3 Relay](https://github.com/akatz-ai/h3-relay) windowed edit and
 Ethanfel's MiniMax H3 Context Loop; this is BFS's own implementation (a process-local patch of H3's packed layout
 that moves the video, its audio and the other guides past the history; ComfyUI files are not edited).
 
-- **On by default** (1.88.0) for every shot after the first; set *Continuity = off* on a shot to drop it. Plans saved
-  before keep what they had.
+- Plans saved before keep what they had; *head* (below) is now the default for new shots.
 - **Same take only.** A shot that starts at a camera cut skips it (nothing to continue). For one long take, split it
   with *Mode = fixed length* (or let *Camera cuts* split long shots) and set history on every shot after the first
   with **Copy to other shots → continuity**. Shots still exist: they are the windows, and cuts reset the history.
@@ -405,7 +404,30 @@ that moves the video, its audio and the other guides past the history; ComfyUI f
 - **BFS Shot H3 Conditioning and BFS Shot H3 Duet** both use it (duet canvas or aligned guide).
 - **Queue loop:** shots run in order and each reads the stored result of the one before. Auto loop: taken from the
   previous render when it matches.
-- Video only for now (the previous audio is not carried). History can use 5, 17, 34 or 51 frames; longer windows use more memory.
+- Video only for now (the previous audio is not carried). History can use 5, 22, 39 or 56 frames; longer windows use more memory.
+- **Only 17k+5 frames work.** H3's VAE encodes 17-frame clips into 5 latent steps and drops the last 3 steps of the
+  whole video, so 17 frames come back as just their *first 5*: the old 17 / 34 / 51 options left a 12-frame (0.5 s)
+  hole between the history and the shot, seen as a jump or drift at every join. Plans saved with 17 / 34 / 51 are
+  read as 22 / 39 / 56.
+
+### Head: the shot starts on the previous result (default)
+
+*Continuity* = **previous shot's end as this shot's start** generates the shot from **5, 22 or 39 frames earlier**:
+those first frames are the previous shot's result, encoded **into this shot's latent** and kept by the sampler
+(noise mask 0), so they are **not generated or swapped again**, and the new frames continue straight from them.
+BFS Shot Join cuts them off, so the timing is unchanged. Same masked-prefix continuation as the Context Loop's
+*masked AV* mode, whose tested default is 22.
+
+- **On by default, 22 frames**, for every shot after the first. Set *Continuity = off* (or *history*) to change it.
+- **Same take only:** skipped at a camera cut, after a skipped shot, and on grids other than H3's.
+- **Queue loop only.** In the auto loop the previous result does not exist yet when the shot is conditioned, so the
+  planner generates the shot without a head (and says so in the console).
+- Works with full frame, *Frame + paste*, *Mask only* / *Crop + mask* (the head is kept whatever the mask says), *Crop*
+  (the head is cut with this shot's box) and the duet canvas. Not with duet *shifted RoPE*. Pinned in
+  **BFS Shot H3 Conditioning**; other workflows still generate and cut the extra frames.
+- Costs those frames of generation per shot (a 60-frame shot is generated at 90 frames instead of 73).
+- Repeatedly conditioning on clean generated frames can slowly shift colour over many shots (documented by the
+  Context Loop); compare with *history* if a long scene warms up.
 
 ## MiniMax H3 with an aligned guide (example)
 

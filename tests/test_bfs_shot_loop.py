@@ -293,7 +293,7 @@ class ContinuityTest(unittest.TestCase):
         plan = dict(SL.DEFAULT_PLAN, mode="fixed", max_s=2, bounds=[50],
                     segs=[{}, {"chain": "first frame", "chain_frame": "middle"}])
         segs = SL.resolve_plan(plan, a)
-        self.assertEqual((segs[0]["chain"], segs[1]["chain"], segs[1]["chain_frame"]), ("history", "first frame", "middle"))   # history is the default
+        self.assertEqual((segs[0]["chain"], segs[1]["chain"], segs[1]["chain_frame"]), ("head", "first frame", "middle"))   # head is the default
 
 
 class MaskCropTest(unittest.TestCase):
@@ -956,8 +956,84 @@ class ShotHistoryTest(unittest.TestCase):
         SL._LAST_RESULT.clear()
         SL._LAST_RESULT.update(index=0, count=2, frames=torch.rand(40, 8, 8, 3))
         hist, _ = SL.shot_history({"chain": "history", "index": 1, "count": 2, "prev_length": 30, "chain_history": 34})
-        self.assertEqual(hist.shape[0], 17)          # 30 real frames -> one whole group of 17
+        self.assertEqual(hist.shape[0], 22)          # 30 real frames -> 22, the longest 17k+5 that fits
         SL._LAST_RESULT.clear()
+
+    def test_history_lengths_are_whole_vae_clips(self):
+        # 17 frames encode to 2 tokens (the first 5 frames): only 17k+5 reaches the boundary
+        self.assertEqual([SL.history_frame_count(w, 200) for w in (5, 17, 22, 34, 39, 51, 56)], [5, 22, 22, 39, 39, 56, 56])
+        self.assertEqual([SL.history_frame_count(56, a) for a in (4, 5, 21, 22, 38, 40)], [0, 5, 5, 22, 22, 39])
+
+
+class ShotHeadTest(unittest.TestCase):
+    """Continuity 'head': the previous shot's end starts the next shot, pinned in the latent, and the join cuts it."""
+
+    @staticmethod
+    def _segs(chain="head", n=22, cut=False, gap=0):
+        return [{"start": 0, "end": 60, "chain": "off", "cut_before": False},
+                {"start": 60 + gap, "end": 120, "chain": chain, "chain_history": n, "cut_before": cut}]
+
+    def test_head_length(self):
+        self.assertEqual(SL.head_length(self._segs(), 1, H3), 22)
+        self.assertEqual(SL.head_length(self._segs(n=56), 1, H3), 39)        # capped at 39
+        self.assertEqual(SL.head_length(self._segs(n=17), 1, H3), 22)        # old plans: next valid length up
+        self.assertEqual(SL.head_length(self._segs(), 0, H3), 0)             # first shot
+        self.assertEqual(SL.head_length(self._segs(cut=True), 1, H3), 0)     # a camera cut
+        self.assertEqual(SL.head_length(self._segs(gap=5), 1, H3), 0)       # a skipped shot in between
+        self.assertEqual(SL.head_length(self._segs(chain="history"), 1, H3), 0)
+        self.assertEqual(SL.head_length(self._segs(), 1, "LTX / Wan (8n+1)"), 0)
+
+    def test_join_cuts_the_head(self):
+        img = torch.arange(30, dtype=torch.float32).view(30, 1, 1, 1).expand(30, 2, 2, 3)
+        shot = {"head": 5, "gen_length": 30, "frames": img.clone(), "crop": {"mask": torch.zeros(30, 2, 2), "box": [0, 0, 1, 1]}}
+        out, sh = SL.drop_head(img, shot)
+        self.assertEqual((out.shape[0], float(out[0, 0, 0, 0]), sh["gen_length"], sh["frames"].shape[0],
+                          sh["crop"]["mask"].shape[0], sh["head"], shot["frames"].shape[0]), (25, 5.0, 25, 25, 25, 0, 30))
+        self.assertIs(SL.drop_head(img, {"head": 0})[0], img)
+
+    def test_remember_result_skips_the_head(self):
+        SL._LAST_RESULT.clear()
+        SL.remember_result({"index": 0, "count": 2, "head": 5}, torch.zeros(30, 2, 2, 3))
+        self.assertEqual(SL._LAST_RESULT["frames"].shape[0], 25)
+        SL._LAST_RESULT.clear()
+
+    def test_pin_head_keeps_the_first_latent_steps(self):
+        class NT:
+            def __init__(self, t):
+                self.tensors, self.is_nested = list(t), True
+        nt = types.ModuleType("comfy.nested_tensor")
+        nt.NestedTensor = NT
+        old = {k: sys.modules.get(k) for k in ("comfy", "comfy.nested_tensor")}
+        comfy = types.ModuleType("comfy")
+        comfy.nested_tensor = nt
+        sys.modules["comfy"], sys.modules["comfy.nested_tensor"] = comfy, nt
+        try:
+            import bfs_h3_history as HH
+
+            class VAE:
+                def encode(self, px):
+                    n = px.shape[0]
+                    self.size = tuple(px.shape[1:3])
+                    return torch.full((1, 24, 5 * -(-n // 17) - 3, px.shape[1] // 16, px.shape[2] // 16), 7.0)
+            vae = VAE()
+            latent = {"samples": NT((torch.zeros(1, 24, 12, 4, 4), torch.zeros(1, 8, 50)))}
+            out, n = HH.pin_head(latent, vae, torch.rand(30, 32, 32, 3))   # 30 frames -> the last 22 -> 7 steps
+            v, m = out["samples"].tensors[0], out["noise_mask"].tensors[0]
+            self.assertEqual((n, vae.size), (22, (64, 64)))
+            self.assertTrue(bool((v[:, :, :7] == 7).all()) and bool((v[:, :, 7:] == 0).all()))
+            self.assertTrue(bool((m[:, :, :7] == 0).all()) and bool((m[:, :, 7:] == 1).all()))
+            self.assertTrue(bool((out["noise_mask"].tensors[1] == 1).all()))
+            # an existing inpaint mask stays as it is after the head
+            inp = torch.full((1, 1, 12, 4, 4), 0.5)
+            out2, _ = HH.pin_head(dict(latent, noise_mask=NT((inp, torch.ones(1, 8, 50)))), vae, torch.rand(22, 64, 64, 3))
+            m2 = out2["noise_mask"].tensors[0]
+            self.assertTrue(bool((m2[:, :, :7] == 0).all()) and bool((m2[:, :, 7:] == 0.5).all()) and bool((inp == 0.5).all()))
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
 
 
 class FillDetailsTest(unittest.TestCase):
