@@ -2646,6 +2646,70 @@ def load_shot(d: str, index: int, frames: bool = True):
     return _read_rgb_video(os.path.join(d, x["video"]), n, h, w), x["shot"]
 
 
+# ---------------------------------------------------------------------------- color anchor (continuity drift)
+# A shot that starts on the previous shot's result (head / history) comes out a little more saturated right after it,
+# and the next shot inherits that: over a long take the new subject's colours keep getting stronger (measured +66%
+# saturation by the 4th shot). The join corrects the subject's chroma of every continuing shot to the first shot of the
+# take, and stores the corrected shot, so the next one starts from the anchored colours and nothing accumulates.
+
+def _subject_weight(res: np.ndarray, src: np.ndarray) -> np.ndarray:
+    """Where the generated subject is (0..1, soft edge): the pixels that differ clearly from the source video."""
+    import cv2
+    d = np.abs(res - src).mean(-1)
+    m = (d > 0.12).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.dilate(m, np.ones((5, 5), np.uint8))
+    return np.clip(cv2.GaussianBlur(m.astype(np.float32), (0, 0), 3), 0, 1)
+
+
+def _to_np(frames: torch.Tensor) -> np.ndarray:
+    x = frames[..., :3]
+    return (x.float() / 255.0 if x.dtype == torch.uint8 else x.float()).clamp(0, 1).cpu().numpy()
+
+
+def color_stats(img: torch.Tensor, src: torch.Tensor, length: int | None = None) -> dict | None:
+    """Mean / std of the subject's a, b (CIELAB) over a shot's frames, or None when there is hardly any subject."""
+    import cv2
+    n = min(int(length or img.shape[0]), img.shape[0], src.shape[0])
+    ab, tot = [], 0
+    for i in range(0, n, 3):
+        r, s_ = _to_np(img[i]), _to_np(src[i])
+        if s_.shape != r.shape:
+            s_ = cv2.resize(s_, (r.shape[1], r.shape[0]), interpolation=cv2.INTER_AREA)
+        w = _subject_weight(r, s_) > 0.5
+        tot += w.size
+        if w.any():
+            ab.append(cv2.cvtColor(r, cv2.COLOR_RGB2LAB)[..., 1:][w])
+    if not ab or sum(len(x) for x in ab) < 0.005 * tot:
+        return None
+    ab = np.concatenate(ab, 0)
+    return {"mu": [float(v) for v in ab.mean(0)], "sd": [float(v) for v in ab.std(0) + 1e-3], "n": int(len(ab))}
+
+
+def anchor_colors(img: torch.Tensor, src: torch.Tensor, anchor: dict, length: int | None = None,
+                  strength: float = 1.0) -> tuple[torch.Tensor, dict | None]:
+    """The shot with its subject's a, b moved to the anchor's statistics (one transform for the whole shot, so no
+    flicker; the background and the lightness are left alone). Returns (frames, the shot's own stats before)."""
+    import cv2
+    st = color_stats(img, src, length)
+    if st is None or not anchor:
+        return img, st
+    mu, sd = np.array(st["mu"]), np.array(st["sd"])
+    k = np.clip(np.array(anchor["sd"]) / sd, 0.5, 2.0)
+    out = img.clone() if img.dtype != torch.uint8 else img.float() / 255.0
+    for i in range(img.shape[0]):
+        r = _to_np(img[i])
+        s_ = _to_np(src[min(i, src.shape[0] - 1)])
+        if s_.shape != r.shape:
+            s_ = cv2.resize(s_, (r.shape[1], r.shape[0]), interpolation=cv2.INTER_AREA)
+        w = _subject_weight(r, s_)[..., None] * float(strength)
+        lab = cv2.cvtColor(r, cv2.COLOR_RGB2LAB)
+        ab = lab[..., 1:]
+        lab[..., 1:] = ab + w * (((ab - mu) * k + np.array(anchor["mu"])) - ab)
+        out[i, ..., :3] = torch.from_numpy(np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), 0, 1))
+    return out, st
+
+
 def shot_originals(d: str, meta: dict):
     """The comparison's original frames of a stored shot (uint8), or None."""
     if isinstance(meta.get("frames"), torch.Tensor):
@@ -3955,6 +4019,14 @@ class BFSShotJoin:
                              "a crop or a generation mask (Mask only / Crop + mask) show the selected mask over the "
                              "original column; Colored Mark uses its selected colors, other masks use red. Crop boxes "
                              "are yellow."}),
+                         "keep_colors": ("BOOLEAN", {"default": True, "tooltip": "Shot by shot / queue loop with "
+                             "continuity: shots that continue from the previous one come out a bit more saturated, and "
+                             "that adds up over a long take. On: the new subject's colours (chroma) of every continuing "
+                             "shot are matched to the first shot of the take before it is stored, so they stay the same "
+                             "from shot to shot (the background and the lightness are not touched; a camera cut or a "
+                             "shot without continuity starts a new take)."}),
+                         "keep_colors_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                             "tooltip": "How much of that correction is applied (1 = fully to the first shot)."}),
                          "save_to": (SAVE_TO, {"default": SAVE_TO[0], "tooltip": "images: output the video as IMAGE "
                              "(connect Create Video / Save Video); the whole video is held in memory. mp4 file: the join "
                              "writes the video (and the comparison) straight to MP4 files in the output folder, one shot "
@@ -3979,9 +4051,11 @@ class BFSShotJoin:
 
     def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
              comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
-             seamless_edges=None, paste_new_outline=None, save_to=None, filename_prefix=None, mp4_crf=None,
-             dynprompt=None, unique_id=None):
+             seamless_edges=None, paste_new_outline=None, keep_colors=None, keep_colors_strength=None, save_to=None,
+             filename_prefix=None, mp4_crf=None, dynprompt=None, unique_id=None):
         tl = timeline[0] if timeline else None
+        self._keep_colors = (bool(keep_colors[0]) if keep_colors else True,
+                             float(keep_colors_strength[0]) if keep_colors_strength else 1.0)
         self._to_file = None
         self._prefix = (filename_prefix[0] if filename_prefix else "") or "bfs_shot_loop"
         if save_to and save_to[0] == SAVE_TO[1]:
@@ -4058,6 +4132,7 @@ class BFSShotJoin:
                         meta["comparison_mark_regions"] = _comparison_mark_regions(shot, src, h)
                     except Exception as e:  # keep the video join available if its optional comparison overlay fails
                         print(f"[BFS Shot Join] no Colored Mark overlay for shot {shot.get('index', 0) + 1}: {e}")
+        img = self._anchor_colors(img, shot, rid)
         store_shot(d, int(shot["index"]), (img.clamp(0, 1) * 255).round().to(torch.uint8).cpu(), meta,
                    shot.get("shot_storage") or "lossless")
         st = run_state(rid)
@@ -4100,6 +4175,39 @@ class BFSShotJoin:
         self._run_dir = d
         return self._assemble(metas, lambda j: load_shot(d, int(metas[j]["index"]))[0], crossfade, audio, tl,
                               self._to_file, getattr(self, "_label", "") or "")
+
+    def _anchor_colors(self, img: torch.Tensor, shot: dict, rid: str) -> torch.Tensor:
+        """Keep colours: the first shot of a take records its subject's colours; every shot that continues from the one
+        before is matched to them before it is stored (see anchor_colors)."""
+        on, strength = getattr(self, "_keep_colors", (True, 1.0))
+        src = shot.get("full_frames") if shot.get("full_frames") is not None else shot.get("frames")
+        if not on or src is None:
+            return img
+        i, L = int(shot["index"]), int(shot.get("length") or img.shape[0])
+        st = run_state(rid)
+        anchors = st.setdefault("color_anchors", {})
+        starts = i == 0 or not uses_previous(shot)
+        if not starts and anchors.pop(str(i), None) is not None:   # no longer the start of a take
+            save_state(rid, st)
+        prev = [int(k) for k in anchors if int(k) < i]
+        if starts or not prev:
+            stats = color_stats(img, src, L)
+            if stats:
+                anchors[str(i)] = stats
+                save_state(rid, st)
+            return img
+        a = anchors[str(max(prev))]
+        try:
+            out, own = anchor_colors(img, src, a, L, strength)
+        except Exception as e:   # never lose a shot over its colour
+            print(f"[BFS Shot Join] shot {i + 1}: colours not anchored ({e})", flush=True)
+            return img
+        if own:
+            sat = lambda s_: float(np.hypot(*s_["sd"]))
+            print(f"[BFS Shot Join] shot {i + 1}: subject colours anchored to shot {max(prev) + 1} "
+                  f"(a {own['mu'][0] - a['mu'][0]:+.1f}, b {own['mu'][1] - a['mu'][1]:+.1f}, "
+                  f"spread x{sat(own) / sat(a):.2f} -> x1.00 at strength {strength:g})", flush=True)
+        return out
 
     def _recurse(self, dynprompt, unique_id: str) -> dict:
         """Recursive run: the nodes between BFS Shot Planner and this join (the shot's body: conditioning, sampler,

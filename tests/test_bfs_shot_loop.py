@@ -1168,6 +1168,27 @@ class StoredComparisonTest(unittest.TestCase):
         self.assertGreater(float(comp[:, comp.shape[1] // 2, 5:60].mean()), 0.2)
 
 
+class ColorAnchorTest(unittest.TestCase):
+    def _shot(self, sat):
+        src = torch.full((12, 48, 48, 3), 0.5)
+        res = src.clone()
+        res[:, 12:36, 12:36] = torch.tensor([0.5 - sat, 0.5 + sat, 0.5 - sat])   # a green subject
+        res[:, 12:36, 12:36] += torch.linspace(-0.05, 0.05, 24).view(1, 24, 1, 1)
+        return res, src
+
+    def test_subject_chroma_goes_back_to_the_anchor(self):
+        r1, s1 = self._shot(0.15)
+        anchor = SL.color_stats(r1, s1)
+        r4, s4 = self._shot(0.30)                      # 4 shots later: twice as saturated
+        out, before = SL.anchor_colors(r4, s4, anchor)
+        after = SL.color_stats(out, s4)
+        self.assertGreater(abs(before["mu"][0] - anchor["mu"][0]), 5)
+        self.assertLess(abs(after["mu"][0] - anchor["mu"][0]), 1.5)
+        self.assertLess(abs(after["mu"][1] - anchor["mu"][1]), 1.5)
+        self.assertAlmostEqual(float(out[0, 2, 2, 0]), 0.5, places=2)   # the background is untouched
+        self.assertIsNone(SL.color_stats(s1, s1))                        # no subject: nothing to anchor
+
+
 class FillDetailsTest(unittest.TestCase):
     def test_render_node_fills_details_with_its_vlm(self):
         old = SL.vlm_describe

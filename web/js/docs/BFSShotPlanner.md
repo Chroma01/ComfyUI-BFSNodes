@@ -505,8 +505,15 @@ BFS Shot Join cuts them off, so the timing is unchanged. Same masked-prefix cont
   (the head is cut with this shot's box) and the duet canvas. Not with duet *shifted RoPE*. Pinned in
   **BFS Shot H3 Conditioning**; other workflows still generate and cut the extra frames.
 - Costs those frames of generation per shot (a 60-frame shot is generated at 90 frames instead of 73).
-- Repeatedly conditioning on clean generated frames can slowly shift colour over many shots (documented by the
-  Context Loop); compare with *history* if a long scene warms up.
+- **Keep colors** (BFS Shot Join, on by default). A shot that starts on the previous result comes out a little more
+  saturated right after it, and the next shot inherits that: measured on a 5-shot take, the new subject's saturation
+  went 75 → 88 → 105 → 124, with almost no change *inside* each shot (the jump is at every join). With *keep_colors*
+  the first shot of each take records its subject's colours, and every shot that continues from the one before has
+  its subject's chroma (CIELAB a, b: one transform per shot, so no flicker) matched to them before it is stored; the
+  next shot then starts from the anchored colours and nothing accumulates (same take: 69–73 on every shot). The
+  subject is where the result differs from the source video (soft edge); the background and the lightness are not
+  touched. A camera cut or a shot without continuity starts a new take (new anchor). *keep_colors_strength* blends it
+  (1 = fully). It applies to stored runs (shot by shot, queue loop), where continuity exists.
 
 ## MiniMax H3 with an aligned guide (example)
 
