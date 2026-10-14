@@ -74,6 +74,21 @@ Three run modes:
   Holds all decoded shots in memory. Continuity *head* / *history* does not work here (all shots are conditioned
   before any is sampled).
 
+### Memory
+
+- **Status at the top (🧠)** and a **Memory** card in the Run tab. BFS Shot Join records every shot it receives on
+  this GPU: its size (latent tokens = generated frames, with the continuity head, × resolution) and the peak VRAM of
+  its run. Before running, every planned shot is compared with the **biggest shot that already ran on this GPU**:
+  *✓* within it, *a bit bigger* (it will probably fit, maybe slower), or *⚠ may run out of memory* (also listed in
+  Checks). There is no fixed "GB per frame" for H3 (ComfyUI offloads weights as needed), so nothing is guessed: until
+  a first shot has run, the status says *no memory data yet*. The record lives in ComfyUI's `user/bfs_shotloop_vram.json`.
+- **Between shots** (Run tab, shot by shot and queue loop): *keep models loaded* (fastest) or *free memory*, which
+  unloads every model and empties the GPU after each shot so the next one starts clean (low VRAM, or a later shot
+  that runs out of memory); models load again for every shot, so it is slower.
+- What makes a shot lighter: lower **Megapixels**, a shorter **Max seconds / shot**, **head 5** instead of 22 (the
+  head adds its frames to every shot), **Crop** (the generation is the subject's box), and ComfyUI's own options
+  (`--lowvram`, fp8 / GGUF weights, tiled VAE decode).
+
 ## Guide frames and lengths
 
 Each shot is generated at a length the model accepts (frame grid: H3 `17n+5`, LTX/Wan `8n+1`,
