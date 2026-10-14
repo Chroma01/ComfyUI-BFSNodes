@@ -87,7 +87,9 @@ function Panel(io) {
     Object.values(plan.cast).forEach(person => { if (person && typeof person === "object") { delete person.ref; delete person.ref2; delete person.guide_color; } });
     plan.segs.forEach(meta => { if (meta) { delete meta.color_guide_person; delete meta.color_guide_person2; } });
   };
-  const save = () => io.setPlan(JSON.stringify(plan));
+  // any change of the plan (a new video, a prompt, a setting...) is a new loop run on the server: show its progress
+  let progTimer = 0;
+  const save = () => { io.setPlan(JSON.stringify(plan)); clearTimeout(progTimer); progTimer = setTimeout(() => progress(), 400); };
 
   const n = computed(() => (an.value ? an.value.n : 0));      // the whole video on the timeline
   // the part the plan works on [lo, hi): start / end (0 = the end), then "max total seconds" counted from the start
@@ -485,7 +487,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     inp.onchange = () => inp.files[0] && upload(inp.files[0], cb); inp.click();
   };
   async function progress(reset = false) {
-    if (!plan.video || plan.run === "auto") return;
+    if (!plan.video || plan.run === "auto") { prog.done = 0; prog.count = 0; return; }
     try {
       const r = await api.fetchApi("/bfs/shotloop/progress", { method: "POST", body: JSON.stringify({ plan: { ...plan }, plan_raw: io.getPlan(), reset }) });
       const j = await r.json(); if (!j.error) { prog.done = j.done; prog.count = j.count || active.value.length; }
