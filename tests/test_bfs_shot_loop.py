@@ -219,6 +219,28 @@ class TimelineJoinTest(unittest.TestCase):
         self.assertEqual(video.shape[0], 60)
         self.assertAlmostEqual(float(video[30, 0, 0, 0]), 128 / 255, places=3)
 
+    def test_skipped_shot_keeps_its_sound(self):
+        # 60 frames at 24 fps, sample rate 240 -> 10 samples per frame; each sample holds its timeline frame number
+        sr = 240
+        timeline_audio = {"waveform": torch.arange(600, dtype=torch.float32).div(10).floor().view(1, 1, 600), "sample_rate": sr}
+        runs_only = {"waveform": torch.full((1, 1, 400), -1.0), "sample_rate": sr, "bfs_runs_only": True}
+        tl = dict(self._tl("original"), audio=timeline_audio)
+        shots = [_shot(0, 0, 20, gen=22), _shot(1, 40, 60, cut=True, gen=22)]
+        imgs = [torch.zeros(22, 8, 8, 3), torch.ones(22, 8, 8, 3)]
+        orig = SL._read_frames
+        SL._read_frames = lambda path, idx, size: [__import__("numpy").full((8, 8, 3), 128, "uint8") for _ in idx]
+        try:
+            _, a, _ = SL.BFSShotJoin()._join_all(imgs, shots, [0], [runs_only], tl)
+            # a soundtrack from elsewhere is still used as given
+            _, other, _ = SL.BFSShotJoin()._join_all(imgs, shots, [0], [dict(runs_only, bfs_runs_only=False)], tl)
+        finally:
+            SL._read_frames = orig
+        wf = a["waveform"][0, 0]
+        self.assertEqual(wf.shape[0], 600)
+        self.assertEqual([float(wf[i * 10]) for i in (0, 25, 30, 45, 59)], [0.0, 25.0, 30.0, 45.0, 59.0])  # in sync, skipped shot not silent
+        self.assertNotIn("bfs_runs_only", a)
+        self.assertEqual(float(other["waveform"][0, 0, 0]), -1.0)
+
 
 class CastTest(unittest.TestCase):
     # person 0 on frames 0-47 (big face), person 1 on 48-95, both small on 96-119

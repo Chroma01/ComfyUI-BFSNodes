@@ -2792,6 +2792,9 @@ class BFSShotPlanner:
         total = sum(s["end"] - s["start"] for s in segs)
         # no (usable) soundtrack: a silent track of the right length, so Create Video never gets None
         full_audio = _slice_audio(audio, segs[0]["start"] / fps, total / fps) if audio else silence(total / fps)
+        # it covers the shots that run only: with skipped shots kept as original video, BFS Shot Join takes the
+        # timeline's soundtrack instead (else a skipped shot is silent, or the sound after it is shifted)
+        full_audio = dict(full_audio, bfs_runs_only=True)
         full_total = sum(s["end"] - s["start"] for s in all_segs)
         timeline = {"path": path, "fps": fps, "width": W, "height": H, "fill": p.get("skip_fill", "original"),
                     "audio": _slice_audio(audio, all_segs[0]["start"] / fps, full_total / fps) if audio else None,
@@ -3963,7 +3966,9 @@ def _join_timeline_impl(self, images, shots, crossfade, audio, tl):
                 self._parts.append(({"skipped": True, "start": seg["start"], "end": seg["end"], "fps": fps,
                                      "cut_before": seg["cut_before"]}, L, orig))
     video = torch.cat(out, 0)
-    a = (audio[0] if audio else None) or tl.get("audio")
+    a = audio[0] if audio else None
+    if a is None or (isinstance(a, dict) and a.get("bfs_runs_only") and tl.get("audio") is not None):
+        a = tl.get("audio") or a   # the planner's own soundtrack covers only the shots that ran
     if not _usable(a):
         return (video, silence(video.shape[0] / fps), fps)
     if a is not None:
