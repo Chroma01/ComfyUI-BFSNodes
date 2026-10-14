@@ -1208,6 +1208,17 @@ class ColorAnchorTest(unittest.TestCase):
         self.assertIsNone(SL.color_stats(s1, s1))                        # no subject: nothing to anchor
 
 
+class TidyDetailsTest(unittest.TestCase):
+    def test_short_details_drop_the_echoed_prompt(self):
+        cfg = {"describe_preset": "short"}
+        for raw in ("is the elderly woman with glasses shown in", "elderly woman with glasses is the shown in <Picture 1>",
+                    "<Subject 1> is the elderly woman with glasses shown in <Picture 1>.", "The elderly woman with glasses"):
+            self.assertEqual(SL.tidy_details(raw, cfg), "elderly woman with glasses", raw)
+        self.assertEqual(SL.tidy_details("man shown wearing a red cap", cfg), "man shown wearing a red cap")
+        # descriptions already saved in a plan are cleaned when they go into the prompt
+        self.assertEqual(SL.clean_slot("is the woman in red shown in <Picture 1>"), "woman in red")
+
+
 class FillDetailsTest(unittest.TestCase):
     def test_render_node_fills_details_with_its_vlm(self):
         old = SL.vlm_describe

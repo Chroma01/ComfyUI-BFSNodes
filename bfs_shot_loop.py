@@ -1777,6 +1777,17 @@ def _image_key(img: torch.Tensor | None) -> str:
     return hashlib.sha1((x * 255).round().to(torch.uint8).numpy().tobytes()).hexdigest()[:16]
 
 
+def clean_slot(d: str) -> str:
+    """A description going into '<Subject n> is the {details} shown in ...': without the prompt words a VLM (or an old
+    saved description) repeats around it, which would come out twice."""
+    t = str(d or "").strip()
+    for _ in range(3):
+        t = re.sub(r"^(<Subject \d>\s*)?(is\s+)?(the|a|an)\s+", "", t, flags=re.I).strip()
+        t = re.sub(r"\s*\bshown in(\s+<Picture \d>)?[\s.]*$", "", t, flags=re.I).strip()
+        t = re.sub(r"\s+is(\s+(the|a|an))?[\s.]*$", "", t, flags=re.I).strip()
+    return t
+
+
 def tidy_details(text: str, cfg: dict) -> str:
     """Normalise every description preset. In particular, remove labels the VLM adds despite the prompt and keep
     automatic descriptions inside the size promised by the selected preset. The short phrase also has to fit inside
@@ -1788,10 +1799,12 @@ def tidy_details(text: str, cfg: dict) -> str:
         t = t.splitlines()[0] if t.splitlines() else ""
     t = " ".join(t.split()).strip().strip('"\'').strip()
     if preset == "short":
-        for art in ("the ", "a ", "an "):
-            if t.lower().startswith(art):
-                t = t[len(art):]
-                break
+        # the VLM sometimes repeats the prompt sentence around its answer ("is the ... shown in <Picture 1>", "... is
+        # the shown in"): those words are already in the prompt, so they would come out twice
+        for _ in range(3):
+            t = re.sub(r"^(<Subject \d>\s*)?(is\s+)?(the|a|an)\s+", "", t, flags=re.I).strip()
+            t = re.sub(r"\s*\bshown in(\s+<Picture \d>)?[\s.]*$", "", t, flags=re.I).strip()
+            t = re.sub(r"\s+is(\s+(the|a|an))?[\s.]*$", "", t, flags=re.I).strip()
         t = t.rstrip(" .").strip('"\'').rstrip(" .")
     limit = _DESCRIBE_WORD_LIMITS.get(preset, 180)
     words = t.split()
@@ -2476,7 +2489,7 @@ def fill_details_now(text: str, vlm, refs: list, tag: str = "") -> str:
             values.append((marker, d))
         for marker, value in values:
             if value:
-                text = text.replace(marker, value)
+                text = text.replace(marker, clean_slot(value))
         return text
     d = ""
     if vlm is not None and refs:
@@ -2491,7 +2504,7 @@ def fill_details_now(text: str, vlm, refs: list, tag: str = "") -> str:
         print(f"{tag}: {{details}} has no description: press 📝 Describe refs in the planner or connect a VLM "
               "(planner or this node)", flush=True)
         d = "character"
-    return text.replace("{details}", d)
+    return text.replace("{details}", clean_slot(d))
 
 
 def _to_u8(x: torch.Tensor) -> torch.Tensor:
@@ -2925,13 +2938,13 @@ class BFSShotPlanner:
                 d1 = saved.get("details") or generated.get("details") or ("character" if vlm is not None else "")
                 d2 = saved.get("details2") or generated.get("details2") or ("the second character" if vlm is not None else "")
                 if d1:
-                    text = text.replace("{details}", d1)
+                    text = text.replace("{details}", clean_slot(d1))
                 if d2:
-                    text = text.replace("{details2}", d2)
+                    text = text.replace("{details2}", clean_slot(d2))
                 return text
             d = (saved.get("legacy") or " and ".join(x for x in (saved.get("details"), saved.get("details2")) if x)
                  if isinstance(saved, dict) else saved) or auto_details.get(k, "")
-            return text.replace("{details}", d) if d else text
+            return text.replace("{details}", clean_slot(d)) if d else text
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
         vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in todo} if use_vlm else {}
