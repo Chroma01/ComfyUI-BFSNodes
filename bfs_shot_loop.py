@@ -4039,12 +4039,14 @@ class BFSShotJoin:
                              "a crop or a generation mask (Mask only / Crop + mask) show the selected mask over the "
                              "original column; Colored Mark uses its selected colors, other masks use red. Crop boxes "
                              "are yellow."}),
-                         "keep_colors": ("BOOLEAN", {"default": True, "tooltip": "Shot by shot / queue loop with "
-                             "continuity: shots that continue from the previous one come out a bit more saturated, and "
-                             "that adds up over a long take. On: the new subject's colours (chroma) of every continuing "
-                             "shot are matched to the first shot of the take before it is stored, so they stay the same "
-                             "from shot to shot (the background and the lightness are not touched; a camera cut or a "
-                             "shot without continuity starts a new take)."}),
+                         "keep_colors": ("BOOLEAN", {"default": False, "tooltip": "Shot by shot / queue loop with "
+                             "continuity: shots that continue from the previous one can drift in colour over a long take. "
+                             "On: the new subject's colours (chroma) of every continuing shot are matched to the first "
+                             "shot of the take before it is stored (the background and the lightness are not touched; a "
+                             "camera cut or a shot without continuity starts a new take). Off by default: the match is one "
+                             "shift for the whole shot, so with continuity 'head' (whose first frames already continue the "
+                             "previous shot) it shows as a colour jump at every seam. Turn it on only for a long take "
+                             "whose colours visibly drift."}),
                          "keep_colors_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
                              "tooltip": "How much of that correction is applied (1 = fully to the first shot)."}),
                          "save_to": (SAVE_TO, {"default": SAVE_TO[0], "tooltip": "images: output the video as IMAGE "
@@ -4074,7 +4076,7 @@ class BFSShotJoin:
              seamless_edges=None, paste_new_outline=None, keep_colors=None, keep_colors_strength=None, save_to=None,
              filename_prefix=None, mp4_crf=None, dynprompt=None, unique_id=None, prompt=None, extra_pnginfo=None):
         tl = timeline[0] if timeline else None
-        self._keep_colors = (bool(keep_colors[0]) if keep_colors else True,
+        self._keep_colors = (bool(keep_colors[0]) if keep_colors else False,
                              float(keep_colors_strength[0]) if keep_colors_strength else 1.0)
         # the MP4s the join writes carry the workflow like Save Video's (drag one back into ComfyUI)
         self._file_meta = dict((extra_pnginfo[0] if extra_pnginfo and extra_pnginfo[0] else None) or {})
@@ -4217,7 +4219,7 @@ class BFSShotJoin:
     def _anchor_colors(self, img: torch.Tensor, shot: dict, rid: str) -> torch.Tensor:
         """Keep colours: the first shot of a take records its subject's colours; every shot that continues from the one
         before is matched to them before it is stored (see anchor_colors)."""
-        on, strength = getattr(self, "_keep_colors", (True, 1.0))
+        on, strength = getattr(self, "_keep_colors", (False, 1.0))
         src = shot.get("full_frames") if shot.get("full_frames") is not None else shot.get("frames")
         if not on or src is None:
             return img
