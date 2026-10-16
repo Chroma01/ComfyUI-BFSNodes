@@ -112,6 +112,12 @@ try:
 except Exception as _e:  # noqa
     print(f"[BFSNodes] LoRA Surgery node not loaded: {_e!r}")
     LSURG_NODE_CLASS_MAPPINGS, LSURG_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
+    from .bfs_video_compare import NODE_CLASS_MAPPINGS as VCMP_NODE_CLASS_MAPPINGS
+    from .bfs_video_compare import NODE_DISPLAY_NAME_MAPPINGS as VCMP_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] Video Compare node not loaded: {_e!r}")
+    VCMP_NODE_CLASS_MAPPINGS, VCMP_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 
 NODE_CLASS_MAPPINGS = {
     **H3GUIDE_NODE_CLASS_MAPPINGS,
@@ -139,6 +145,7 @@ NODE_CLASS_MAPPINGS = {
     **EPF_NODE_CLASS_MAPPINGS,
     **HSMS_NODE_CLASS_MAPPINGS,
     **LSURG_NODE_CLASS_MAPPINGS,
+    **VCMP_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -167,6 +174,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **EPF_NODE_DISPLAY_NAME_MAPPINGS,
     **HSMS_NODE_DISPLAY_NAME_MAPPINGS,
     **LSURG_NODE_DISPLAY_NAME_MAPPINGS,
+    **VCMP_NODE_DISPLAY_NAME_MAPPINGS,
 }
 
 WEB_DIRECTORY = "./web/js"

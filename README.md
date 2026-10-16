@@ -140,7 +140,8 @@ workflow once per shot, and join the results back with the original timing and s
 - **BFS Shot Unpack** — guide frames, references, prompt and length of one shot, for any model.
 - **BFS Shot H3 Conditioning** — MiniMax H3 conditioning for one shot with the native nodes
   (aligned guide and/or native reference video).
-- **BFS Shot Join** — concatenates, trims to the true lengths, cross-fades soft joins, returns audio.
+- **BFS Shot Join** — concatenates, trims to the true lengths, cross-fades soft joins, returns audio. With `comparison` on, its `guide` output is the original video frame for frame.
+- **BFS Video Compare** — one player for two videos (Join's `guide` and `images`): wipe ↔ / ↕, overlay or side by side, any of guide / target / difference on top, plus a per-pixel difference map and the difference per frame (click to jump).
 
 **Cast (1.49.0)**: *Find people* tracks faces through the video (InsightFace) and groups them
 into people. Link each person to a reference and every shot uses the reference of the person

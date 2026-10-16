@@ -4065,8 +4065,14 @@ class BFSShotJoin:
         }
 
     INPUT_IS_LIST = True
-    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "IMAGE", "STRING")
-    RETURN_NAMES = ("images", "audio", "fps", "comparison", "video_path")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "IMAGE", "STRING", "IMAGE")
+    RETURN_NAMES = ("images", "audio", "fps", "comparison", "video_path", "guide")
+    OUTPUT_TOOLTIPS = (
+        "The joined video.", "Its soundtrack.", "Its frame rate.",
+        "original | references | result, side by side (needs 'comparison').",
+        "The MP4 written in 'mp4 file' mode (empty otherwise).",
+        "The original frames under each output frame, same length and timing as 'images', at comparison_height "
+        "(needs 'comparison'): connect it with 'images' to BFS Video Compare.")
     FUNCTION = "join"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
@@ -4116,7 +4122,7 @@ class BFSShotJoin:
             if isinstance(out, dict):   # recursive run, not the last shot: the graph for the next one
                 return out
             if len(out) == 3 and not isinstance(out[0], torch.Tensor):   # queue loop, not the last shot
-                return out + (out[0], out[0])
+                return out + (out[0],) * (len(self.RETURN_TYPES) - 3)
         else:
             if len(images) != len(shots):
                 raise ValueError(f"BFS Shot Join: got {len(images)} image batches for {len(shots)} shots. "
@@ -4124,30 +4130,39 @@ class BFSShotJoin:
             out = self._assemble(list(shots), lambda j: images[j], crossfade, audio, tl, self._to_file, lab)
         return self._outputs(out)
 
+    def _guide_blocker(self):
+        from comfy_execution.graph_utils import ExecutionBlocker
+        return ExecutionBlocker("BFS Shot Join: the 'guide' output needs 'comparison' turned on (for a shot-by-shot "
+                                "run, before the shots are generated: the originals are kept with each shot)")
+
     def _outputs(self, out):
         video, a, fps, comp = out
         if self._to_file:
-            path, comp_path = self._files
+            path, comp_path, guide_path = self._files
             print(f"[BFS Shot Join] video written to {path}" + (f", comparison to {comp_path}" if comp_path else ""),
                   flush=True)
             # the outputs still carry the video (and the comparison), read back from the files at a size that fits the
             # free RAM, so the nodes after the join always show the result; the files keep the full quality
             budget = 0.35 * _ram_available()
+            sh_v, sh_c, sh_g = (0.5, 0.3, 0.2) if guide_path else (0.6 if comp_path else 1.0, 0.4, 0.0)
             try:
-                video, sv = _read_video(path, budget * (0.6 if comp_path else 1.0))
-                comp, sc = _read_video(comp_path, budget * 0.4) if comp_path else (video[:1], 1.0)
+                video, sv = _read_video(path, budget * sh_v)
+                comp, sc = _read_video(comp_path, budget * sh_c) if comp_path else (video[:1], 1.0)
+                guide = _read_video(guide_path, budget * sh_g)[0] if guide_path else self._guide_blocker()
             except Exception as e:  # noqa: BLE001 - the files are written; only the preview failed
                 from comfy_execution.graph_utils import ExecutionBlocker
                 print(f"[BFS Shot Join] outputs not filled ({e}): see the files", flush=True)
                 blocker = ExecutionBlocker(None)
-                return (blocker, a, fps, blocker, path)
+                return (blocker, a, fps, blocker, path, blocker)
             if sv < 1 or (comp_path and sc < 1):
                 print(f"[BFS Shot Join] outputs at {sv * 100:.0f}% size" + (f" (comparison {sc * 100:.0f}%)" if comp_path else "")
                       + " to fit the free RAM; the MP4 files keep the full size", flush=True)
             files = [{"filename": os.path.basename(p_), "subfolder": os.path.relpath(os.path.dirname(p_), _output_root()),
                       "type": "output"} for p_ in (path, comp_path) if p_]
-            return {"ui": {"images": files, "animated": (True,)}, "result": (video, a, fps, comp, path)}
-        return (video, a, fps, comp if comp is not None else video[:1], "")
+            return {"ui": {"images": files, "animated": (True,)}, "result": (video, a, fps, comp, path, guide)}
+        guide = getattr(self, "_guide", None)
+        return (video, a, fps, comp if comp is not None else video[:1], "",
+                guide if guide is not None else self._guide_blocker())
 
     def _join_queue(self, images, shots, crossfade, audio, tl=None):
         from comfy_execution.graph_utils import ExecutionBlocker
@@ -4381,10 +4396,13 @@ class BFSShotJoin:
         vw = cw = None
         comp_size = None
         comp_parts, parts = [], []
+        gw = gw_size = None
+        self._guide = None
         if to_file:
             vw = _Mp4Writer(to_file["path"], W, H, fps, a, int(to_file.get("crf", 17)), getattr(self, "_file_meta", None))
             if want:
                 cw_path = to_file["path"][:-4] + "_comparison.mp4"
+                gw_path = to_file["path"][:-4] + "_guide.mp4"
         pos, k, prev_tail = 0, 0, None
         try:
             for j, g in pieces:
@@ -4438,6 +4456,14 @@ class BFSShotJoin:
                             cw.write(chunk)
                         comp_size = comparison_video(body, [part], label, comp_h, comp_mask, first_k=k - (j is not None),
                                                      count=count, sink=sink, canvas=comp_size)
+
+                        def gsink(chunk):   # the guide: the same originals, alone, at the comparison's column size
+                            nonlocal gw
+                            if gw is None:
+                                gw = _Mp4Writer(gw_path, chunk.shape[2], chunk.shape[1], fps, None,
+                                                int(to_file.get("crf", 17)))
+                            gw.write(chunk)
+                        gw_size = guide_video(body, [part], comp_h, sink=gsink, size=gw_size)
                 else:
                     video[pos:pos + L] = body
                     parts.append(part)
@@ -4445,17 +4471,19 @@ class BFSShotJoin:
                 del body
             path = vw.close() if vw else None
             comp_path = cw.close() if cw else None
+            guide_path = gw.close() if gw else None
         except BaseException:
-            for w_ in (vw, cw):
+            for w_ in (vw, cw, gw):
                 if w_:
                     w_.abort()
             raise
         if to_file:
-            self._files = (path, comp_path)
+            self._files = (path, comp_path, guide_path)
             return None, a, fps, None
         comp = None
         if want:
             comp = comparison_video(video, parts, label, comp_h, comp_mask)
+            self._guide = guide_video(video, parts, comp_h)
         return video, a, fps, comp
 
 
@@ -4883,6 +4911,31 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
             del o, res, buf
         i += L
     return (H16, W16) if sink else out
+
+
+def guide_video(video, parts: list, height: int = 480, sink=None, size: tuple[int, int] | None = None):
+    """The original frames each output frame replaced (the comparison's original column, without its marks): the guide
+    to compare with the result frame by frame. `height` px like the comparison (0 = full size, never above the result).
+    With sink, streamed 16 frames at a time at `size` and returns the size; otherwise returns [N, H, W, 3]."""
+    vH, vW = video.shape[1:3]
+    s = min(1.0, height / vH) if height and height > 0 else 1.0
+    H, W = size or (max(16, int(vH * s) // 2 * 2), max(16, int(vW * s) // 2 * 2))
+    out = None if sink else torch.empty((sum(L for _, L, _ in parts), H, W, 3))
+    pos = 0
+    for _, L, orig in parts:
+        for a in range(0, L, 16):
+            n = min(16, L - a)
+            if orig is not None and orig.shape[0]:
+                o = orig[torch.clamp(torch.arange(a, a + n), max=orig.shape[0] - 1)][..., :3]
+                o = _scale_batch(o.float() / 255.0 if o.dtype == torch.uint8 else o.float(), H, W)
+            else:
+                o = torch.full((n, H, W, 3), 0.1)
+            if sink:
+                sink(o)
+            else:
+                out[pos + a:pos + a + n] = o
+        pos += L
+    return (H, W) if sink else out
 
 
 class BFSShotSeed:

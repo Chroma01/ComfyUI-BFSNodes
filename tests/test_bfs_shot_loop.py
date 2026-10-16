@@ -170,7 +170,7 @@ class JoinTest(unittest.TestCase):
         shots = [_shot(0, 0, 20, count=2, queue=True, run_id="t1"), _shot(1, 20, 45, cut=True, count=2, queue=True, run_id="t1")]
         first = join.join([self._frames(22, 0.1)], [shots[0]], [0])
         self.assertIsInstance(first[0], _Blocker)
-        video, _, _, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
+        video, _, _, _, _, _ = join.join([self._frames(39, 0.9)], [shots[1]], [0])
         self.assertEqual(video.shape[0], 45)
         self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
 
@@ -282,15 +282,19 @@ class ComparisonTest(unittest.TestCase):
                  dict(_shot(1, 20, 40, cut=True, gen=22), frames=torch.zeros(22, 32, 48, 3), ref=None, ref2=None,
                       prompt="")]
         imgs = [torch.full((22, 32, 48, 3), 0.5), torch.full((22, 32, 48, 3), 0.7)]
-        video, _, _, comp, _ = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True], label=["steps 20"])
+        video, _, _, comp, _, guide = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True], label=["steps 20"])
         self.assertEqual(video.shape[0], 40)
+        self.assertEqual(tuple(guide.shape), (40, 32, 48, 3))                   # the originals, frame for frame
+        self.assertEqual(float(guide.abs().max()), 0.0)
         self.assertEqual(comp.shape[0], 40)
         self.assertEqual(comp.shape[2] % 16, 0)
         self.assertEqual(comp.shape[1] % 16, 0)
         self.assertGreaterEqual(comp.shape[2], 48 * 2 + 32)
         self.assertGreater(comp.shape[1], 32)
-        off = SL.BFSShotJoin().join(imgs, shots, [0])[3]
-        self.assertEqual(off.shape[0], 1)
+        off = SL.BFSShotJoin().join(imgs, shots, [0])
+        self.assertEqual(off[3].shape[0], 1)
+        self.assertIsInstance(off[5], _Blocker)                                 # no comparison: no originals kept
+        self.assertIn("comparison", off[5].message)
 
 
 class ContinuityTest(unittest.TestCase):
@@ -1160,6 +1164,7 @@ class JoinRamGuardTest(unittest.TestCase):
         self.assertTrue(os.path.exists(res[4]) and os.path.exists(res[4][:-4] + "_comparison.mp4"))
         self.assertEqual(res[0].shape[0], 45)                                   # never an empty output node
         self.assertTrue(res[0].shape[1] < 32 and res[3].shape[0] == 45)          # scaled down to the (tiny) free RAM
+        self.assertTrue(os.path.exists(res[4][:-4] + "_guide.mp4") and res[5].shape[0] == 45)
         normal = SL.BFSShotJoin().join(imgs, shots, [0])  # enough RAM: images as before
         self.assertEqual((normal[0].shape[0], normal[4]), (45, ""))
 
@@ -1185,6 +1190,10 @@ class StoredComparisonTest(unittest.TestCase):
         self.assertEqual(comp.shape[0], 45)
         # the original column (left) shows the source, not the dark filler of a missing original
         self.assertGreater(float(comp[:, comp.shape[1] // 2, 5:60].mean()), 0.2)
+        guide = out[5]                                                           # the stored originals, aligned
+        self.assertEqual(guide.shape[0], 45)
+        self.assertAlmostEqual(float(guide[:20].mean()), float(src[0][:20].mean()), delta=0.03)
+        self.assertAlmostEqual(float(guide[20:].mean()), float(src[1][:25].mean()), delta=0.03)
 
 
 class ColorAnchorTest(unittest.TestCase):
