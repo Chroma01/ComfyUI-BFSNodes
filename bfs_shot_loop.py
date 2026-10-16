@@ -31,6 +31,15 @@ import torch
 
 import folder_paths
 
+try:
+    from . import bfs_video_io as VIO
+except ImportError:   # loaded as a plain module (the tests): the file next to this one
+    import importlib.util as _ilu
+    _vio = _ilu.spec_from_file_location("bfs_video_io", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                     "bfs_video_io.py"))
+    VIO = _ilu.module_from_spec(_vio)
+    _vio.loader.exec_module(VIO)
+
 # ---------------------------------------------------------------------------- frame grids
 
 GRIDS: dict[str, tuple[int, int]] = {
@@ -248,14 +257,14 @@ def _read_audio(path: str, sample_rate: int = 44100) -> dict | None:
 
 def _read_audio_ffmpeg(path: str, sample_rate: int = 44100) -> dict | None:
     try:
-        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+        probe = subprocess.run([VIO.ffprobe_bin() or "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
                                 "stream=channels", "-of", "csv=p=0", path],
                                capture_output=True, text=True, timeout=60)
         ch = int((probe.stdout.strip() or "0").split(",")[0] or 0)
         if ch <= 0:
             return None
         ch = min(ch, 2)
-        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", str(ch), "-ar", str(sample_rate),
+        raw = subprocess.run([VIO.ffmpeg_bin() or "ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", str(ch), "-ar", str(sample_rate),
                               "-f", "f32le", "-"], capture_output=True, timeout=600).stdout
         if not raw:
             return None
@@ -2613,7 +2622,7 @@ def _write_rgb_video(path: str, frames: torch.Tensor, fps: float = 24.0, storage
     data = frames.contiguous().numpy()
     for c in (codec, SHOT_STORAGE["lossless"]) if codec is not SHOT_STORAGE["lossless"] else (codec,):
         try:
-            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+            r = subprocess.run([VIO.ffmpeg_bin() or "ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
                                 "-r", f"{fps:g}", "-i", "-", *c, path], input=memoryview(data), capture_output=True)
             if r.returncode == 0 and os.path.getsize(path) > 0:
                 return True
@@ -2625,7 +2634,7 @@ def _write_rgb_video(path: str, frames: torch.Tensor, fps: float = 24.0, storage
 
 
 def _read_rgb_video(path: str, n: int, h: int, w: int) -> torch.Tensor:
-    r = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    r = subprocess.run([VIO.ffmpeg_bin() or "ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                        capture_output=True, check=True)
     k = len(r.stdout) // (h * w * 3)
     if k < n:
@@ -4573,25 +4582,7 @@ def _output_root() -> str:
 
 def _read_video(path: str, budget: float) -> tuple[torch.Tensor, float]:
     """A video file as IMAGE, scaled down (never up) so it takes at most `budget` bytes; streamed into one tensor."""
-    info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
-                                      "stream=width,height,nb_read_packets", "-of", "json", path],
-                                     capture_output=True, check=True).stdout)["streams"][0]
-    w, h, n = int(info["width"]), int(info["height"]), int(info["nb_read_packets"])
-    s = min(1.0, math.sqrt(max(budget, 1.0) / max(1, n * h * w * 3 * 4)))
-    W, H = max(16, int(w * s) // 2 * 2), max(16, int(h * s) // 2 * 2)
-    out = torch.empty((n, H, W, 3), dtype=torch.float32)
-    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-vf", f"scale={W}:{H}:flags=area", "-f", "rawvideo",
-                             "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
-    fb, i = W * H * 3, 0
-    while i < n:
-        raw = proc.stdout.read(fb * 16)
-        if not raw:
-            break
-        k = len(raw) // fb
-        out[i:i + k] = torch.frombuffer(bytearray(raw[:k * fb]), dtype=torch.uint8).view(k, H, W, 3).float() / 255.0
-        i += k
-    proc.stdout.close(); proc.wait()
-    return out[:max(1, i)], s
+    return VIO.read_video_scaled(path, budget)
 
 
 def _join_bytes(frames: int, h: int, w: int, comparison: bool, comp_h: int) -> int:
@@ -4651,66 +4642,13 @@ def _fit_canvas(x: torch.Tensor, h: int, w: int) -> torch.Tensor:
     return out
 
 
-class _Mp4Writer:
-    """Frames streamed to ffmpeg (H.264, yuv420p, even size), with the soundtrack muxed in the same pass."""
+class _Mp4Writer(VIO.Mp4Writer):
+    """Frames streamed to an MP4 (H.264, yuv420p, even size), with the soundtrack muxed in the same pass: ffmpeg when
+    there is one, else PyAV (Windows portable installs often have no ffmpeg program)."""
 
     def __init__(self, path: str, w: int, h: int, fps: float, audio: dict | None, crf: int = 17,
                  metadata: dict | None = None):
-        import tempfile
-        import wave
-        self.path, self.wav, self.meta = path, None, None
-        inputs = ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:g}", "-i", "-"]
-        maps, outs = ["-map", "0:v"], []
-        if _usable(audio):
-            fd, self.wav = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-            wf = audio["waveform"][0].clamp(-1, 1)
-            with wave.open(self.wav, "wb") as f:
-                f.setnchannels(int(wf.shape[0]))
-                f.setsampwidth(2)
-                f.setframerate(int(audio["sample_rate"]))
-                f.writeframes((wf.t().contiguous() * 32767).round().short().numpy().tobytes())
-            inputs += ["-i", self.wav]
-            maps += ["-map", "1:a"]
-            outs += ["-c:a", "aac", "-b:a", "192k"]
-        if metadata:   # the same tags Save Video writes (prompt, workflow...), JSON, through an ffmetadata file
-            fd, self.meta = tempfile.mkstemp(suffix=".txt")
-            esc = lambda v: re.sub(r"([=;#\\\n])", r"\\\1", v)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(";FFMETADATA1\n")
-                for k, v in metadata.items():
-                    f.write(f"{esc(str(k))}={esc(v if isinstance(v, str) else json.dumps(v))}\n")
-            maps += ["-map_metadata", str(inputs.count("-i"))]
-            inputs += ["-f", "ffmetadata", "-i", self.meta]
-        cmd = ["ffmpeg", "-v", "error", "-y", *inputs, *maps, *outs,
-               "-c:v", "libx264", "-preset", "medium", "-crf", str(int(crf)), "-pix_fmt", "yuv420p",
-               "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-movflags", "+use_metadata_tags+faststart", path]
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    def write(self, frames: torch.Tensor) -> None:
-        self.proc.stdin.write((frames[..., :3].clamp(0, 1) * 255).round().to(torch.uint8).contiguous().numpy().tobytes())
-
-    def close(self) -> str:
-        self.proc.stdin.close()
-        err = self.proc.stderr.read().decode(errors="replace")
-        self.proc.wait()
-        self._cleanup()
-        if self.proc.returncode != 0:
-            raise RuntimeError(f"BFS Shot Join: ffmpeg could not write {self.path}: {err.strip()[-400:]}")
-        return self.path
-
-    def abort(self) -> None:
-        try:
-            self.proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
-        self._cleanup()
-
-    def _cleanup(self) -> None:
-        for f in (self.wav, self.meta):
-            if f and os.path.exists(f):
-                os.remove(f)
+        super().__init__(path, w, h, fps, audio if _usable(audio) else None, crf, metadata, who="BFS Shot Join")
 
 
 def _font(size: int):

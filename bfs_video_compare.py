@@ -7,13 +7,21 @@ gets three temporary MP4s (guide, target, difference) and the per-frame differen
 """
 import math
 import os
-import subprocess
 import uuid
 
 import torch
 import torch.nn.functional as F
 
 import folder_paths
+
+try:
+    from . import bfs_video_io as VIO
+except ImportError:   # loaded as a plain module (the tests): the file next to this one
+    import importlib.util as _ilu
+    _vio = _ilu.spec_from_file_location("bfs_video_io", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                     "bfs_video_io.py"))
+    VIO = _ilu.module_from_spec(_vio)
+    _vio.loader.exec_module(VIO)
 
 CHUNK = 16
 
@@ -41,46 +49,6 @@ def difference(guide: torch.Tensor, target: torch.Tensor, gain: float = 4.0):
 
 def psnr(mse: float) -> float:
     return float("inf") if mse <= 0 else 10 * math.log10(1.0 / mse)
-
-
-class _Mp4:
-    """Frames piped to ffmpeg as H.264 yuv420p (what every browser plays), optionally with a soundtrack."""
-
-    def __init__(self, path: str, w: int, h: int, fps: float, audio: dict | None = None, crf: int = 14):
-        import tempfile
-        import wave
-        self.wav = None
-        inputs = ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:g}", "-i", "-"]
-        maps, outs = ["-map", "0:v"], []
-        if audio and isinstance(audio.get("waveform"), torch.Tensor) and audio["waveform"].numel():
-            fd, self.wav = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-            wf = audio["waveform"][0].clamp(-1, 1)
-            with wave.open(self.wav, "wb") as f:
-                f.setnchannels(int(wf.shape[0]))
-                f.setsampwidth(2)
-                f.setframerate(int(audio["sample_rate"]))
-                f.writeframes((wf.t().contiguous() * 32767).round().short().numpy().tobytes())
-            inputs += ["-i", self.wav]
-            maps += ["-map", "1:a"]
-            outs += ["-c:a", "aac", "-b:a", "160k", "-shortest"]
-        cmd = ["ffmpeg", "-v", "error", "-y", *inputs, *maps, *outs, "-c:v", "libx264", "-preset", "fast",
-               "-crf", str(crf), "-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-               "-movflags", "+faststart", path]
-        self.path = path
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    def write(self, frames: torch.Tensor) -> None:
-        self.proc.stdin.write((frames[..., :3].clamp(0, 1) * 255).round().to(torch.uint8).contiguous().numpy().tobytes())
-
-    def close(self) -> None:
-        self.proc.stdin.close()
-        err = self.proc.stderr.read().decode(errors="replace")
-        self.proc.wait()
-        if self.wav and os.path.exists(self.wav):
-            os.remove(self.wav)
-        if self.proc.returncode != 0:
-            raise RuntimeError(f"BFS Video Compare: ffmpeg could not write {self.path}: {err.strip()[-400:]}")
 
 
 class BFSVideoCompare:
@@ -138,8 +106,8 @@ class BFSVideoCompare:
         out_dir = os.path.join(folder_paths.get_temp_directory(), "bfs_compare", uuid.uuid4().hex[:12])
         os.makedirs(out_dir, exist_ok=True)
         names = {"guide": "guide.mp4", "target": "target.mp4", "difference": "difference.mp4"}
-        writers = {k: _Mp4(os.path.join(out_dir, f), PW, PH, float(fps), audio if k == "target" else None)
-                   for k, f in names.items()}
+        writers = {k: VIO.Mp4Writer(os.path.join(out_dir, f), PW, PH, float(fps), audio if k == "target" else None,
+                                    crf=14, who="BFS Video Compare") for k, f in names.items()}
         maps, mae, mse = [], [], []
         try:
             for a in range(0, n, CHUNK):

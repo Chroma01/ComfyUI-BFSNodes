@@ -1138,6 +1138,23 @@ class ShotStoreTest(unittest.TestCase):
         self.assertEqual(n, 45)
 
 
+class JoinWithoutFfmpegTest(unittest.TestCase):
+    def test_mp4_mode_works_without_the_ffmpeg_program(self):
+        # issue #12: Windows portable, no ffmpeg on PATH, long video -> the RAM guard picks the mp4 mode
+        d = tempfile.mkdtemp(dir=_TMP)
+        imgs = [torch.full((22, 32, 32, 3), 0.2), torch.full((39, 32, 32, 3), 0.8)]
+        shots = [_shot(0, 0, 20, gen=22), _shot(1, 20, 45, cut=True, gen=39)]
+        audio = {"waveform": torch.zeros(1, 2, 48000 * 3), "sample_rate": 48000}
+        with patch.dict(SL.VIO._BIN, {"ffmpeg": None, "ffprobe": None}), \
+                patch.object(SL, "_ram_available", lambda: 1000), \
+                patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
+            out = SL.BFSShotJoin().join(imgs, shots, [0], audio=[audio], comparison=[True])
+        res = out["result"]
+        self.assertTrue(os.path.getsize(res[4]) > 0 and os.path.exists(res[4][:-4] + "_comparison.mp4"))
+        self.assertEqual((res[0].shape[0], res[3].shape[0], res[5].shape[0]), (45, 45, 45))
+        self.assertAlmostEqual(float(res[0][30].mean()), 0.8, delta=0.05)
+
+
 class JoinFileMetadataTest(unittest.TestCase):
     def test_mp4_carries_prompt_and_workflow(self):
         import json, subprocess

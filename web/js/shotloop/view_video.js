@@ -81,6 +81,8 @@ export function videoTab(c) {
       h("button", { class: "pri", disabled: !plan.video || !!busy.value, onClick: () => c.autoSplit(true) }, "✂ Auto split"),
       h("button", { disabled: !plan.video, onClick: c.analyze }, "↻ Re-analyse"),
       detectorUsed.value ? hint(`detector: ${detectorUsed.value}`) : null,
+      c.allSegCount.value > c.segs.value.length ? hint(`Max shots = ${plan.max_parts}: ${c.allSegCount.value - c.segs.value.length} `
+        + `more shot(s) on the timeline are left out. Set Max shots to 0 to use them all.`, "color:#f0b429") : null,
       hint("Auto split replaces the boundaries; per-shot settings stay with the shot at the same position."),
     ]),
   ], { sub: "camera cuts or fixed length, on the model's frame grid" });

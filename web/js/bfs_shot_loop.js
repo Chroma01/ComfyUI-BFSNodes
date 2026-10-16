@@ -132,6 +132,13 @@ function Panel(io) {
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
   });
+  // shots on the timeline before "Max shots" keeps the first ones: more than segs means some are left out
+  const allSegCount = computed(() => {
+    if (!n.value) return 0;
+    const { lo, hi } = range.value;
+    const b = [lo, ...plan.bounds.filter(x => x > lo && x < hi), hi].sort((a, c) => a - c);
+    return b.reduce((k, x, i) => k + (i && x > b[i - 1] ? 1 : 0), 0);
+  });
   const whoIn = s => segPeople.value[segKey(s)] || null;
   const castOf = id => plan.cast[String(id)] || {};
   const included = id => !!personOf(id) && !castOf(id).ignore;
@@ -569,6 +576,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const { lo, hi } = range.value; f = Math.round(f);
     if (f <= lo || f >= hi || plan.bounds.includes(f)) return;
     const i = segs.value.findIndex(s => f > s.start && f < s.end);
+    // a split you make by hand always shows: "Max shots" (e.g. 1 in a one-shot workflow) only limits detected shots
+    if (plan.max_parts > 0 && allSegCount.value >= plan.max_parts) plan.max_parts = allSegCount.value + 1;
     plan.bounds = [...plan.bounds, f].sort((a, c) => a - c);
     plan.segs.splice(i + 1, 0, { ...(plan.segs[i] || {}) });
     sel.value = i + 1; save();
@@ -728,7 +737,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
-    n, range, setRange, maxLen, segs, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour, memory, vram, refreshVram, cache, cacheOf, redo, combine,
+    n, range, setRange, maxLen, segs, allSegCount, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour, memory, vram, refreshVram, cache, cacheOf, redo, combine,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, included, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,

@@ -66,5 +66,42 @@ class CompareNodeTest(unittest.TestCase):
             self.assertEqual(n, 18, k)
 
 
+class NoFfmpegTest(unittest.TestCase):
+    """Windows portable installs often have no ffmpeg program: everything must go through PyAV."""
+
+    def setUp(self):
+        self._saved = dict(VC.VIO._BIN)
+        VC.VIO._BIN.update(ffmpeg=None, ffprobe=None)
+
+    def tearDown(self):
+        VC.VIO._BIN.clear()
+        VC.VIO._BIN.update(self._saved)
+
+    def test_writer_and_reader_work_without_ffmpeg(self):
+        import av
+        path = os.path.join(_TMP, "noffmpeg.mp4")
+        w = VC.VIO.Mp4Writer(path, 33, 21, 24.0, {"waveform": torch.zeros(1, 2, 48000), "sample_rate": 48000},
+                             metadata={"prompt": {"1": 2}})
+        yy, xx = torch.meshgrid(torch.linspace(0, 1, 21), torch.linspace(0, 1, 33), indexing="ij")
+        x = torch.stack([torch.stack([xx, yy, (xx + yy + t / 30) % 1], -1) for t in range(30)])   # smooth, like video
+        w.write(x[:16])
+        w.write(x[16:])
+        w.close()
+        with av.open(path) as c:
+            self.assertEqual(len(c.streams.audio), 1)
+            self.assertEqual((c.streams.video[0].codec_context.width, c.streams.video[0].codec_context.height), (34, 22))
+            self.assertEqual(c.metadata.get("prompt"), '{"1": 2}')
+        frames, s = VC.VIO.read_video_scaled(path, 1e9)
+        self.assertEqual((tuple(frames.shape), s), ((30, 22, 34, 3), 1.0))
+        self.assertLess(float((frames[:, :21, :33] - x).abs().mean()), 0.05)   # lossy, but the same pictures
+        small, s = VC.VIO.read_video_scaled(path, 30 * 22 * 34 * 3 * 4 / 4)   # a quarter of the bytes
+        self.assertLess(small.shape[1], 22)
+
+    def test_compare_node_without_ffmpeg(self):
+        out = VC.BFSVideoCompare().compare(torch.rand(10, 32, 48, 3), torch.rand(10, 32, 48, 3), preview_height=32)
+        ui = out["ui"]["bfs_compare"][0]
+        self.assertTrue(os.path.getsize(os.path.join(_TMP, ui["guide"]["subfolder"], ui["guide"]["filename"])) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
