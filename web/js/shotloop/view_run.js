@@ -30,6 +30,10 @@ function loopSection(c) {
         ["free", "Free memory: unload models (low VRAM)"]], v => c.setPlan("between_shots", v))) : null,
       fld("Skipped shots in the output", select(plan.skip_fill, [["original", "Keep original video"], ["drop", "Remove them"]], v => c.setPlan("skip_fill", v))),
     ]),
+    h("div", { class: "row", style: "margin-top:6px" }, [
+      check(plan.unload_before_join !== false, v => c.setPlan("unload_before_join", v), "Unload models before the join",
+        "Once every shot is rendered, unload the models so the join (and the nodes after it) get the VRAM and RAM. Turn it off if a model runs again after BFS Shot Join (e.g. an upscale pass on the joined video): it would load again."),
+    ]),
     plan.run !== "auto" ? h("div", { style: "margin-top:8px" }, [
       h("div", { class: "row", style: "margin-bottom:4px" }, [h("b", plan.run === "queue" ? "Queue loop" : "Shot by shot"), h("span", { class: "grow" }),
         hint(`${prog.done}/${prog.count || active.value.length} shots done`)]),

@@ -374,7 +374,7 @@ export const DEFAULTS = {
   max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", global_color_guide_ref1: "#00ff00", global_color_guide_ref2: "#9b30ff", mask_video: "",
   megapixels: 0.5, multiple: 32, generation_size_mode: "megapixels", custom_width: 1024, custom_height: 1024,
   second_pass: { enabled: false, mode: "scale", scale: 2, width: 1280, height: 704, megapixels: 1, align: 32 },
-  detector: "adaptive", run: "recursive", between_shots: "keep", shot_cache: "output", shot_storage: "lossless", auto_continue: true,
+  detector: "adaptive", run: "recursive", between_shots: "keep", shot_cache: "output", shot_storage: "lossless", unload_before_join: true, auto_continue: true,
   skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },

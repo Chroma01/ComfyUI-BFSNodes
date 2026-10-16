@@ -457,7 +457,7 @@ DEFAULT_PLAN = {
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
-    "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless",
+    "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless", "unload_before_join": True,
 }
 
 
@@ -2339,9 +2339,11 @@ def shot_history(shot: dict):
     return hist, hsrc
 
 
-def _release_between_shots(free: bool = False) -> None:
+def _release_between_shots(free: bool = False, when: str = "between shots") -> None:
     """Between two stored shots: drop what the stored shot no longer needs. free (plan 'Between shots = free memory',
-    for low VRAM): also unload every model, so the next shot starts from an empty GPU (they load again, slower)."""
+    for low VRAM): also unload every model, so the next shot starts from an empty GPU (they load again, slower).
+    Also called before the join (plan 'Unload models before the join'): every shot is rendered, the models are no
+    longer needed and the join gets their VRAM and RAM."""
     import gc
     try:
         import comfy.model_management as mm
@@ -2350,7 +2352,7 @@ def _release_between_shots(free: bool = False) -> None:
         gc.collect()
         mm.soft_empty_cache()
         if free:
-            print("[BFS Shot Join] between shots: models unloaded and memory freed", flush=True)
+            print(f"[BFS Shot Join] {when}: models unloaded and memory freed", flush=True)
     except Exception:
         gc.collect()
 
@@ -2900,6 +2902,7 @@ class BFSShotPlanner:
         todo = list(range(len(segs)))
         sigs: list[str] = []
         st: dict = {}
+        assemble_only = False   # every shot stored and up to date: nothing is generated, the join only assembles
         if queue:
             extra = {"ref": _tensor_sig(ref_image), "ref2": _tensor_sig(ref_image_2), "prompt": prompt or "",
                      "mask": _tensor_sig(mask) if mask is not None else "", "size": [W, H]}
@@ -2915,9 +2918,12 @@ class BFSShotPlanner:
                 print(f"[BFS Shot Planner] shot cache: {len(segs) - len(pending)}/{len(segs)} shots stored and up to "
                       f"date, {len(pending)} to run (next: shot {pending[0] + 1})", flush=True)
             else:
-                print(f"[BFS Shot Planner] shot cache: every shot is stored; shot {len(segs)} runs again so the join "
-                      f"outputs the video (the panel's Combine assembles the stored shots without generating)", flush=True)
+                assemble_only = True
+                print(f"[BFS Shot Planner] shot cache: every shot is stored and up to date: nothing to generate, "
+                      f"BFS Shot Join assembles the stored shots", flush=True)
             todo = pending[:1] if pending else [len(segs) - 1]
+        # assemble only: the one shot handed out is a placeholder the join does not render (no VLM, SAM 3 or history)
+        work = [] if assemble_only else todo
         cache_imgs: dict[str, torch.Tensor] = {}
 
         def ref_for(name, default):
@@ -2987,10 +2993,10 @@ class BFSShotPlanner:
             return text.replace("{details}", clean_slot(d)) if d else text
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
-        vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in todo} if use_vlm else {}
+        vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in work} if use_vlm else {}
         written = {}
         if vlm is not None and vcfg.get("write_prompt"):   # the VLM writes the prompt of every shot without its own
-            for i in todo:
+            for i in work:
                 if not segs[i]["prompt"]:
                     written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"],
                                                   [ref_for(segs[i]["ref"], g_ref), ref_for(segs[i]["ref2"], g_ref2)],
@@ -2998,7 +3004,7 @@ class BFSShotPlanner:
         # {details} with no edited description: described now, before any SAM 3 work (switching between SAM 3 and the
         # VLM mid-generation breaks the VLM: that is why the button worked and the run did not), once per reference set
         if vlm is not None:
-            for i in todo:
+            for i in work:
                 text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
                 rn, r2n = segs[i]["ref"] or g_names["ref"], segs[i]["ref2"] or g_names["ref2"]
                 separate = bool(r2n) or "{details2}" in text
@@ -3023,7 +3029,7 @@ class BFSShotPlanner:
         # VLM describes it (written for the prompt's {target} sentence with fit_prompt)
         auto_target = {}
         if vlm is not None:
-            need = [i for i in todo if not segs[i].get("target")
+            need = [i for i in work if not segs[i].get("target")
                     and "{target}" in (segs[i]["prompt"] or written.get(i) or g_prompt or "")]
             crops = {}
             for i in need:
@@ -3071,7 +3077,9 @@ class BFSShotPlanner:
                     s["mask"] = dict(s["mask"], text=sug["segment"])
             crop, full_frames, mask_src = None, None, None
             sspec = plan_spec(p, s.get("mask"), path)
-            if not s.get("crop") and spec_has_mask(sspec):
+            if assemble_only:
+                pass
+            elif not s.get("crop") and spec_has_mask(sspec):
                 # mask without crop: segmented only if the conditioning asks for it (inpaint "only the mask")
                 mask_src = {"path": path, "analysis": a, "start": g0, "length": glen, "spec": sspec}
             if s.get("crop"):
@@ -3097,8 +3105,8 @@ class BFSShotPlanner:
                     crop["crop_mask"] = torch.nn.functional.interpolate(
                         r["masks"][:, None, by0:by1, bx0:bx1].float(), size=(chh, cw), mode="nearest")[:, 0]
             hist, hist_src = (history_for(path, a, src, s, i, prev_len, queue, rid, W, H, crop, ft)
-                              if s["chain"] == "history" and i > 0 else (None, None))
-            head_px = head_for(i, head, prev_len, queue, rid, W, H, crop, ft) if head else None
+                              if s["chain"] == "history" and i > 0 and not assemble_only else (None, None))
+            head_px = head_for(i, head, prev_len, queue, rid, W, H, crop, ft) if head and not assemble_only else None
             template = (s["prompt"] or written.get(i) or g_prompt or "").replace(
                 "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else "")
             rname, r2name = s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"]
@@ -3131,6 +3139,7 @@ class BFSShotPlanner:
                 "audio": _slice_audio(audio, g0 / fps, glen / fps),
                 "run_id": rid, "queue": queue, "run_mode": p.get("run"),
                 "between_shots": p.get("between_shots") or "keep", "grid": p["grid"],
+                "unload_before_join": bool(p.get("unload_before_join", True)), "assemble_only": assemble_only,
                 "sig": sigs[i] if sigs else "", "prev_gen": (st.get("gen") or {}).get(str(i - 1), "") if sigs else "",
                 "shot_storage": p.get("shot_storage") or "lossless",
                 "chain": s["chain"], "chain_frame": s["chain_frame"], "chain_image": chain_img,
@@ -3156,7 +3165,8 @@ class BFSShotPlanner:
             torch.save(timeline, os.path.join(run_dir(rid), "timeline.pt"))
         skipped = [(i, s.get("skip_reason") or ("disabled" if not s["enabled"] else "skip")) for i, s in enumerate(all_segs) if not s["run"]]
         lines = [f"{len(segs)} shots, {total} frames ({total / fps:.2f}s) at {fps:g} fps, {W}x{H}"
-                 + (f" | queue loop: running shot {shots[0]['index'] + 1}/{len(segs)}" if queue else "")]
+                 + (" | every shot stored: assembling only" if assemble_only else
+                    f" | queue loop: running shot {shots[0]['index'] + 1}/{len(segs)}" if queue else "")]
         for i, why in skipped:
             lines.append(f"skip shot {i + 1} (frames {all_segs[i]['start']}-{all_segs[i]['end'] - 1}): {why}")
         for i, g in sorted(vlm_out.items()):
@@ -4045,7 +4055,8 @@ class BFSShotJoin:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE", {"tooltip": "Decoded frames of every shot (the list from VAE Decode)."}),
+                "images": ("IMAGE", {"lazy": True, "tooltip": "Decoded frames of every shot (the list from VAE Decode). "
+                                     "Not requested when every shot is already stored: nothing is generated again."}),
                 "shots": ("BFS_SHOT", {"tooltip": "The shots list from BFS Shot Planner."}),
                 "crossfade": ("INT", {"default": 4, "min": 0, "max": 24, "tooltip":
                     "Frames to blend across boundaries that are not camera cuts, using the overlap each "
@@ -4122,7 +4133,14 @@ class BFSShotJoin:
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
 
-    def join(self, images, shots, crossfade, audio=None, timeline=None, comparison=None, label=None,
+    def check_lazy_status(self, images=None, shots=None, **kwargs):
+        """Shot by shot / queue loop with every shot stored and up to date: the join assembles them from disk, so the
+        decoded images (and the sampler behind them) are not requested."""
+        if shots and shots[0].get("assemble_only"):
+            return []
+        return ["images"]
+
+    def join(self, images=None, shots=None, crossfade=None, audio=None, timeline=None, comparison=None, label=None,
              comparison_height=None, comparison_mask=None, edge_hardness=None, match_colors=None, match_region=None,
              seamless_edges=None, paste_new_outline=None, keep_colors=None, keep_colors_strength=None, save_to=None,
              filename_prefix=None, mp4_crf=None, dynprompt=None, unique_id=None, prompt=None, extra_pnginfo=None):
@@ -4151,6 +4169,15 @@ class BFSShotJoin:
         self._want = want
         lab = (label[0] if label else "") or ""
         self._parts = []   # (shot or None, frames in the output, original frames) per piece, for the comparison
+        if shots and shots[0].get("assemble_only"):   # nothing was generated: the video from the stored shots
+            shot = shots[0]
+            d = run_dir(shot["run_id"])
+            print(f"[BFS Shot Join] every shot is stored and up to date: assembling {shot['count']} shot(s) "
+                  "without generating", flush=True)
+            metas = [load_shot(d, i, frames=False)[1] for i in range(shot["count"])]
+            self._run_dir, self._label = d, lab
+            return self._outputs(self._assemble(metas, lambda j: load_shot(d, int(metas[j]["index"]))[0], crossfade,
+                                                audio, tl, self._to_file, lab))
         images = [crop_panel(img, sh) for img, sh in zip(images, shots)]
         outline = bool(paste_new_outline[0]) if paste_new_outline else True
         images = [uncrop(img, sh, **fin) if sh.get("crop") and sh.get("full_frames") is not None
@@ -4172,6 +4199,8 @@ class BFSShotJoin:
             if len(images) != len(shots):
                 raise ValueError(f"BFS Shot Join: got {len(images)} image batches for {len(shots)} shots. "
                                  "Connect the decoded images of the same shot list.")
+            if shots and shots[0].get("unload_before_join", True):
+                _release_between_shots(True, "before the join")
             out = self._assemble(list(shots), lambda j: images[j], crossfade, audio, tl, self._to_file, lab)
         return self._outputs(out)
 
@@ -4270,7 +4299,7 @@ class BFSShotJoin:
             return (blocker, blocker, blocker)
         # the whole video from the stored shots, one shot in memory at a time
         del images, shots, img
-        _release_between_shots(False)
+        _release_between_shots(bool(shot.get("unload_before_join", True)), "before the join")
         metas = [load_shot(d, i, frames=False)[1] for i in range(shot["count"])]
         self._run_dir = d
         return self._assemble(metas, lambda j: load_shot(d, int(metas[j]["index"]))[0], crossfade, audio, tl,

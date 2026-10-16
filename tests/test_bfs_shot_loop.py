@@ -174,6 +174,19 @@ class JoinTest(unittest.TestCase):
         self.assertEqual(video.shape[0], 45)
         self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
 
+    def test_run_again_with_every_shot_stored_generates_nothing(self):
+        join = SL.BFSShotJoin()
+        shots = [_shot(0, 0, 20, count=2, queue=True, run_id="t2"), _shot(1, 20, 45, cut=True, count=2, queue=True, run_id="t2")]
+        join.join([self._frames(22, 0.1)], [shots[0]], [0])
+        join.join([self._frames(39, 0.9)], [shots[1]], [0])
+        again = dict(shots[1], assemble_only=True)       # what the planner hands out when nothing is left to run
+        self.assertEqual(join.check_lazy_status(images=None, shots=[again]), [])     # the sampler is not pulled
+        self.assertEqual(join.check_lazy_status(images=None, shots=[shots[1]]), ["images"])
+        video = SL.BFSShotJoin().join(shots=[again], crossfade=[0])[0]
+        self.assertEqual(video.shape[0], 45)
+        self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
+        self.assertAlmostEqual(float(video[-1, 0, 0, 0]), 0.9, places=2)
+
 
 class FilterTest(unittest.TestCase):
     STATS = {"persons": 1, "person_area": 0.2, "person_frames": 6, "faces": 1, "brightness": 0.4, "motion": 0.02, "sampled": 6}
