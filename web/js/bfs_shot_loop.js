@@ -15,7 +15,6 @@ import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBefor
 import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
 // history lengths H3's VAE encodes whole (17k+5); old plans saved 17/34/51, read as the next valid one up
-const DEFAULT_RANGE_S = 15;   // a plan that never set its range works on the first 15 s (bfs_shot_loop.DEFAULT_RANGE_S)
 const historyLen = n => (n = Number(n) || 22) <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
 import { timelineCard } from "./shotloop/view_timeline.js";
 import { videoTab } from "./shotloop/view_video.js";
@@ -104,11 +103,7 @@ function Panel(io) {
     const N = n.value; if (!N) return { lo: 0, hi: 0 };
     // frames (older plans saved seconds)
     const a = plan.start_f != null ? +plan.start_f : Math.round((+plan.start_s || 0) * plan.fps);
-    let b = plan.end_f != null ? +plan.end_f : (+plan.end_s > 0 ? Math.round(+plan.end_s * plan.fps) : 0);
-    // never set: the first 15 s (as the server reads it), so a long video is never run whole by surprise;
-    // "whole video" stores end 0 explicitly
-    if (plan.start_f == null && plan.end_f == null && !+plan.start_s && !+plan.end_s && !+plan.max_total_s)
-      b = a + Math.max(1, Math.round(DEFAULT_RANGE_S * plan.fps));
+    const b = plan.end_f != null ? +plan.end_f : (+plan.end_s > 0 ? Math.round(+plan.end_s * plan.fps) : 0);
     const lo = Math.max(0, Math.min(N - 1, a));
     let hi = b > 0 ? Math.max(lo + 1, Math.min(N, b)) : N;
     if (+plan.max_total_s > 0) hi = Math.min(hi, lo + Math.max(1, Math.round(+plan.max_total_s * plan.fps)));
@@ -571,7 +566,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       // do not surprise them with a wall of detected shots on first load.
       plan.mode = "single";
       plan.start_f = 0;
-      plan.end_f = Math.round(DEFAULT_RANGE_S * plan.fps);
+      plan.end_f = Math.round(15 * plan.fps);
       plan.start_s = 0; plan.end_s = 0; plan.max_total_s = 0;
       tab.value = "video";
     }

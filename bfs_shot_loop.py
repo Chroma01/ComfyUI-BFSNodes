@@ -388,22 +388,12 @@ def detect_cuts(score: list[float], raw: list[float], sensitivity: float, fps: f
 
 # ---------------------------------------------------------------------------- planning
 
-# a plan that never set its range works on the first seconds only, never the whole video by surprise: a long video
-# run by a workflow nobody adjusted would generate every shot of it. The whole video is an explicit end frame 0.
-DEFAULT_RANGE_S = 15.0
-
-
 def plan_range(n: int, fps: float, start_s: float = 0.0, end_s: float = 0.0, max_total_s: float = 0.0,
                start_f: int | None = None, end_f: int | None = None) -> tuple[int, int]:
     """The part of the video the plan works on, in timeline frames [lo, hi): start / end frame (end 0 = the end of the
-    video; older plans give seconds), then 'max total seconds' counted from the start. Nothing set at all: the first
-    DEFAULT_RANGE_S seconds."""
-    unset = (start_f is None and end_f is None and not float(start_s or 0) and not float(end_s or 0)
-             and not float(max_total_s or 0))
+    video; older plans give seconds), then 'max total seconds' counted from the start."""
     a = int(start_f) if start_f is not None else int(round(float(start_s or 0) * fps))
     b = int(end_f) if end_f is not None else (int(round(float(end_s) * fps)) if end_s and float(end_s) > 0 else 0)
-    if unset:
-        b = a + max(1, int(round(DEFAULT_RANGE_S * fps)))
     lo = max(0, min(n - 1, a))
     hi = n if b <= 0 else max(lo + 1, min(n, b))
     if max_total_s and float(max_total_s) > 0:
