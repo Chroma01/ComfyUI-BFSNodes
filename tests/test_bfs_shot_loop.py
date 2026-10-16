@@ -1138,6 +1138,27 @@ class ShotStoreTest(unittest.TestCase):
         self.assertEqual(n, 45)
 
 
+class SecondPassSizeTest(unittest.TestCase):
+    def _upscaler(self, w, h, mode, val, align=32):
+        # Minimax H3 Latent Upscaler (3D), from a latent of w/16 x h/16 cells
+        if mode == "scale": tw, th = w * val, h * val
+        elif mode == "dims": tw, th = val
+        else:
+            th = (val * 1024 * 1024 / (w / h)) ** 0.5; tw = th * (w / h)
+        tw, th = round(tw / align) * align, round(th / align) * align
+        return int(round(tw / 16) * 16), int(round(th / 16) * 16)
+
+    def test_matches_the_latent_upscaler(self):
+        for w, h in ((832, 480), (480, 832), (1024, 576), (704, 704)):
+            self.assertEqual(SL.second_pass_size(w, h, {"mode": "scale", "scale": 2.0}), self._upscaler(w, h, "scale", 2.0))
+            self.assertEqual(SL.second_pass_size(w, h, {"mode": "scale", "scale": 1.5, "align": 64}),
+                             self._upscaler(w, h, "scale", 1.5, 64))
+            self.assertEqual(SL.second_pass_size(w, h, {"mode": "megapixels", "megapixels": 1.0}),
+                             self._upscaler(w, h, "mega", 1.0))
+        self.assertEqual(SL.second_pass_size(832, 480, {"mode": "dims", "width": 1280, "height": 704}), (1280, 704))
+        self.assertEqual(SL.second_pass_size(832, 480, None), (1664, 960))     # defaults: x2, align 32
+
+
 class JoinWithoutFfmpegTest(unittest.TestCase):
     def test_mp4_mode_works_without_the_ffmpeg_program(self):
         # issue #12: Windows portable, no ffmpeg on PATH, long video -> the RAM guard picks the mp4 mode

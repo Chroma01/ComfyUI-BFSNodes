@@ -373,6 +373,7 @@ export const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
   max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", global_color_guide_ref1: "#00ff00", global_color_guide_ref2: "#9b30ff", mask_video: "",
   megapixels: 0.5, multiple: 32, generation_size_mode: "megapixels", custom_width: 1024, custom_height: 1024,
+  second_pass: { enabled: false, mode: "scale", scale: 2, width: 1280, height: 704, megapixels: 1, align: 32 },
   detector: "adaptive", run: "recursive", between_shots: "keep", shot_cache: "output", shot_storage: "lossless", auto_continue: true,
   skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
@@ -456,4 +457,16 @@ export const section = (title, body, { sub = "", right = null, open = null, cls 
   const isOpen = key in OPEN ? OPEN[key] : !!open;
   return h("details", { class: ["sec", cls], open: isOpen, onToggle: e => { OPEN[key] = e.target.open; } },
     [h("summary", { class: "sech" }, [h("span", { class: "caret" }, "▸"), ...head]), ...[body].flat()]);
+};
+
+// second pass size, the same arithmetic as bfs_shot_loop.second_pass_size (and Minimax H3 Latent Upscaler (3D)):
+// target pixels, rounded to `align`, then to whole 16 px latent cells
+export const secondPassSize = (w, h, sp) => {
+  if (!w || !h) return { w: 0, h: 0 };
+  let tw, th;
+  if (sp.mode === "dims") { tw = +sp.width; th = +sp.height; }
+  else if (sp.mode === "megapixels") { const px = +sp.megapixels * 1024 * 1024; th = Math.sqrt(px / (w / h)); tw = th * (w / h); }
+  else { tw = w * +sp.scale; th = h * +sp.scale; }
+  const al = Math.max(1, Math.round(+sp.align || 1)), r = x => Math.round(x / al) * al, c16 = x => Math.max(16, Math.round(x / 16) * 16);
+  return { w: c16(r(tw)), h: c16(r(th)) };
 };

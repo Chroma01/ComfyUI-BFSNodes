@@ -1,5 +1,5 @@
 // ▶ Run tab: checks before running and how the loop runs (auto / queue).
-import { h, fld, check, section, pill, hint, select } from "./common.js";
+import { h, fld, check, section, pill, hint, select, DEFAULTS, secondPassSize } from "./common.js";
 
 function checksSection(c) {
   const { checks, tab } = c;
@@ -109,6 +109,32 @@ function cacheSection(c) {
   ], { sub: ok.length ? `${done}/${ok.length} stored` : "nothing stored yet" });
 }
 
+// The planner only works out the second pass size; the graph upscales the latent (e.g. Minimax H3 Latent Upscaler
+// (3D), target dimensions) and samples it again, reading the planner's second_pass / upscale_width / upscale_height
+function secondPassSection(c) {
+  const { plan, size } = c;
+  const sp = { ...DEFAULTS.second_pass, ...(plan.second_pass || {}) };
+  const set = (k, v) => c.setPlan("second_pass", { ...sp, [k]: v });
+  const num = (k, step, min, max) => h("input", { type: "number", step, min, max, value: sp[k],
+    onChange: e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) set(k, v); } });
+  const out = secondPassSize(size.w, size.h, sp);
+  return section("Second pass (upscale)", [
+    h("div", { class: "row" }, [check(sp.enabled, v => set("enabled", v), "Enable the second pass")]),
+    h("div", { class: "grid", style: sp.enabled ? "" : "opacity:.55" }, [
+      fld("Size", select(sp.mode, [["scale", "Scale by multiplier"], ["dims", "Target dimensions"], ["megapixels", "Megapixels"]], v => set("mode", v))),
+      sp.mode === "scale" ? fld("Multiplier", num("scale", 0.05, 1, 4)) : null,
+      sp.mode === "dims" ? fld("Width", num("width", 8, 64, 8192)) : null,
+      sp.mode === "dims" ? fld("Height", num("height", 8, 64, 8192)) : null,
+      sp.mode === "megapixels" ? fld("Megapixels", num("megapixels", 0.1, 0.1, 16)) : null,
+      fld("Align (px)", num("align", 1, 1, 512), "32 recommended"),
+      fld("Result", size.w ? `${size.w}×${size.h} → ${out.w}×${out.h}` : "—"),
+    ]),
+    hint("The planner outputs second_pass (on/off), upscale_width and upscale_height. Upscale the denoised latent of each shot "
+      + "to that size (e.g. Minimax H3 Latent Upscaler (3D) in target dimensions mode) and sample it again before decoding; "
+      + "use second_pass to switch that branch.", "display:block;margin-top:6px"),
+  ], { sub: sp.enabled ? `on · ${out.w}×${out.h}` : "off" });
+}
+
 export function runTab(c) {
-  return h("div", { class: "card" }, [checksSection(c), memorySection(c), loopSection(c), cacheSection(c)]);
+  return h("div", { class: "card" }, [checksSection(c), memorySection(c), loopSection(c), secondPassSection(c), cacheSection(c)]);
 }

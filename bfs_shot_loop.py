@@ -466,6 +466,32 @@ DEFAULT_PLAN = {
 STORED_RUNS = ("queue", "recursive")
 
 
+# Second pass (upscale): the planner only works out the size; the graph does the upscale and the second sampling
+# (e.g. Minimax H3 Latent Upscaler (3D) in "target dimensions" mode, then a sampler on the upscaled latent).
+SECOND_PASS_DEFAULTS = {"enabled": False, "mode": "scale", "scale": 2.0, "width": 1280, "height": 704,
+                        "megapixels": 1.0, "align": 32}
+VAE_DOWNSAMPLE = 16
+
+
+def second_pass_size(w: int, h: int, sp: dict | None) -> tuple[int, int]:
+    """The upscaled size of a w x h generation, computed like Minimax H3 Latent Upscaler (3D): target pixels by
+    multiplier, target dimensions or megapixels (keeping the aspect), rounded to `align`, then to whole latent cells."""
+    c = {**SECOND_PASS_DEFAULTS, **(sp or {})}
+    mode = c["mode"]
+    if mode == "dims":
+        tw, th = float(c["width"]), float(c["height"])
+    elif mode == "megapixels":
+        px = float(c["megapixels"]) * 1024 * 1024
+        th = (px / (w / h)) ** 0.5
+        tw = th * (w / h)
+    else:
+        tw, th = w * float(c["scale"]), h * float(c["scale"])
+    al = max(1, int(c["align"]))
+    tw, th = round(tw / al) * al, round(th / al) * al
+    d = VAE_DOWNSAMPLE
+    return max(d, int(round(tw / d) * d)), max(d, int(round(th / d) * d))
+
+
 def _load_plan(plan_json: str) -> dict:
     try:
         p = json.loads(plan_json or "{}")
@@ -2810,9 +2836,11 @@ class BFSShotPlanner:
             },
         }
 
-    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline", "ref_image", "ref_image_2")
-    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False, True, True)
+    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE", "IMAGE", "IMAGE",
+                    "BOOLEAN", "INT", "INT")
+    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline", "ref_image", "ref_image_2",
+                    "second_pass", "upscale_width", "upscale_height")
+    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False, True, True, False, False, False)
     OUTPUT_TOOLTIPS = (
         "One item per shot. Every node that receives this list runs once per shot; connect it to "
         "BFS Shot Unpack or BFS Shot H3 Conditioning, sample, decode, then BFS Shot Join.",
@@ -2822,7 +2850,10 @@ class BFSShotPlanner:
         "Every shot in order, including the ones that do not run (disabled or filtered out). Connect it "
         "to BFS Shot Join so skipped shots are filled with the original video (or dropped).",
         "The references the shots use, without repeats: one image when every shot shares the same reference.",
-        "The second references the shots use, without repeats.")
+        "The second references the shots use, without repeats.",
+        "Run tab > Second pass: on or off. Use it to switch the upscale branch (latent upscale + second sampler).",
+        "Second pass width (the generation width upscaled as set in the Run tab, on the latent grid).",
+        "Second pass height.")
     FUNCTION = "plan_shots"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Split a long video into model-sized shots (at camera cuts, fixed length, or by hand), "
@@ -3136,7 +3167,12 @@ class BFSShotPlanner:
                          f"{s['gen_length']}{', the first ' + str(s['head']) + ' = previous end' if s.get('head') else ''})"
                          f"{' cut' if s['cut_before'] else ''}"
                          f"{' ref' if s['ref'] is not None else ''}{' ref2' if s['ref2'] is not None else ''}")
-        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline, used_refs, used_refs2)
+        sp = {**SECOND_PASS_DEFAULTS, **(p.get("second_pass") or {})}
+        UW, UH = second_pass_size(W, H, sp)
+        if sp["enabled"]:
+            lines.insert(1, f"second pass: {W}x{H} -> {UW}x{UH}")
+        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline, used_refs, used_refs2,
+                bool(sp["enabled"]), UW, UH)
 
 
 class BFSShotUnpack:
