@@ -4,9 +4,14 @@
  * Wipe (drag the divider), overlay (drag to fade) or side by side, with any of guide / target / difference on top
  * or below. The strip under the scrubber is the difference per frame, measured by the node on the real frames:
  * click it to jump to a frame. The node sends three temporary MP4s and that list when it runs.
+ *
+ * ⬇ save plays the video once from the start and downloads it as shown (same layout, divider, labels); ● rec records
+ * whatever you do in the player (dragging the divider, pausing, scrubbing) until ■ stop. Both draw the two videos into
+ * a canvas in the browser and encode it there (MP4 where the browser can, otherwise WebM), in real time.
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { wheelToCanvas } from "./bfs_wheel.js";
 
 const SOURCES = ["guide", "target", "difference"];
 const MODES = [["wipe", "wipe ↔"], ["wipe-v", "wipe ↕"], ["overlay", "overlay"], ["side", "side by side"]];
@@ -19,12 +24,13 @@ function styles() {
 .bfsvc{display:flex;flex-direction:column;gap:6px;height:100%;box-sizing:border-box;padding:6px;
   font:12px/1.4 var(--font-family,system-ui,sans-serif);color:var(--descrip-text,#c9c9cf);
   background:var(--comfy-input-bg,#1b1b1f);border-radius:8px}
-.bfsvc .stage{position:relative;flex:1;min-height:160px;background:#0e0e11;border-radius:6px;overflow:hidden;
+.bfsvc .stage{position:relative;flex:1 1 0;min-height:160px;background:#0e0e11;border-radius:6px;overflow:hidden;
   cursor:ew-resize;touch-action:none;user-select:none}
-.bfsvc .stage.v{cursor:ns-resize}.bfsvc .stage.o{cursor:col-resize}.bfsvc .stage.s{cursor:default;display:grid;
-  grid-template-columns:1fr 1fr;gap:4px}
+.bfsvc .stage.v{cursor:ns-resize}.bfsvc .stage.o{cursor:col-resize}.bfsvc .stage.s{cursor:default}
 .bfsvc video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
-.bfsvc .stage.s video{position:relative}
+.bfsvc .stage.s video{width:calc(50% - 2px)}.bfsvc .stage.s video.r{left:auto;right:0}
+.bfsvc .refs{position:absolute;right:6px;bottom:6px;height:24%;display:flex;gap:4px;pointer-events:none}
+.bfsvc .refs img{height:100%;border-radius:4px;box-shadow:0 0 0 1px #000a;background:#000}
 .bfsvc .line{position:absolute;background:#fff;box-shadow:0 0 0 1px #0008;pointer-events:none}
 .bfsvc .tag{position:absolute;top:6px;padding:1px 7px;border-radius:4px;background:#000a;color:#fff;font-size:11px;
   pointer-events:none}
@@ -32,6 +38,9 @@ function styles() {
 .bfsvc select,.bfsvc button{background:#131317;border:1px solid #34343d;color:#e6e6ea;border-radius:4px;
   padding:2px 6px;font:inherit;cursor:pointer}
 .bfsvc button:hover,.bfsvc select:hover{border-color:#3a86ff}
+.bfsvc button.rec{border-color:#e0573a;color:#ff7a5c}
+.bfsvc button:disabled{opacity:.45;cursor:default}
+.bfsvc label{display:flex;gap:3px;align-items:center;cursor:pointer}
 .bfsvc input[type=range]{flex:1;accent-color:#3a86ff;min-width:80px}
 .bfsvc canvas{width:100%;height:26px;cursor:pointer;border-radius:3px;background:#131317;display:block}
 .bfsvc .info{font-family:ui-monospace,monospace;font-size:11px;white-space:nowrap}
@@ -55,14 +64,16 @@ function el(tag, attrs = {}, kids = []) {
 }
 
 function buildPlayer(host) {
-  const st = { data: null, top: "target", bottom: "guide", mode: "wipe", pos: 0.5, playing: false, muted: true, frame: 0 };
+  const st = { data: null, top: "target", bottom: "guide", mode: "wipe", pos: 0.5, playing: false, muted: true, frame: 0,
+    labels: true, refs: true };
   const vTop = el("video", { playsinline: "", preload: "auto", loop: "" });
   const vBot = el("video", { playsinline: "", preload: "auto", loop: "" });
   vTop.muted = vBot.muted = true;
   const line = el("div", { class: "line" });
   const tagTop = el("div", { class: "tag" }), tagBot = el("div", { class: "tag" });
   const empty = el("div", { class: "empty" }, "Run the node to load the guide and the target.");
-  const stage = el("div", { class: "stage", tabindex: "0" }, [vBot, vTop, line, tagTop, tagBot, empty]);
+  const refBox = el("div", { class: "refs" });
+  const stage = el("div", { class: "stage", tabindex: "0" }, [vBot, vTop, line, tagTop, tagBot, refBox, empty]);
   const sel = (opts, val, on) => {
     const s = el("select", {}, opts.map(([v, l]) => { const o = el("option", { value: v }, l); if (v === val) o.selected = true; return o; }));
     s.addEventListener("change", () => on(s.value));
@@ -83,6 +94,15 @@ function buildPlayer(host) {
   const btnNext = el("button", { title: "Next frame (→)", onclick: () => step(1) }, "|▶");
   const btnMute = el("button", { title: "Sound (from the target)", onclick: () => { st.muted = !st.muted; sound(); } }, "🔇");
   const btnFull = el("button", { title: "Full screen", onclick: () => (document.fullscreenElement ? document.exitFullscreen() : host.requestFullscreen?.())?.catch?.(() => {}) }, "⛶");
+  const btnSave = el("button", { title: "Play the video once from the start and download it as shown", onclick: () => saveFull() }, "⬇ save");
+  const btnRec = el("button", { title: "Record what you do in the player until stop, then download it", onclick: () => (rec.mr ? stopRec() : startRec()) }, "● rec");
+  const chkLabels = el("input", { type: "checkbox" });
+  chkLabels.checked = true;
+  chkLabels.addEventListener("change", () => { st.labels = chkLabels.checked; });
+  const chkRefs = el("input", { type: "checkbox" });
+  chkRefs.checked = true;
+  chkRefs.addEventListener("change", () => { st.refs = chkRefs.checked; refBox.style.display = st.refs ? "flex" : "none"; });
+  const lblRefs = el("label", { title: "Show the reference picture(s) in the corner (also in what save / rec download)", style: "display:none" }, [chkRefs, "ref"]);
   const scrub = el("input", { type: "range", min: "0", max: "0", value: "0", step: "1" });
   scrub.addEventListener("input", () => seek(+scrub.value));
   const info = el("span", { class: "info" }, "");
@@ -95,6 +115,7 @@ function buildPlayer(host) {
     el("div", { class: "row" }, [el("span", {}, "top"), selTop, btnSwap, el("span", {}, "bottom"), selBot, selMode, btnFull]),
     stage,
     el("div", { class: "row" }, [btnPrev, btnPlay, btnNext, scrub, btnMute, info]),
+    el("div", { class: "row" }, [btnSave, btnRec, el("label", { title: "Draw the names on the saved / recorded video" }, [chkLabels, "labels"]), lblRefs]),
     strip,
   ]));
 
@@ -118,6 +139,7 @@ function buildPlayer(host) {
     if (m === "wipe") line.style.cssText = `display:block;left:calc(${p * 100}% - 1px);top:0;bottom:0;width:2px`;
     if (m === "wipe-v") line.style.cssText = `display:block;top:calc(${p * 100}% - 1px);left:0;right:0;height:2px`;
     stage.prepend(vTop); stage.prepend(vBot);   // under the divider and tags; side by side: bottom left, top right
+    vTop.classList.toggle("r", m === "side");
     const name = s => s === "guide" ? (st.data?.labels?.[0] || "guide") : s === "target" ? (st.data?.labels?.[1] || "target") : "difference";
     tagTop.textContent = name(st.top) + (m === "overlay" ? ` ${Math.round(p * 100)}%` : "");
     tagBot.textContent = name(st.bottom);
@@ -175,12 +197,17 @@ function buildPlayer(host) {
     st.playing = !st.playing;
     btnPlay.textContent = st.playing ? "⏸" : "▶";
     if (st.playing) { vTop.currentTime = vBot.currentTime; for (const v of videos()) v.play().catch(() => {}); tick(); }
-    else for (const v of videos()) v.pause();
+    else for (const v of videos()) { v.pause(); v.playbackRate = 1; }
   }
 
   function tick() {   // the bottom video is the clock; the top one follows it within half a frame
     if (!st.playing) return;
-    if (Math.abs(vTop.currentTime - vBot.currentTime) > 0.5 / fps()) vTop.currentTime = vBot.currentTime;
+    // small drift: nudge the top one's speed (seeking it every frame kept it seeking, so it stuttered and drew blank)
+    const drift = vTop.currentTime - vBot.currentTime;
+    if (!vTop.seeking) {
+      if (Math.abs(drift) > 0.25) { vTop.currentTime = vBot.currentTime; vTop.playbackRate = 1; }
+      else vTop.playbackRate = Math.abs(drift) > 0.5 / fps() ? Math.min(1.05, Math.max(0.95, 1 - 2 * drift)) : 1;
+    }
     show(frameOf(vBot.currentTime));
     requestAnimationFrame(tick);
   }
@@ -200,8 +227,166 @@ function buildPlayer(host) {
     layout();
   }
 
+  // --- save / record: the two videos drawn into a canvas the way the stage shows them, encoded by MediaRecorder
+  const rec = { mr: null, chunks: [], raf: 0, t0: 0, full: false, onEnd: null, type: "" };
+
+  function pickType(audio) {   // name an audio codec only with a sound track: Firefox stalls on one it never gets
+    const list = audio ? ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+      : ["video/mp4;codecs=avc1.640028", "video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    return list.find(t => window.MediaRecorder?.isTypeSupported?.(t)) || "";
+  }
+
+  function fit(aw, ah, x, y, w, h) {   // the largest aw:ah box centred in (x, y, w, h)
+    const k = Math.min(w / aw, h / ah), bw = aw * k, bh = ah * k;
+    return [x + (w - bw) / 2, y + (h - bh) / 2, bw, bh];
+  }
+
+  function label(ctx, text, x, y, size, right = false, bottom = false) {
+    ctx.font = `${size}px system-ui,sans-serif`;
+    const pad = size * 0.45, w = ctx.measureText(text).width + 2 * pad, h = size * 1.5;
+    const lx = right ? x - w : x, ly = bottom ? y - h : y;
+    ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(lx, ly, w, h);
+    ctx.fillStyle = "#fff"; ctx.textBaseline = "middle"; ctx.fillText(text, lx + pad, ly + h / 2);
+  }
+
+  const last = new Map();   // video -> its last whole frame, drawn while it seeks (a seeking video draws blank)
+  function pic(v) {
+    if (v.readyState < 2 || v.seeking) return last.get(v) || v;
+    let c = last.get(v);
+    if (!c) last.set(v, c = el("canvas"));
+    if (c.width !== v.videoWidth || c.height !== v.videoHeight) { c.width = v.videoWidth; c.height = v.videoHeight; }
+    c.getContext("2d").drawImage(v, 0, 0);
+    return c;
+  }
+
+  function drawRefs(ctx) {   // bottom right, 24% of the height, as on the stage
+    const ims = st.refs ? [...refBox.querySelectorAll("img")].filter(i => i.complete && i.naturalWidth) : [];
+    const cw = ctx.canvas.width, ch = ctx.canvas.height, h = Math.round(ch * 0.24), gap = Math.max(2, Math.round(ch * 0.006));
+    let x = cw - gap;
+    for (const im of ims.reverse()) {
+      const w = Math.round(im.naturalWidth * h / im.naturalHeight);
+      x -= w;
+      ctx.fillStyle = "#000"; ctx.fillRect(x - 1, ch - gap - h - 1, w + 2, h + 2);
+      ctx.drawImage(im, x, ch - gap - h, w, h);
+      x -= gap;
+    }
+  }
+
+  function compose(ctx) {
+    drawVideos(ctx);
+    drawRefs(ctx);
+  }
+
+  function drawVideos(ctx) {
+    const cw = ctx.canvas.width, ch = ctx.canvas.height, m = st.mode, p = st.pos;
+    const B = pic(vBot), T = pic(vTop);
+    const aw = vBot.videoWidth || st.data.width, ah = vBot.videoHeight || st.data.height;
+    const name = s => s === "guide" ? (st.data?.labels?.[0] || "guide") : s === "target" ? (st.data?.labels?.[1] || "target") : "difference";
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cw, ch);
+    if (m === "side") {   // bottom left, top right, as on the stage
+      const gap = Math.round(cw * 0.004), half = (cw - gap) / 2;
+      const a = fit(aw, ah, 0, 0, half, ch), b = fit(aw, ah, half + gap, 0, half, ch);
+      ctx.drawImage(B, ...a); ctx.drawImage(T, ...b);
+      if (st.labels) {
+        const fs = Math.max(12, Math.round(a[3] * 0.032)), o = fs * 0.5;
+        label(ctx, name(st.bottom), a[0] + o, a[1] + o, fs); label(ctx, name(st.top), b[0] + o, b[1] + o, fs);
+      }
+      return;
+    }
+    const [x, y, w, h] = fit(aw, ah, 0, 0, cw, ch);
+    ctx.drawImage(B, x, y, w, h);
+    ctx.save();
+    if (m === "wipe" || m === "wipe-v") { ctx.beginPath(); m === "wipe" ? ctx.rect(x, y, w * p, h) : ctx.rect(x, y, w, h * p); ctx.clip(); }
+    if (m === "overlay") ctx.globalAlpha = p;
+    ctx.drawImage(T, x, y, w, h);
+    ctx.restore();
+    const lw = Math.max(2, Math.round(h / 360));
+    ctx.fillStyle = "#fff";
+    if (m === "wipe") ctx.fillRect(x + w * p - lw / 2, y, lw, h);
+    if (m === "wipe-v") ctx.fillRect(x, y + h * p - lw / 2, w, lw);
+    if (st.labels) {
+      const fs = Math.max(12, Math.round(h * 0.032)), o = fs * 0.5;
+      label(ctx, name(st.top) + (m === "overlay" ? ` ${Math.round(p * 100)}%` : ""), x + o, y + o, fs);
+      if (m === "wipe-v") label(ctx, name(st.bottom), x + o, y + h - o, fs, false, true);
+      else label(ctx, name(st.bottom), x + w - o, y + o, fs, true);
+    }
+  }
+
+  function download(blob, ext) {
+    const d = st.data, clean = s => String(s || "").replace(/[^\w.-]+/g, "_").slice(0, 40);
+    const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    const a = el("a", { href: URL.createObjectURL(blob), download: `bfs_compare_${clean(d?.labels?.[0])}_vs_${clean(d?.labels?.[1])}_${st.mode}_${stamp}.${ext}` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
+
+  function buttons() {
+    const busy = !!rec.mr;
+    btnRec.classList.toggle("rec", busy);
+    btnRec.textContent = busy ? (rec.full ? "■ stop" : `■ stop ${((performance.now() - rec.t0) / 1000).toFixed(0)}s`) : "● rec";
+    btnSave.disabled = busy;
+    btnSave.textContent = busy && rec.full ? `⬇ ${Math.round(100 * (vBot.currentTime / (vBot.duration || 1)))}%` : "⬇ save";
+  }
+
+  function startRec(full = false) {
+    if (!st.data || rec.mr) return false;
+    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) { alert("This browser can't record a canvas (MediaRecorder)."); return false; }
+    const aw = vBot.videoWidth || st.data.width, ah = vBot.videoHeight || st.data.height;
+    const side = st.mode === "side", canvas = el("canvas");
+    // the size of the layout it starts in (side by side is twice as wide); a later mode change is fitted into it
+    canvas.width = (side ? 2 * aw + Math.round(2 * aw * 0.004) : aw) & ~1; canvas.height = ah & ~1;
+    const ctx = canvas.getContext("2d");
+    compose(ctx);
+    const stream = canvas.captureStream(Math.max(30, Math.round(fps())));
+    // the soundtrack is on the target. Not Firefox's mozCaptureStream: it takes the element's picture away from the canvas
+    const vt = st.top === "target" ? vTop : st.bottom === "target" ? vBot : null;
+    try { for (const t of vt?.captureStream?.()?.getAudioTracks?.() || []) stream.addTrack(t); } catch { }
+    const type = pickType(stream.getAudioTracks().length > 0);
+    if (!type) { for (const t of stream.getTracks()) t.stop(); alert("This browser can't record MP4 or WebM."); return false; }
+    rec.type = type; rec.chunks = []; rec.full = full; rec.t0 = performance.now();
+    rec.mr = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 16e6 });
+    rec.mr.ondataavailable = e => { if (e.data?.size) rec.chunks.push(e.data); };
+    rec.mr.onstop = () => {
+      for (const t of stream.getTracks()) t.stop();
+      if (rec.chunks.length) download(new Blob(rec.chunks, { type: rec.type.split(";")[0] }), rec.type.includes("mp4") ? "mp4" : "webm");
+      rec.mr = null; rec.chunks = []; buttons();
+    };
+    rec.mr.start(1000);
+    const frame = () => { if (!rec.mr) return; compose(ctx); buttons(); rec.raf = requestAnimationFrame(frame); };
+    rec.raf = requestAnimationFrame(frame);
+    buttons();
+    return true;
+  }
+
+  function stopRec() {
+    if (!rec.mr) return;
+    cancelAnimationFrame(rec.raf);
+    if (rec.onEnd) { vBot.removeEventListener("ended", rec.onEnd); rec.onEnd = null; }
+    if (rec.full) { for (const v of videos()) v.loop = true; if (st.playing) toggle(); }
+    if (rec.mr.state !== "inactive") rec.mr.stop();
+  }
+
+  async function saveFull() {   // once from the first frame to the last, then stop and download
+    if (!st.data || rec.mr) return;
+    if (st.playing) toggle();
+    for (const v of videos()) v.loop = false;
+    const seeked = v => new Promise(res => { const t = setTimeout(res, 2000); v.addEventListener("seeked", () => { clearTimeout(t); res(); }, { once: true }); });
+    const wait = Promise.all(videos().map(seeked));
+    seek(0);
+    await wait;
+    if (!startRec(true)) { for (const v of videos()) v.loop = true; return; }
+    rec.onEnd = () => { rec.onEnd = null; stopRec(); };
+    vBot.addEventListener("ended", rec.onEnd, { once: true });
+    toggle();
+  }
+
   return {
     setData(d) {
+      stopRec();
+      last.clear();
+      refBox.replaceChildren(...(d.refs || []).map(f => el("img", { src: url(f), crossorigin: "anonymous" })));
+      lblRefs.style.display = d.refs?.length ? "flex" : "none";
+      refBox.style.display = st.refs ? "flex" : "none";
       st.data = d;
       empty.style.display = "none";
       scrub.max = String(Math.max(0, d.frames - 1));
@@ -223,6 +408,7 @@ app.registerExtension({
       styles();
       const host = el("div", { style: "width:100%;height:100%;min-height:320px" });
       this._bfsCompare = buildPlayer(host);
+      wheelToCanvas(host);   // the wheel zooms the canvas over the player too
       this.addDOMWidget("bfs_video_compare", "div", host, { serialize: false, hideOnZoom: false, getMinHeight: () => 320 });
       this.setSize([Math.max(this.size[0], 560), Math.max(this.size[1], 620)]);
       new ResizeObserver(() => this._bfsCompare?.drawStrip()).observe(host);

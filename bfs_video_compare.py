@@ -9,6 +9,7 @@ import math
 import os
 import uuid
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -51,6 +52,21 @@ def psnr(mse: float) -> float:
     return float("inf") if mse <= 0 else 10 * math.log10(1.0 / mse)
 
 
+def save_refs(reference, out_dir: str, height: int, limit: int = 4) -> list:
+    """Up to `limit` pictures of an IMAGE batch as PNGs no taller than the player (no upscale) -> file names."""
+    if reference is None:
+        return []
+    from PIL import Image
+    names = []
+    for i in range(min(limit, int(reference.shape[0]))):
+        im = Image.fromarray((reference[i, ..., :3].float().clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8))
+        if im.height > height:
+            im = im.resize((max(1, round(im.width * height / im.height)), height), Image.LANCZOS)
+        names.append(f"ref_{i}.png")
+        im.save(os.path.join(out_dir, names[-1]))
+    return names
+
+
 class BFSVideoCompare:
     @classmethod
     def INPUT_TYPES(cls):
@@ -72,6 +88,8 @@ class BFSVideoCompare:
                 "preview_height": ("INT", {"default": 720, "min": 0, "max": 4096, "step": 16, "tooltip":
                                            "Height of the player's videos (0 = the compared size). Only the preview: "
                                            "the difference is measured before it."}),
+                "reference": ("IMAGE", {"tooltip": "Optional reference picture(s) (e.g. the person swapped in), shown in a "
+                                        "corner of the player and in what ⬇ save / ● rec download. Up to 4 are shown."}),
                 "label_guide": ("STRING", {"default": "guide"}),
                 "label_target": ("STRING", {"default": "target"}),
             },
@@ -89,7 +107,7 @@ class BFSVideoCompare:
                    "where they differ, pixel by pixel.")
 
     def compare(self, guide, target, fps=24.0, audio=None, gain=2.0, size="guide", preview_height=720,
-                label_guide="guide", label_target="target"):
+                label_guide="guide", label_target="target", reference=None):
         notes = []
         n = min(guide.shape[0], target.shape[0])
         if guide.shape[0] != target.shape[0]:
@@ -136,8 +154,10 @@ class BFSVideoCompare:
         print(f"[BFS Video Compare] {report}", flush=True)
         sub = os.path.relpath(out_dir, folder_paths.get_temp_directory())
         files = {k: {"filename": f, "subfolder": sub, "type": "temp"} for k, f in names.items()}
+        refs = [{"filename": f, "subfolder": sub, "type": "temp"} for f in save_refs(reference, out_dir, PH)]
         ui = {"bfs_compare": [{**files, "fps": float(fps), "frames": n, "width": PW, "height": PH,
                                "labels": [label_guide, label_target], "mae": [round(float(x), 2) for x in mae],
+                               "refs": refs,
                                "report": report}]}
         return {"ui": ui, "result": (diff_map, report, mean)}
 

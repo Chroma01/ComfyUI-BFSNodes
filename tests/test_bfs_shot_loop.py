@@ -187,6 +187,30 @@ class JoinTest(unittest.TestCase):
         self.assertAlmostEqual(float(video[0, 0, 0, 0]), 0.1, places=2)
         self.assertAlmostEqual(float(video[-1, 0, 0, 0]), 0.9, places=2)
 
+    def test_comparison_turned_on_later_reads_the_originals_from_the_source(self):
+        import cv2
+        import numpy as np
+        src = os.path.join(_TMP, "cmp_src.mp4")
+        vw = cv2.VideoWriter(src, cv2.VideoWriter_fourcc(*"mp4v"), 24, (32, 32))
+        for _ in range(50):
+            vw.write(np.full((32, 32, 3), 200, np.uint8))
+        vw.release()
+        tl = {"path": src, "fps": 24.0, "width": 32, "height": 32, "fill": "original", "audio": None,
+              "segs": [{"start": 0, "end": 20, "run": True, "cut_before": False, "run_index": 0},
+                       {"start": 20, "end": 45, "run": True, "cut_before": True, "run_index": 1}],
+              "src": list(range(50)), "n": 50}
+        shots = [_shot(0, 0, 20, count=2, queue=True, run_id="t3"), _shot(1, 20, 45, cut=True, count=2, queue=True, run_id="t3")]
+        join = SL.BFSShotJoin()
+        frames = lambda n, v: torch.full((n, 32, 32, 3), float(v))
+        join.join([frames(22, 0.1)], [shots[0]], [0], timeline=[tl])          # stored with the comparison off
+        join.join([frames(39, 0.9)], [shots[1]], [0], timeline=[tl])
+        out = SL.BFSShotJoin().join(shots=[dict(shots[1], assemble_only=True)], crossfade=[0], timeline=[tl],
+                                    comparison=[True], comparison_height=[32])
+        comp, guide = out[3], out[5]
+        self.assertEqual(guide.shape[0], 45)                         # the guide output is there again
+        self.assertAlmostEqual(float(guide[10].mean()), 200 / 255, places=1)   # and it is the source video
+        self.assertGreater((comp - 200 / 255).abs().lt(0.05).float().mean().item(), 0.05)   # original column shown
+
 
 class FilterTest(unittest.TestCase):
     STATS = {"persons": 1, "person_area": 0.2, "person_frames": 6, "faces": 1, "brightness": 0.4, "motion": 0.02, "sampled": 6}

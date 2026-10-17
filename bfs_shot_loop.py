@@ -2772,6 +2772,19 @@ def shot_originals(d: str, meta: dict):
     return _read_rgb_video(os.path.join(d, fv[0]), n, h, w)
 
 
+def shot_source_frames(tl: dict, start: int, length: int, H: int, W: int, comp_h: int):
+    """The original frames under a shot (uint8, at the comparison height), read from the timeline's source video."""
+    try:
+        src = np.asarray(tl["src"])
+        idx = np.clip(np.arange(start, start + max(1, length)), 0, len(src) - 1)
+        h = min(H, comp_h or H)
+        w = max(16, int(round(W * h / H)))
+        return torch.from_numpy(np.stack(_read_frames(tl["path"], src[idx], (w, h))))
+    except Exception as e:   # the comparison is optional: the video still comes out
+        print(f"[BFS Shot Join] no original column for the shot at frame {start}: {e}", flush=True)
+        return None
+
+
 def run_state(run_id: str) -> dict:
     f = os.path.join(run_dir(run_id), "state.json")
     if os.path.isfile(f):
@@ -4509,6 +4522,10 @@ class BFSShotJoin:
                     orig = meta.get("full_frames") if meta.get("full_frames") is not None else meta.get("frames")
                     if orig is None and want and meta.get("frames_video") and getattr(self, "_run_dir", None):
                         orig = shot_originals(self._run_dir, meta)   # stored shot: its original column, read now
+                    if orig is None and want and tl is not None and meta.get("start") is not None:
+                        # stored while the comparison was off (e.g. turned on afterwards, the join assembling the
+                        # stored shots): the original column read from the source video on the timeline
+                        orig = shot_source_frames(tl, int(meta["start"]), L, H, W, comp_h)
                     part = (meta, L, orig)
                 else:
                     prev_tail = None

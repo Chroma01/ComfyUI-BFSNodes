@@ -11,6 +11,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showGuide } from "./bfs_md_view.js";
+import { wheelToCanvas } from "./bfs_wheel.js";
 import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
 import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
@@ -801,6 +802,7 @@ app.registerExtension({
     // node (Vue nodes mode sizes widgets by their content); min-width keeps it from collapsing to its content width
     host.style.cssText = "position:relative;width:100%;height:100%;min-width:900px;min-height:640px";
     node.addDOMWidget("bfs_shot_planner", "div", host, { serialize: false, hideOnZoom: false });
+    wheelToCanvas(host);   // the wheel zooms the canvas over the panel too, except on something that scrolls
     const handle = {};
     createApp({
       setup: () => Panel({

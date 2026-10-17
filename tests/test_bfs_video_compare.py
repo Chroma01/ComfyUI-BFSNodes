@@ -65,6 +65,17 @@ class CompareNodeTest(unittest.TestCase):
                 n += 1
             self.assertEqual(n, 18, k)
 
+    def test_reference_pictures_go_to_the_player_no_taller_than_it(self):
+        from PIL import Image
+        guide, target = torch.rand(4, 32, 48, 3), torch.rand(4, 32, 48, 3)
+        ref = torch.rand(6, 80, 40, 3)                 # taller than the preview, more than the 4 shown
+        ui = VC.BFSVideoCompare().compare(guide, target, preview_height=32, reference=ref)["ui"]["bfs_compare"][0]
+        self.assertEqual([r["filename"] for r in ui["refs"]], ["ref_0.png", "ref_1.png", "ref_2.png", "ref_3.png"])
+        im = Image.open(os.path.join(_TMP, ui["refs"][0]["subfolder"], "ref_0.png"))
+        self.assertEqual(im.size, (16, 32))
+        none = VC.BFSVideoCompare().compare(guide, target, preview_height=32)["ui"]["bfs_compare"][0]
+        self.assertEqual(none["refs"], [])
+
 
 class NoFfmpegTest(unittest.TestCase):
     """Windows portable installs often have no ffmpeg program: everything must go through PyAV."""
