@@ -133,8 +133,10 @@ card manages them.
   to the planner). The next Queue **runs only the shots that are not stored or whose settings changed**, plus the
   shots that **continue from a shot that was made again** (head, history, previous shot as reference / first
   frame), so every seam matches. Shot cards show 💾 (stored, up to date) or ⏳ (runs next time).
-- **Model, LoRA, seed, sampler:** the planner does not see them. After changing them, redo the shots (↻) or *Redo all*,
-  or *Reset loop* (deletes the stored shots of this video).
+- **Model, LoRA, seed, sampler (1.112.0):** the planner reads them from the queued workflow (every node that feeds
+  BFS Shot Join's `images`: loaders, LoRAs, sampler, seed, conditioning settings), so changing any of them runs every
+  shot again. The join's own settings (crossfade, comparison) don't. A seed set to *randomize* changes on every Queue,
+  so every Queue then runs every shot; fix the seed to keep the stored shots.
 - **↻ Redo** a shot (Stored shots card): it runs again on the next Queue, and the shots that continue from it run
   after it. Tick *↻ redoes only that shot* to keep the next shots as they are (the seam after it may then not match).
 - **🎬 Combine stored shots:** puts the stored shots together into an MP4 in the output folder **now, without

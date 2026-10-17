@@ -108,7 +108,7 @@ function cacheSection(c) {
       hint(`✓ ${cache.combined.shots}/${cache.combined.of} shots → `),
       h("a", { href: cache.combined.url, target: "_blank", style: "margin-left:4px" }, cache.combined.filename)]) : null,
     hint("Each shot remembers the settings it was made with: the next Queue runs only the shots whose settings changed "
-      + "(and the ones that continue from them). Model, LoRA, seed or sampler changes are not seen by the planner: use ↻ or Redo all. "
+      + "(and the ones that continue from them). Changing what renders them (model, LoRA, seed, sampler, conditioning) runs every shot again; the join's own settings do not. "
       + (cache.folder ? `Folder: ${cache.folder}` : ""), "display:block;margin-top:6px"),
   ], { sub: ok.length ? `${done}/${ok.length} stored` : "nothing stored yet" });
 }

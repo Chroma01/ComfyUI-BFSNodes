@@ -1164,15 +1164,55 @@ class ShotStoreTest(unittest.TestCase):
         with patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
             out = SL.BFSShotJoin().join(imgs, shots, [0], audio=[audio], save_to=[SL.SAVE_TO[1]],
                                         filename_prefix=["test"])
-        res = out["result"]
+        res = out
         self.assertEqual(res[0].shape[0], 45)                 # the output still carries the video (read back)
         self.assertAlmostEqual(float(res[0][30].mean()), 0.8, places=1)
         self.assertTrue(res[4].endswith("test_00001.mp4"))
-        self.assertEqual(out["ui"]["images"][0]["filename"], "test_00001.mp4")   # shown on the node
+        self.assertIsInstance(out, tuple)                       # no preview on the node: plain outputs
         cap = cv2.VideoCapture(res[4]); n = 0
         while cap.read()[0]:
             n += 1
         self.assertEqual(n, 45)
+
+
+class RenderFingerprintTest(unittest.TestCase):
+    """Changing what renders the shots (LoRA, seed...) must make the stored shots stale; the join's settings must not."""
+
+    @staticmethod
+    def graph():
+        return {
+            "1": {"class_type": "BFSShotPlanner", "inputs": {"plan": "{\"run\": \"auto\"}"}},
+            "2": {"class_type": "BFSShotUnpack", "inputs": {"shot": ["1", 0]}},
+            "3": {"class_type": "BFSShotH3ConditioningSimple", "inputs": {"shot": ["2", 10], "clip": ["4", 0], "guide_mode": "aligned guide"}},
+            "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl.safetensors", "type": "minimax"}},
+            "5": {"class_type": "UNETLoader", "inputs": {"unet_name": "h3.safetensors", "weight_dtype": "default"}},
+            "6": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["5", 0], "lora_name": "swap_v1.safetensors", "strength_model": 1.0}},
+            "7": {"class_type": "KSampler", "inputs": {"model": ["6", 0], "positive": ["3", 0], "seed": 42, "steps": 8}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["9", 0]}},
+            "9": {"class_type": "VAELoader", "inputs": {"vae_name": "vae.safetensors"}},
+            "10": {"class_type": "BFSShotJoin", "inputs": {"images": ["8", 0], "shots": ["2", 10], "crossfade": 4}},
+            "11": {"class_type": "BFSVideoCompare", "inputs": {"guide": ["10", 5], "target": ["10", 0], "gain": 2.0}},
+        }
+
+    def test_render_changes_count_and_join_settings_do_not(self):
+        base = SL.render_fingerprint(self.graph(), "1")
+        self.assertTrue(base)
+        self.assertEqual(SL.render_fingerprint(self.graph(), "1"), base)
+        for node, key, value, changes in (("6", "lora_name", "swap_v2.safetensors", True), ("6", "strength_model", 0.8, True),
+                                          ("7", "seed", 43, True), ("3", "guide_mode", "reference video", True),
+                                          ("10", "crossfade", 8, False), ("1", "plan", "{}", False), ("11", "gain", 4.0, False)):
+            g = self.graph()
+            g[node]["inputs"][key] = value
+            self.assertEqual(SL.render_fingerprint(g, "1") != base, changes, f"{node}.{key}")
+        g = self.graph()
+        del g["10"]
+        self.assertEqual(SL.render_fingerprint(g, "1"), "")
+
+    def test_the_fingerprint_is_part_of_the_shot_signature(self):
+        seg = {"start": 0, "end": 20, "prompt": "x"}
+        a = SL.shot_signature({}, seg, 0, {"render": "aaa"})
+        self.assertNotEqual(a, SL.shot_signature({}, seg, 0, {"render": "bbb"}))
+        self.assertEqual(SL.BFSShotPlanner.INPUT_TYPES()["hidden"], {"graph": "PROMPT", "node_id": "UNIQUE_ID"})
 
 
 class SecondPassSizeTest(unittest.TestCase):
@@ -1207,7 +1247,7 @@ class JoinWithoutFfmpegTest(unittest.TestCase):
                 patch.object(SL, "_ram_available", lambda: 1000), \
                 patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
             out = SL.BFSShotJoin().join(imgs, shots, [0], audio=[audio], comparison=[True])
-        res = out["result"]
+        res = out
         self.assertTrue(os.path.getsize(res[4]) > 0 and os.path.exists(res[4][:-4] + "_comparison.mp4"))
         self.assertEqual((res[0].shape[0], res[3].shape[0], res[5].shape[0]), (45, 45, 45))
         self.assertAlmostEqual(float(res[0][30].mean()), 0.8, delta=0.05)
@@ -1223,7 +1263,7 @@ class JoinFileMetadataTest(unittest.TestCase):
             out = SL.BFSShotJoin().join([torch.rand(22, 32, 32, 3)], [_shot(0, 0, 20, gen=22)], [0], save_to=[SL.SAVE_TO[1]],
                                         filename_prefix=["m"], prompt=[pr], extra_pnginfo=[{"workflow": wf}])
         tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json",
-                                          out["result"][4]], capture_output=True).stdout)["format"]["tags"]
+                                          out[4]], capture_output=True).stdout)["format"]["tags"]
         self.assertEqual((json.loads(tags["workflow"]), json.loads(tags["prompt"])), (wf, pr))
 
 
@@ -1235,7 +1275,7 @@ class JoinRamGuardTest(unittest.TestCase):
         with patch.object(SL, "_ram_available", lambda: 1000), \
                 patch.object(SL, "_next_output_path", lambda prefix: os.path.join(d, prefix + "_00001.mp4")):
             out = SL.BFSShotJoin().join(imgs, shots, [0], comparison=[True])
-        res = out["result"]
+        res = out
         self.assertTrue(os.path.exists(res[4]) and os.path.exists(res[4][:-4] + "_comparison.mp4"))
         self.assertEqual(res[0].shape[0], 45)                                   # never an empty output node
         self.assertTrue(res[0].shape[1] < 32 and res[3].shape[0] == 45)          # scaled down to the (tiny) free RAM

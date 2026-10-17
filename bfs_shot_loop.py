@@ -2599,13 +2599,48 @@ def _tensor_sig(t) -> str:
 
 
 def shot_signature(plan: dict, seg: dict, head: int, extra: dict) -> str:
-    """What a stored shot was made from, as far as the planner can see: its own settings (range, prompt, references,
-    mask, crop, continuity...), the plan's shared ones (size, grid, global prompt / references) and the node inputs
-    (references and prompt connected to the planner). Model, LoRA, seed and sampler are outside the planner: after
-    changing those, use Redo or Reset."""
+    """What a stored shot was made from: its own settings (range, prompt, references, mask, crop, continuity...), the
+    plan's shared ones (size, grid, global prompt / references), the node inputs (references and prompt connected to
+    the planner) and, in extra["render"], what renders it (render_fingerprint: model, LoRAs, seed, sampler,
+    conditioning settings)."""
     doc = {"s": {k: v for k, v in seg.items() if k not in _SIG_SKIP}, "head": int(head),
            "g": {k: plan.get(k) for k in _SIG_PLAN}, "x": extra}
     return hashlib.sha1(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def render_fingerprint(graph: dict | None, planner_id=None) -> str:
+    """What renders the shots, read from the queued workflow: every node upstream of BFS Shot Join's `images` (model
+    and LoRA loaders, sampler, seed, conditioning settings), with links reduced to the class of the node they come
+    from. The planner and its unpack are left out (the shot signature covers them), and so is the join itself, so its
+    crossfade or comparison never count as a change, while a new LoRA, strength or seed does ("" without a join)."""
+    if not isinstance(graph, dict):
+        return ""
+    stack = []
+    for n in graph.values():
+        if isinstance(n, dict) and n.get("class_type") == "BFSShotJoin":
+            src = (n.get("inputs") or {}).get("images")
+            if isinstance(src, list) and src:
+                stack.append(str(src[0]))
+    seen, nodes = set(), {}
+    while stack:
+        k = stack.pop()
+        if k in seen or k not in graph or k == str(planner_id):
+            continue
+        seen.add(k)
+        n = graph[k]
+        if n.get("class_type") in ("BFSShotPlanner", "BFSShotUnpack"):
+            continue
+        ins = {}
+        for name, v in (n.get("inputs") or {}).items():
+            if isinstance(v, list) and len(v) == 2 and isinstance(v[0], (str, int)) and isinstance(v[1], int):
+                stack.append(str(v[0]))
+                ins[name] = ["@", (graph.get(str(v[0])) or {}).get("class_type"), v[1]]
+            else:
+                ins[name] = v
+        nodes[k] = [n.get("class_type"), ins]
+    if not nodes:
+        return ""
+    return hashlib.sha1(json.dumps(nodes, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def uses_previous(seg: dict) -> bool:
@@ -2849,6 +2884,8 @@ class BFSShotPlanner:
                                             "shot (fills {shot} in the prompt) and whether to run it. Settings in the "
                                             "panel's VLM card."}),
             },
+            # the queued workflow: what renders the shots (LoRA, seed, sampler...) is part of a stored shot's signature
+            "hidden": {"graph": "PROMPT", "node_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE", "IMAGE", "IMAGE",
@@ -2884,7 +2921,8 @@ class BFSShotPlanner:
             pass
         return plan
 
-    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None, vlm=None, mask=None):
+    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None, vlm=None, mask=None, graph=None,
+                   node_id=None):
         p = _load_plan(plan)
         if vlm is not None:
             _VLM["clip"] = vlm       # the panel's Analyse button uses it too
@@ -2918,7 +2956,8 @@ class BFSShotPlanner:
         assemble_only = False   # every shot stored and up to date: nothing is generated, the join only assembles
         if queue:
             extra = {"ref": _tensor_sig(ref_image), "ref2": _tensor_sig(ref_image_2), "prompt": prompt or "",
-                     "mask": _tensor_sig(mask) if mask is not None else "", "size": [W, H]}
+                     "mask": _tensor_sig(mask) if mask is not None else "", "size": [W, H],
+                     "render": render_fingerprint(graph, node_id)}
             sigs = [shot_signature(p, s, head_length(segs, i, p["grid"]), extra) for i, s in enumerate(segs)]
             st = run_state(rid)
             st["count"] = len(segs)
@@ -4268,9 +4307,8 @@ class BFSShotJoin:
             if sv < 1 or (comp_path and sc < 1):
                 print(f"[BFS Shot Join] outputs at {sv * 100:.0f}% size" + (f" (comparison {sc * 100:.0f}%)" if comp_path else "")
                       + " to fit the free RAM; the MP4 files keep the full size", flush=True)
-            files = [{"filename": os.path.basename(p_), "subfolder": os.path.relpath(os.path.dirname(p_), _output_root()),
-                      "type": "output"} for p_ in (path, comp_path) if p_]
-            return {"ui": {"images": files, "animated": (True,)}, "result": (video, a, fps, comp, path, guide)}
+            # no preview on the node: the video goes out through `images` (and the files) to whatever shows it
+            return (video, a, fps, comp, path, guide)
         guide = getattr(self, "_guide", None)
         return (video, a, fps, comp if comp is not None else video[:1], "",
                 guide if guide is not None else self._guide_blocker())
