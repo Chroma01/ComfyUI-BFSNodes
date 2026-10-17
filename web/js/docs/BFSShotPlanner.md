@@ -433,15 +433,37 @@ references before any SAM 3 work; with no VLM on the planner, the slot is left f
 **BFS Shot H3 Duet**, whose `vlm` input (the same Qwen3-VL CLIPLoader) describes them (the *short* preset, fitted to
 the sentence). Edited descriptions always win. With no VLM anywhere it becomes "character" and the log says so.
 
-## Source blur (keep the mouth) (1.91.0)
+## Source blur (1.91.0, finer in 1.110.0)
 
-`source_blur` on **BFS Shot H3 Conditioning**, **BFS Shot H3 Duet**, **BFS H3 Duet** and **BFS H3 Duet Conditioning**
-blurs the source person in what the model *sees* of the source (aligned guide, native reference video, duet panel),
-keeping the **mouth** sharp: the model still reads the pose, the motion and the lips but has no face to copy, so the
-identity comes from the reference. Masks from SAM 3.1 (the part, minus a slightly grown "mouth" mask), cached per shot.
-`face (keep mouth)`, `head + hands (keep mouth)` (also hides hair and hands), `person (keep mouth)` (the whole body:
-only for big changes, the pose then comes from the blurred shape). The kept area of *Mask only* and the output are
-never blurred. Trick shared by JalenBrunson (Sapiens2 there) for reliable ref2v swaps.
+`source_blur` on **BFS Shot H3 Conditioning** (and its Simple version), **BFS Shot H3 Duet**, **BFS H3 Duet** and
+**BFS H3 Duet Conditioning** blurs the source person in what the model *sees* of the source (aligned guide, native
+reference video, duet panel): the model still reads the pose and the motion but has no face to copy, so the identity
+comes from the reference. The kept area of *Mask only* and the output are never blurred. Trick shared by JalenBrunson
+(Sapiens2 there) for reliable ref2v swaps.
+
+Modes read `<region> (<what stays sharp>)`:
+
+| region | what is blurred |
+|---|---|
+| `face` | the face (and neck) |
+| `head + hands` | also the hair and the hands |
+| `person` | the whole body: only for big changes, the pose then comes from the blurred shape |
+| `masked area` | the shot's own mask (the person being replaced, with its expand); no extra segmentation. Without a mask on the shot (or in the plain Duet nodes) it blurs the whole person |
+
+| sharp | |
+|---|---|
+| `keep mouth` | lips, teeth and tongue stay sharp (the lips carry a lot of the likeness and the lip sync) |
+| `keep lips + tongue` | the teeth are blurred too (always uses Sapiens2 for the lips) |
+| `mouth too` | nothing stays sharp |
+
+`source_blur_segmenter`: **SAM 3.1** (text prompts, already used by the planner; the 1.91 behaviour) or **Sapiens2**
+(Meta's body-part segmentation, 28 classes with lips, teeth and tongue apart from the face; one pass for every part,
+finer around the mouth). Sapiens2 marks every person in the frame, like the SAM prompts here. Its weights
+(`facebook/sapiens2-seg-0.4b`, 1.6 GB) download to `models/sapiens2/` the first time; it runs on the GPU in half
+precision and goes back to RAM after each shot. Sapiens2 License.
+
+`source_blur_effect`: **blur** (no detail left) or **invert colours** (keeps the shapes and the expression but not the
+skin tone or the colours; some users get better likeness with it).
 
 ## Big videos (upload)
 

@@ -713,7 +713,11 @@ if _io is not None:
                     _io.Autogrow.Input("ref_audios", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Audio.Input("ref_audio", tooltip="<Audio n> reference"), prefix="ref_audio_", min=0, max=3)),
                     _io.Combo.Input("source_blur", options=_blur_modes(), default="off", optional=True, tooltip=
-                        "Blur the source person in what the model sees (the panel / the guide), keeping the mouth sharp (SAM 3.1): it reads the pose, motion and lips but has no face to copy. The output is never blurred. Works with or instead of panel_static."),
+                        BLUR_TT + " Works with or instead of panel_static."),
+                    _io.Combo.Input("source_blur_segmenter", options=_blur_lists().SEGMENTERS, default="SAM 3.1",
+                                    optional=True, tooltip=SEGMENTER_TT),
+                    _io.Combo.Input("source_blur_effect", options=_blur_lists().EFFECTS, default="blur", optional=True,
+                                    tooltip=EFFECT_TT),
                     _io.Combo.Input("panel_static", options=PANEL_STATIC, default="off", optional=True, tooltip=
                         "TSC's fix for swaps in the same world: cover the face (or the whole person) of the pinned clip in TV "
                         "static, every frame (SAM 3), so the generated half cannot copy it and takes the identity from the "
@@ -739,12 +743,13 @@ if _io is not None:
                     panel_noise, hold, rope_mode, rope_gap, ref_image_size, steps, sampler_name, scheduler, seed,
                     decode_canvas, audio_vae=None, panel=None, guide=None, guide_frame_idx=0, ref_images=None,
                     ref_videos=None, ref_video_audios=None, ref_audios=None, panel_static="off", setting=None, vlm=None, source_blur="off",
-                    vlm_max_tokens=1024):
+                    vlm_max_tokens=1024, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
             if panel is None and guide is None:
                 raise ValueError("BFS H3 Duet needs a panel, a guide, or both")
             raw_panel = panel
-            panel = static_over_panel(_blur(panel, source_blur, 1.0, "[BFS H3 Duet] panel"), panel_static)
-            guide = _blur(guide, source_blur, 1.0, "[BFS H3 Duet] guide")
+            panel = static_over_panel(_blur(panel, source_blur, 1.0, "[BFS H3 Duet] panel", source_blur_segmenter,
+                                            source_blur_effect), panel_static)
+            guide = _blur(guide, source_blur, 1.0, "[BFS H3 Duet] guide", source_blur_segmenter, source_blur_effect)
             if length <= 0:
                 src = guide if guide is not None else panel
                 length = src.shape[0] if src.shape[0] >= 5 else 124
@@ -778,22 +783,32 @@ def _shot_loop():
 PANEL_STATIC = ["off", "face", "person"]
 
 
-def _blur_modes():
+def _blur_lists():
     try:
-        from .bfs_source_blur import SOURCE_BLUR
+        from . import bfs_source_blur as B
     except ImportError:
-        from bfs_source_blur import SOURCE_BLUR
-    return SOURCE_BLUR
+        import bfs_source_blur as B
+    return B
 
 
-def _blur(frames, mode, strength=1.0, log=""):
+def _blur_modes():
+    return _blur_lists().SOURCE_BLUR
+
+
+BLUR_TT = ("Blur the source person in what the model sees (the panel / the guide): '<region> (<what stays sharp>)'. "
+           "keep mouth: lips, teeth and tongue stay sharp; keep lips + tongue: the teeth are blurred too; mouth too: "
+           "nothing stays sharp. masked area: the shot's own mask (elsewhere: the whole person). It reads the pose and "
+           "motion but has no face to copy. The output is never blurred.")
+SEGMENTER_TT = ("What finds the face / head / hands / person and the mouth for source_blur. SAM 3.1: text prompts. "
+                "Sapiens2: body-part classes in one pass, finer lips and teeth (downloads facebook/sapiens2-seg-0.4b, "
+                "1.6 GB, to models/sapiens2 the first time). 'keep lips + tongue' always uses Sapiens2 for the lips.")
+EFFECT_TT = "blur: no detail left. invert colours: keeps the shapes and the expression but not the skin tone or colours."
+
+
+def _blur(frames, mode, strength=1.0, log="", segmenter="SAM 3.1", effect="blur", area=None):
     if frames is None or not mode or mode == "off":
         return frames
-    try:
-        from .bfs_source_blur import blur_source
-    except ImportError:
-        from bfs_source_blur import blur_source
-    return blur_source(frames, mode, float(strength), log)
+    return _blur_lists().blur_source(frames, mode, float(strength), log, segmenter, effect, area)
 
 
 def _small(frames: torch.Tensor, side: int = 640) -> torch.Tensor:
@@ -909,7 +924,11 @@ if _io is not None:
                     _io.Autogrow.Input("ref_images", optional=True, template=_io.Autogrow.TemplatePrefix(
                         input=_io.Image.Input("ref_image", tooltip="<Picture n>, in order"), prefix="ref_image_", min=0, max=9)),
                     _io.Combo.Input("source_blur", options=_blur_modes(), default="off", optional=True, tooltip=
-                        "Blur the source person in what the model sees (the panel / the guide), keeping the mouth sharp (SAM 3.1): it reads the pose, motion and lips but has no face to copy. The output is never blurred. Works with or instead of panel_static."),
+                        BLUR_TT + " Works with or instead of panel_static."),
+                    _io.Combo.Input("source_blur_segmenter", options=_blur_lists().SEGMENTERS, default="SAM 3.1",
+                                    optional=True, tooltip=SEGMENTER_TT),
+                    _io.Combo.Input("source_blur_effect", options=_blur_lists().EFFECTS, default="blur", optional=True,
+                                    tooltip=EFFECT_TT),
                     _io.Combo.Input("panel_static", options=PANEL_STATIC, default="off", optional=True, tooltip=
                         "TSC's fix for swaps in the same world: cover the face (or the whole person) of the pinned clip in TV "
                         "static, every frame (SAM 3), so the generated half cannot copy it and takes the identity from the "
@@ -927,12 +946,14 @@ if _io is not None:
         def execute(cls, clip, vae, panel, task, instruction, prompt, width, height, length, position, size, panel_noise,
                     rope_mode, fit, gap, hold, rope_gap, ref_image_size, vlm_max_tokens, vlm=None, model=None,
                     audio_vae=None, guide=None, ref_images=None, keep_mask=None, keep_video=None, panel_static="off",
-                    setting=None, source_blur="off"):
+                    setting=None, source_blur="off", source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
             from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
             refs = [v for v in (ref_images or {}).values() if v is not None]
             raw_panel = panel
-            panel = static_over_panel(_blur(panel, source_blur, 1.0, "[BFS H3 Duet Conditioning] panel"), panel_static)
-            guide = _blur(guide, source_blur, 1.0, "[BFS H3 Duet Conditioning] guide")
+            panel = static_over_panel(_blur(panel, source_blur, 1.0, "[BFS H3 Duet Conditioning] panel",
+                                            source_blur_segmenter, source_blur_effect), panel_static)
+            guide = _blur(guide, source_blur, 1.0, "[BFS H3 Duet Conditioning] guide", source_blur_segmenter,
+                          source_blur_effect)
             if length <= 0:
                 length = panel.shape[0] if panel.shape[0] >= 5 else 124
             text = _shot_loop().duet_prompt(vlm, prompt, raw_panel, refs, task, instruction, int(vlm_max_tokens),
@@ -996,8 +1017,10 @@ class BFSShotH3Duet:
             "optional": {"audio_vae": ("VAE",),
                          "rope_mode": (ROPE_MODES, {"default": "canvas", "advanced": True}),
                          "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0, "advanced": True}),
-                         "source_blur": (_blur_modes(), {"default": "off", "tooltip": "Blur the source person in what the model sees (the panel / the guide), keeping the mouth sharp (SAM 3.1): it reads the pose, motion and lips but has no face to copy. The output is never blurred."}),
+                         "source_blur": (_blur_modes(), {"default": "off", "tooltip": BLUR_TT}),
                          "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05}),
+                         "source_blur_segmenter": (_blur_lists().SEGMENTERS, {"default": "SAM 3.1", "tooltip": SEGMENTER_TT}),
+                         "source_blur_effect": (_blur_lists().EFFECTS, {"default": "blur", "tooltip": EFFECT_TT}),
                          "vlm": ("CLIP", {"tooltip": "Optional VLM (Qwen3-VL CLIPLoader): fills {details} in the shot's "
                                                      "prompt from its references when the planner left it."})},
         }
@@ -1013,7 +1036,8 @@ class BFSShotH3Duet:
 
     def render(self, shot, model, clip, vae, mode, task, instruction, use_ref_2, position, size, fit, gap,
                panel_noise, ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None,
-               rope_mode="canvas", rope_gap=0.0, source_blur="off", source_blur_strength=1.0, vlm=None):
+               rope_mode="canvas", rope_gap=0.0, source_blur="off", source_blur_strength=1.0, vlm=None,
+               source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
         imgs = {}
         if shot.get("ref") is not None:
             imgs["ref_image_1"] = shot["ref"]
@@ -1032,8 +1056,11 @@ class BFSShotH3Duet:
             text = _shot_loop().fill_details_now(text, vlm, [shot.get("ref"), shot.get("ref2")],
                                                  f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}")
         hist, hsrc = shot_history(shot) if shot_history else (None, None)
+        area = None
+        if source_blur and source_blur.startswith("masked area") and (shot.get("mask_src") or (shot.get("crop") or {}).get("crop_mask") is not None):
+            area = _shot_loop().generation_mask(shot)
         seen = _blur(shot["frames"], source_blur, source_blur_strength,
-                     f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}")
+                     f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}", source_blur_segmenter, source_blur_effect, area)
         out = h3_render(model, clip, vae, audio_vae, text, {"ref_images": imgs}, shot["width"], shot["height"],
                         shot["gen_length"], steps, sampler_name, scheduler, seed + int(shot.get("index", 0)),
                         panel=seen if duet else None, guide=seen if guided else None,

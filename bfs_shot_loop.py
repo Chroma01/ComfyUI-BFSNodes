@@ -2241,9 +2241,9 @@ def duet_prompt(vlm, prompt: str, frames: torch.Tensor | None, refs: list, task:
 
 CHAIN_MODES = ("off", "reference", "first frame", "history", "head")
 try:
-    from .bfs_source_blur import SOURCE_BLUR, blur_source
+    from .bfs_source_blur import EFFECTS as BLUR_EFFECTS, SEGMENTERS as BLUR_SEGMENTERS, SOURCE_BLUR, blur_source
 except ImportError:
-    from bfs_source_blur import SOURCE_BLUR, blur_source
+    from bfs_source_blur import EFFECTS as BLUR_EFFECTS, SEGMENTERS as BLUR_SEGMENTERS, SOURCE_BLUR, blur_source
 _LAST_RESULT: dict[str, Any] = {}   # auto loop: the last shot a render node produced (index, count, frames)
 
 
@@ -3736,11 +3736,22 @@ class BFSShotH3Conditioning:
                     "subject's look."}),
                 "source_blur": (SOURCE_BLUR, {"default": "off", "tooltip":
                     "Blur the source person in what the model SEES of the source (aligned guide, native reference "
-                    "video, duet panel), keeping the mouth sharp (SAM 3.1 masks). The model still reads the pose, "
-                    "motion and lips but has no face to copy, so the identity comes from the reference. The kept "
-                    "area of 'Mask only' and the output are never blurred. JalenBrunson's swap trick."}),
+                    "video, duet panel): '<region> (<what stays sharp>)'. Region: face / head + hands / person (every "
+                    "person the segmenter finds) or masked area (the shot's own mask, the person being replaced, with "
+                    "its expand). keep mouth: lips, teeth and tongue stay sharp; keep lips + tongue: the teeth are "
+                    "blurred too; mouth too: nothing stays sharp. The model still reads the pose and motion but has "
+                    "no face to copy, so the identity comes from the reference. The kept area of 'Mask only' and the "
+                    "output are never blurred. JalenBrunson's swap trick."}),
                 "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05,
                     "tooltip": "How coarse the source blur is (1 = no detail left)."}),
+                "source_blur_segmenter": (BLUR_SEGMENTERS, {"default": BLUR_SEGMENTERS[0], "tooltip":
+                    "What finds the face / head / hands / person and the mouth for source_blur. SAM 3.1: text prompts "
+                    "(already used by the planner). Sapiens2: body-part classes in one pass, finer lips and teeth "
+                    "(downloads facebook/sapiens2-seg-0.4b, 1.6 GB, to models/sapiens2 the first time). The 'keep lips + "
+                    "tongue' modes always use Sapiens2 for the lips."}),
+                "source_blur_effect": (BLUR_EFFECTS, {"default": BLUR_EFFECTS[0], "tooltip":
+                    "blur: no detail left. invert colours: keeps the shapes and the expression but not the skin tone "
+                    "or the colours."}),
                 "mask_guide_look": (MASK_GUIDE_LOOKS, {"default": MASK_GUIDE_LOOKS[0], "tooltip":
                     "What the mask guide shows of the subject. grey blurred: its volume, light and head direction "
                     "without colours or a face (default). colour: as it is (can make the model copy the old subject). "
@@ -3766,7 +3777,7 @@ class BFSShotH3Conditioning:
                   audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
                   panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
                   setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
-                  source_blur="off", source_blur_strength=1.0):
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         try:
             from .bfs_h3_side_panel import build_prompt, fill_layout, make_info
@@ -3835,8 +3846,11 @@ class BFSShotH3Conditioning:
         use_mask = inpaint == "only the mask" or (inpaint == INPAINT_MODES[0] and shot.get("inpaint"))
         gtag = f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}/{shot.get('count', 1)}"
         # what the model sees of the source; the kept area (keep_video) stays the original
-        seen = blur_source(shot["frames"], source_blur, float(source_blur_strength), gtag) \
-            if source_blur and source_blur != "off" else shot["frames"]
+        area = None
+        if source_blur and source_blur.startswith("masked area") and (shot.get("mask_src") or (shot.get("crop") or {}).get("crop_mask") is not None):
+            area = generation_mask(shot, log=gtag)
+        seen = blur_source(shot["frames"], source_blur, float(source_blur_strength), gtag, source_blur_segmenter,
+                           source_blur_effect, area) if source_blur and source_blur != "off" else shot["frames"]
         if shot.get("color_guide"):
             if not shot.get("mask_src") and not shot.get("crop"):
                 raise ValueError(f"{gtag}: Colored Mark needs a person selection (SAM 3 text/points or a mask video)")
@@ -4039,8 +4053,17 @@ class BFSShotH3ConditioningSimple:
                 "inpaint": (INPAINT_MODES, {"default": INPAINT_MODES[0], "tooltip":
                     "Use each shot's Planner mask mode, force mask-only generation, or disable it."}),
                 "source_blur": (SOURCE_BLUR, {"default": "off", "tooltip":
-                    "Blur the source subject in the guide so the model is less likely to copy its identity."}),
+                    "Blur the source subject in the guide so the model is less likely to copy its identity: "
+                    "'<region> (<what stays sharp>)'; masked area = the shot's own mask."}),
                 "source_blur_strength": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05}),
+                "source_blur_segmenter": (BLUR_SEGMENTERS, {"default": BLUR_SEGMENTERS[0], "tooltip":
+                    "What finds the face / head / hands / person and the mouth for source_blur. SAM 3.1: text prompts "
+                    "(already used by the planner). Sapiens2: body-part classes in one pass, finer lips and teeth "
+                    "(downloads facebook/sapiens2-seg-0.4b, 1.6 GB, to models/sapiens2 the first time). The 'keep lips + "
+                    "tongue' modes always use Sapiens2 for the lips."}),
+                "source_blur_effect": (BLUR_EFFECTS, {"default": BLUR_EFFECTS[0], "tooltip":
+                    "blur: no detail left. invert colours: keeps the shapes and the expression but not the skin tone "
+                    "or the colours."}),
             },
         }
 
@@ -4053,11 +4076,12 @@ class BFSShotH3ConditioningSimple:
 
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, ref_image_size,
                   audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
-                  source_blur="off", source_blur_strength=1.0):
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
         positive, latent, _, prompt = BFSShotH3Conditioning().condition(
             shot, clip, vae, guide_mode, use_ref_2, "none", ref_image_size,
             audio_vae=audio_vae, with_audio=with_audio, vlm=vlm, inpaint=inpaint,
-            source_blur=source_blur, source_blur_strength=source_blur_strength)
+            source_blur=source_blur, source_blur_strength=source_blur_strength,
+            source_blur_segmenter=source_blur_segmenter, source_blur_effect=source_blur_effect)
         return positive, latent, prompt
 
 
