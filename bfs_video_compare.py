@@ -7,6 +7,8 @@ gets three temporary MP4s (guide, target, difference) and the per-frame differen
 """
 import math
 import os
+import re
+import subprocess
 import uuid
 
 import numpy as np
@@ -160,6 +162,160 @@ class BFSVideoCompare:
                                "refs": refs,
                                "report": report}]}
         return {"ui": ui, "result": (diff_map, report, mean)}
+
+
+# ---------------------------------------------------------------------------- save / record: the browser's file -> a shareable one
+
+EXPORT_FORMATS = {   # what the player's format list offers; "webm" never reaches the server (the browser's own file)
+    "mp4": "MP4 (H.264)",
+    "small": "MP4 small (under 10 MB)",
+    "gif": "GIF (under 10 MB, no sound)",
+}
+LIMIT_BYTES = int(9.5 * 1024 * 1024)   # under the 10 MB many chat apps accept for free
+_ID = re.compile(r"^[0-9a-f]{8,32}$")
+
+
+def _export_dir() -> str:
+    d = os.path.join(folder_paths.get_temp_directory(), "bfs_compare", "exports")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def write_part(rid: str, offset: int, data: bytes) -> int:
+    """One piece of a recording uploaded by the player (pieces keep big recordings under the upload limit)."""
+    if not _ID.match(rid or "") or offset < 0:
+        raise ValueError("bad recording id / offset")
+    path = os.path.join(_export_dir(), f"{rid}.rec")
+    with open(path, "r+b" if os.path.exists(path) else "wb") as f:
+        f.seek(offset)
+        f.write(data)
+    return len(data)
+
+
+def _run(cmd: list) -> None:
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {r.stderr.strip()[-600:]}")
+
+
+def encode(src: str, fmt: str, seconds: float, out_base: str) -> str:
+    """The recording `src` (WebM / fragmented MP4 from MediaRecorder, which many apps won't play or preview) as
+    `fmt` -> the written path. Both MP4s are H.264 + AAC, yuv420p, faststart. mp4: CRF 18. small: the bitrate set so
+    the file stays under 9.5 MB (smaller frame when it gets low). gif: palette per video, 15 fps, made smaller until
+    it fits 9.5 MB."""
+    if fmt not in EXPORT_FORMATS:
+        raise ValueError(f"unknown format {fmt!r}")
+    exe = VIO.ffmpeg_bin()
+    if exe is None:
+        return _encode_av(src, fmt, out_base)
+    seconds = max(0.5, float(seconds or 0))
+    even = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    if fmt == "gif":
+        out = out_base + ".gif"
+        for width, fps in ((720, 15), (540, 15), (480, 12), (360, 12), (270, 10)):
+            vf = f"fps={fps},scale='min({width},iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4"
+            _run([exe, "-y", "-v", "error", "-i", src, "-vf", vf, "-loop", "0", out])
+            if os.path.getsize(out) <= LIMIT_BYTES:
+                break
+        return out
+    out = out_base + ".mp4"
+    if fmt == "mp4":
+        _run([exe, "-y", "-v", "error", "-i", src, "-vf", even, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+              "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out])
+        return out
+    audio_k = 128
+    for shrink in (1.0, 0.92, 0.8):   # a VBR encode can overshoot a little: a second, lower try
+        kbps = int(min(8000, max(250, LIMIT_BYTES * 8 / 1000 / seconds * shrink - audio_k)))
+        vf = even if kbps >= 1500 else "scale=-2:'min(720,ih)':flags=lanczos," + even if kbps >= 700 else \
+            "scale=-2:'min(480,ih)':flags=lanczos," + even
+        _run([exe, "-y", "-v", "error", "-i", src, "-vf", vf, "-c:v", "libx264", "-preset", "medium",
+              "-b:v", f"{kbps}k", "-maxrate", f"{int(kbps * 1.4)}k", "-bufsize", f"{kbps * 2}k", "-pix_fmt", "yuv420p",
+              "-r", "30", "-c:a", "aac", "-b:a", f"{audio_k}k", "-ac", "2", "-movflags", "+faststart", out])
+        if os.path.getsize(out) <= LIMIT_BYTES:
+            break
+    return out
+
+
+def _encode_av(src: str, fmt: str, out_base: str) -> str:
+    """No ffmpeg program: decode with PyAV and write an MP4 (no sound) or a GIF (PIL); 'small' at most 720p."""
+    import av
+    from PIL import Image
+    frames, fps = [], 30.0
+    with av.open(src) as c:
+        st = c.streams.video[0]
+        fps = float(st.average_rate or st.guessed_rate or 30)
+        for f in c.decode(st):
+            frames.append(f.to_ndarray(format="rgb24"))
+    if not frames:
+        raise RuntimeError("the recording has no frames")
+    h, w = frames[0].shape[:2]
+    if fmt == "gif":
+        out = out_base + ".gif"
+        step = max(1, round(fps / 12))
+        for side in (540, 400, 300, 220):
+            k = min(1.0, side / max(h, w))
+            ims = [Image.fromarray(x).resize((max(2, int(w * k)), max(2, int(h * k))), Image.LANCZOS) for x in frames[::step]]
+            ims[0].save(out, save_all=True, append_images=ims[1:], duration=int(1000 * step / fps), loop=0, optimize=True)
+            if os.path.getsize(out) <= LIMIT_BYTES:
+                break
+        return out
+    out = out_base + ".mp4"
+    k = 1.0 if fmt == "mp4" else min(1.0, 720 / h)
+    W2, H2 = int(w * k) // 2 * 2, int(h * k) // 2 * 2
+    wr = VIO.Mp4Writer(out, W2, H2, fps, None, crf=18 if fmt == "mp4" else 27, who="BFS Video Compare")
+    try:
+        for a in range(0, len(frames), 16):
+            x = torch.from_numpy(np.stack(frames[a:a + 16])).float() / 255
+            wr.write(_scale(x, H2, W2))
+    finally:
+        wr.close()
+    print("[BFS Video Compare] no ffmpeg program: saved without sound", flush=True)
+    return out
+
+
+def finish_export(rid: str, fmt: str, seconds: float, name: str) -> dict:
+    src = os.path.join(_export_dir(), f"{rid}.rec")
+    if not _ID.match(rid or "") or not os.path.exists(src):
+        raise ValueError("recording not found")
+    stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(name or "bfs_compare")[0])[:80] or "bfs_compare"
+    try:
+        out = encode(src, fmt, seconds, os.path.join(_export_dir(), f"{stem}_{rid[:6]}"))
+    finally:
+        os.remove(src)
+    sub = os.path.relpath(os.path.dirname(out), folder_paths.get_temp_directory()).replace(os.sep, "/")
+    mb = os.path.getsize(out) / 1024 / 1024
+    print(f"[BFS Video Compare] saved {os.path.basename(out)} ({EXPORT_FORMATS[fmt]}, {mb:.1f} MB)", flush=True)
+    return {"filename": os.path.basename(out), "subfolder": sub, "type": "temp", "mb": round(mb, 2)}
+
+
+try:
+    import asyncio
+
+    from aiohttp import web
+    from server import PromptServer
+
+    @PromptServer.instance.routes.post("/bfs/compare/part")
+    async def _bfs_compare_part(request):
+        try:
+            data = await request.read()
+            n = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: write_part(request.query.get("id", ""), int(request.query.get("offset", "-1")), data))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=400)
+        return web.json_response({"written": n})
+
+    @PromptServer.instance.routes.post("/bfs/compare/export")
+    async def _bfs_compare_export(request):
+        try:
+            b = await request.json()
+            r = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: finish_export(b.get("id", ""), b.get("format", ""), float(b.get("seconds") or 0), b.get("name", "")))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=400)
+        return web.json_response(r)
+except Exception as _exc:  # noqa: BLE001 - outside ComfyUI (tests)
+    if "PromptServer" not in repr(_exc) and "server" not in repr(_exc):
+        print(f"[BFS Video Compare] export routes not registered: {_exc!r}", flush=True)
 
 
 NODE_CLASS_MAPPINGS = {"BFSVideoCompare": BFSVideoCompare}

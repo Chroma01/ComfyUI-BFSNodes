@@ -77,6 +77,51 @@ class CompareNodeTest(unittest.TestCase):
         self.assertEqual(none["refs"], [])
 
 
+@unittest.skipUnless(VC.VIO.ffmpeg_bin(), "needs an ffmpeg program")
+class ExportTest(unittest.TestCase):
+    """The player's recording (WebM from MediaRecorder) converted for sharing."""
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        cls.src = os.path.join(_TMP, "rec_src.webm")
+        # 20 s of noise at 720p with sound: far above 10 MB at the browser's bitrate
+        subprocess.run([VC.VIO.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i", "nullsrc=s=1280x720:r=30:d=20,geq=random(1)*255:128:128",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=20", "-c:v", "libvpx", "-b:v", "16M",
+                        "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus", "-shortest", cls.src], check=True)
+
+    def probe(self, path):
+        import json
+        import subprocess
+        r = subprocess.run([VC.VIO.ffmpeg_bin().replace("ffmpeg", "ffprobe"), "-v", "error", "-show_streams", "-of", "json", path],
+                           capture_output=True, text=True)
+        return {st["codec_type"]: st for st in json.loads(r.stdout)["streams"]}
+
+    def test_small_mp4_is_h264_aac_faststart_under_the_limit(self):
+        self.assertGreater(os.path.getsize(self.src), VC.LIMIT_BYTES)
+        out = VC.encode(self.src, "small", 20.0, os.path.join(_TMP, "exp_small"))
+        self.assertLessEqual(os.path.getsize(out), VC.LIMIT_BYTES)
+        st = self.probe(out)
+        self.assertEqual((st["video"]["codec_name"], st["video"]["pix_fmt"], st["audio"]["codec_name"]), ("h264", "yuv420p", "aac"))
+        head = open(out, "rb").read(256 * 1024)
+        self.assertLess(head.find(b"moov"), head.find(b"mdat") if b"mdat" in head else 1 << 30)   # faststart: moov first
+
+    def test_gif_fits_the_limit(self):
+        out = VC.encode(self.src, "gif", 20.0, os.path.join(_TMP, "exp_gif"))
+        self.assertTrue(out.endswith(".gif"))
+        self.assertLessEqual(os.path.getsize(out), VC.LIMIT_BYTES)
+
+    def test_bad_ids_and_formats_are_refused(self):
+        with self.assertRaises(ValueError):
+            VC.write_part("../../etc", 0, b"x")
+        with self.assertRaises(ValueError):
+            VC.encode(self.src, "avi", 1.0, os.path.join(_TMP, "x"))
+        rid = "abcdef0123"
+        VC.write_part(rid, 0, b"12345")
+        VC.write_part(rid, 5, b"678")
+        self.assertEqual(open(os.path.join(_TMP, "bfs_compare", "exports", rid + ".rec"), "rb").read(), b"12345678")
+
+
 class NoFfmpegTest(unittest.TestCase):
     """Windows portable installs often have no ffmpeg program: everything must go through PyAV."""
 

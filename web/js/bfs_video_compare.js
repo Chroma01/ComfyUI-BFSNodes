@@ -7,7 +7,8 @@
  *
  * ⬇ save plays the video once from the start and downloads it as shown (same layout, divider, labels); ● rec records
  * whatever you do in the player (dragging the divider, pausing, scrubbing) until ■ stop. Both draw the two videos into
- * a canvas in the browser and encode it there (MP4 where the browser can, otherwise WebM), in real time.
+ * a canvas and record it in the browser, in real time. The browser's file (WebM, or a fragmented MP4 many apps won't
+ * play) is then converted by ComfyUI to the chosen format: MP4 (H.264), a small MP4 (under 10 MB) or a GIF.
  */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -15,6 +16,9 @@ import { wheelToCanvas } from "./bfs_wheel.js";
 
 const SOURCES = ["guide", "target", "difference"];
 const MODES = [["wipe", "wipe ↔"], ["wipe-v", "wipe ↕"], ["overlay", "overlay"], ["side", "side by side"]];
+const FORMATS = [["mp4", "MP4"], ["small", "MP4 small (<10 MB)"], ["gif", "GIF"], ["webm", "browser file (WebM)"]];
+const FORMAT_KEY = "bfs.videoCompare.format";
+const PART = 8 * 1024 * 1024;   // upload pieces, under ComfyUI's request limit
 
 function styles() {
   if (document.getElementById("bfs-vcmp-css")) return;
@@ -95,6 +99,12 @@ function buildPlayer(host) {
   const btnMute = el("button", { title: "Sound (from the target)", onclick: () => { st.muted = !st.muted; sound(); } }, "🔇");
   const btnFull = el("button", { title: "Full screen", onclick: () => (document.fullscreenElement ? document.exitFullscreen() : host.requestFullscreen?.())?.catch?.(() => {}) }, "⛶");
   const btnSave = el("button", { title: "Play the video once from the start and download it as shown", onclick: () => saveFull() }, "⬇ save");
+  let format = "mp4";
+  try { format = localStorage.getItem(FORMAT_KEY) || format; } catch { }
+  if (!FORMATS.some(([v]) => v === format)) format = "mp4";
+  const selFormat = sel(FORMATS, format, v => { format = v; try { localStorage.setItem(FORMAT_KEY, v); } catch { } });
+  selFormat.title = "Format of what save / rec download. MP4: H.264 + AAC, plays and previews anywhere. MP4 small: "
+    + "the same, sized to stay under 10 MB. GIF: no sound, under 10 MB. browser file: the recording as it is, no conversion.";
   const btnRec = el("button", { title: "Record what you do in the player until stop, then download it", onclick: () => (rec.mr ? stopRec() : startRec()) }, "● rec");
   const chkLabels = el("input", { type: "checkbox" });
   chkLabels.checked = true;
@@ -115,7 +125,7 @@ function buildPlayer(host) {
     el("div", { class: "row" }, [el("span", {}, "top"), selTop, btnSwap, el("span", {}, "bottom"), selBot, selMode, btnFull]),
     stage,
     el("div", { class: "row" }, [btnPrev, btnPlay, btnNext, scrub, btnMute, info]),
-    el("div", { class: "row" }, [btnSave, btnRec, el("label", { title: "Draw the names on the saved / recorded video" }, [chkLabels, "labels"]), lblRefs]),
+    el("div", { class: "row" }, [btnSave, btnRec, selFormat, el("label", { title: "Draw the names on the saved / recorded video" }, [chkLabels, "labels"]), lblRefs]),
     strip,
   ]));
 
@@ -228,7 +238,7 @@ function buildPlayer(host) {
   }
 
   // --- save / record: the two videos drawn into a canvas the way the stage shows them, encoded by MediaRecorder
-  const rec = { mr: null, chunks: [], raf: 0, t0: 0, full: false, onEnd: null, type: "" };
+  const rec = { mr: null, chunks: [], raf: 0, t0: 0, full: false, onEnd: null, type: "", busy: "" };
 
   function pickType(audio) {   // name an audio codec only with a sound track: Firefox stalls on one it never gets
     const list = audio ? ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
@@ -312,15 +322,54 @@ function buildPlayer(host) {
     }
   }
 
-  function download(blob, ext) {
+  function stem() {
     const d = st.data, clean = s => String(s || "").replace(/[^\w.-]+/g, "_").slice(0, 40);
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-    const a = el("a", { href: URL.createObjectURL(blob), download: `bfs_compare_${clean(d?.labels?.[0])}_vs_${clean(d?.labels?.[1])}_${st.mode}_${stamp}.${ext}` });
+    return `bfs_compare_${clean(d?.labels?.[0])}_vs_${clean(d?.labels?.[1])}_${st.mode}_${stamp}`;
+  }
+
+  function download(href, name) {
+    const a = el("a", { href, download: name });
     document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
+
+  async function exportBlob(blob, ext, seconds) {   // the browser's file -> ComfyUI converts it -> download
+    const name = stem();
+    if (format === "webm") {
+      const href = URL.createObjectURL(blob);
+      download(href, `${name}.${ext}`);
+      setTimeout(() => URL.revokeObjectURL(href), 60000);
+      return;
+    }
+    const id = [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, "0")).join("");
+    rec.busy = "uploading"; buttons();
+    try {
+      for (let off = 0; off < blob.size; off += PART) {
+        const r = await api.fetchApi(`/bfs/compare/part?id=${id}&offset=${off}`, { method: "POST", body: blob.slice(off, off + PART) });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `upload failed (${r.status})`);
+      }
+      rec.busy = "converting"; buttons();
+      const r = await api.fetchApi("/bfs/compare/export", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, format, seconds, name }) });
+      const f = await r.json();
+      if (!r.ok || f.error) throw new Error(f.error || `conversion failed (${r.status})`);
+      download(url(f), f.filename);
+    } catch (e) {
+      alert(`BFS Video Compare: could not convert the recording (${e.message}). Choose "browser file" to download it as recorded.`);
+    } finally {
+      rec.busy = ""; buttons();
+    }
   }
 
   function buttons() {
+    if (rec.busy) {   // uploading / converting the finished recording
+      btnRec.classList.remove("rec");
+      btnRec.disabled = btnSave.disabled = selFormat.disabled = true;
+      btnSave.textContent = rec.busy === "uploading" ? "⬆ uploading…" : "⚙ converting…";
+      btnRec.textContent = "● rec";
+      return;
+    }
+    btnRec.disabled = selFormat.disabled = false;
     const busy = !!rec.mr;
     btnRec.classList.toggle("rec", busy);
     btnRec.textContent = busy ? (rec.full ? "■ stop" : `■ stop ${((performance.now() - rec.t0) / 1000).toFixed(0)}s`) : "● rec";
@@ -329,7 +378,7 @@ function buildPlayer(host) {
   }
 
   function startRec(full = false) {
-    if (!st.data || rec.mr) return false;
+    if (!st.data || rec.mr || rec.busy) return false;
     if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) { alert("This browser can't record a canvas (MediaRecorder)."); return false; }
     const aw = vBot.videoWidth || st.data.width, ah = vBot.videoHeight || st.data.height;
     const side = st.mode === "side", canvas = el("canvas");
@@ -348,8 +397,9 @@ function buildPlayer(host) {
     rec.mr.ondataavailable = e => { if (e.data?.size) rec.chunks.push(e.data); };
     rec.mr.onstop = () => {
       for (const t of stream.getTracks()) t.stop();
-      if (rec.chunks.length) download(new Blob(rec.chunks, { type: rec.type.split(";")[0] }), rec.type.includes("mp4") ? "mp4" : "webm");
+      const chunks = rec.chunks, seconds = (performance.now() - rec.t0) / 1000;
       rec.mr = null; rec.chunks = []; buttons();
+      if (chunks.length) exportBlob(new Blob(chunks, { type: rec.type.split(";")[0] }), rec.type.includes("mp4") ? "mp4" : "webm", seconds);
     };
     rec.mr.start(1000);
     const frame = () => { if (!rec.mr) return; compose(ctx); buttons(); rec.raf = requestAnimationFrame(frame); };
@@ -367,7 +417,7 @@ function buildPlayer(host) {
   }
 
   async function saveFull() {   // once from the first frame to the last, then stop and download
-    if (!st.data || rec.mr) return;
+    if (!st.data || rec.mr || rec.busy) return;
     if (st.playing) toggle();
     for (const v of videos()) v.loop = false;
     const seeked = v => new Promise(res => { const t = setTimeout(res, 2000); v.addEventListener("seeked", () => { clearTimeout(t); res(); }, { once: true }); });
