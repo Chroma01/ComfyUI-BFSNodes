@@ -2118,7 +2118,7 @@ retention_analysis:
 One line per <Subject N>: "<Subject 1> (appears in [Shot 1]): fully_preserved - <what of it is kept>." The marker is one of fully_preserved, partially_preserved, attribute_transfer, weak_reference.
 
 detailed_description:
-Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then "[Shot 1]" with no timestamp. Timestamps exist only to start a new shot at a real camera cut (the view jumps to another angle or place between two frames): "[Shot 2] At MM:SS.mmm, the shot cuts to ...", using the time of the first frame after the cut. Never write a timestamp inside a shot: describe what happens within a shot in order with words like then, as, while. The frame times only tell you where cuts are. Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Say plainly what changes: when a subject replaces someone of the source, write that the person of the {source_name} is replaced by <Subject N>, who takes their exact place, timing, pose, gestures, head motion, gaze and expressions. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
+Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then "[Shot 1]" with no timestamp. {shots_rule} Never write a timestamp inside a shot: describe what happens within a shot in order with words like then, as, while. Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Say plainly what changes: when a subject replaces someone of the source, write that the person of the {source_name} is replaced by <Subject N>, who takes their exact place, timing, pose, gestures, head motion, gaze and expressions. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
 
 overall_soundscape:
 One to four sentences of ambience and physical sounds across the video.
@@ -2133,7 +2133,8 @@ AUTO_TEMPLATE_RULES = """The user's request is a prompt TEMPLATE (for example th
 - Keep every sentence of the template, in the same order, with the same section names; add no section and remove none.
 - Keep its first word{trigger} exactly as the very first text of your answer.
 - Where the template describes a subject in general words, add the visible features from the reference pictures and their descriptions.
-- In detailed_description, right after "[Shot 1]" (add "[Shot 1]" if the template has none), add three to six sentences on this shot: the camera distance, angle and movement (static shot, push in, pull out, pan left, pan right, tilt up, tilt down, tracking shot...), the place and the light, and what the person does in order. Timestamps only for a real camera cut: "[Shot 2] At MM:SS.mmm, the shot cuts to ..."; never inside a shot.
+- Apply the user's request to it (who is replaced by whom, what changes), in the template's own words.
+- In detailed_description, right after "[Shot 1]" (add "[Shot 1]" if the template has none), add three to six sentences on this shot: the camera distance, angle and movement (static shot, push in, pull out, pan left, pan right, tilt up, tilt down, tracking shot...), the place and the light, and what the person does in order. {shots_rule} Never write a timestamp inside a shot.
 - Keep every label as written, with angle brackets: <Subject 1>, <Picture 1>.
 Return only the finished prompt, with nothing before or after it."""
 
@@ -2152,15 +2153,16 @@ def shot_mode(seg: dict) -> str:
     return "mask" if seg.get("inpaint") else "paste" if seg.get("paste") else "frame"
 
 
-def auto_prompt_for(instruction: str, names: list, seg: dict) -> str:
+def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = "") -> str:
     """What a written prompt was made from (the panel computes the same string to show it is out of date)."""
     marks = [[x["picture"], x["color"]] for x in seg.get("color_guide_marks") or []] if seg.get("color_guide") else []
     return json.dumps([instruction or "", names, marks, shot_mode(seg), (seg.get("mask") or {}).get("text") or "",
-                       seg.get("target") or ""], separators=(",", ":"), ensure_ascii=False)
+                       seg.get("target") or "", template or ""], separators=(",", ":"), ensure_ascii=False)
 
 
 def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_texts: list, instruction: str,
-                    seg: dict, source: str = "guide", duration: float = 0.0, max_tokens: int = 2048) -> str:
+                    seg: dict, source: str = "guide", duration: float = 0.0, max_tokens: int = 2048,
+                    cuts: list | None = None, template: str = "") -> str:
     """One shot's prompt in H3's full-reference format, written by the VLM from key frames of the shot ([1,H,W,3] each,
     at `times` seconds into it), the shot's reference pictures (<Picture 1> first) with their descriptions, the user's
     request and the shot's Colored Marks, selection and mode."""
@@ -2202,20 +2204,30 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
         rel = ("The source shot is given to the model as the guide video, aligned frame by frame (it has no tag; call it "
                "\"the guide video\"): the target keeps its timing, camera and motion unless the request changes them.")
         source_name, video_label = "guide video", ""
-    trigger = request_trigger(instruction)
-    rules = (AUTO_TEMPLATE_RULES.format(trigger=f" '{trigger}'" if trigger else "") if is_template(instruction) else
-             AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start, source_name=source_name,
-                                      video_label=video_label))
+    # the template: the conditioning prompt input (the one a LoRA was trained with), or a request that is a whole prompt
+    if not template and is_template(instruction):
+        template, instruction = instruction, ""
+    trigger = request_trigger(template)
+    if cuts:
+        shots_rule = ("The source has camera cuts at " + ", ".join(_mmss(t) for t in cuts) + ": start a new shot at each "
+                      "of them and nowhere else, " + ", ".join(f'"[Shot {k + 2}] At {_mmss(t)}, the shot cuts to ..."'
+                                                                for k, t in enumerate(cuts)) + ".")
+    else:
+        shots_rule = "The source is one continuous shot: write only [Shot 1] and no timestamp at all."
+    rules = (AUTO_TEMPLATE_RULES.format(trigger=f" '{trigger}'" if trigger else "", shots_rule=shots_rule) if template
+             else AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start, source_name=source_name,
+                                           video_label=video_label, shots_rule=shots_rule))
     ask = (f"You write the prompt for MiniMax H3, a video model, in its full-reference format. The target video is an "
            f"edited version of a source shot{f' of {duration:.2f} s' if duration else ''}: the first {nf} images are "
            f"frames of that shot in time order{f' (at {tt} on its clock)' if tt else ''}.{pics}\n\n"
-           f"{rel}\n\nThe user's request: {instruction.strip() or '(none: use the reference pictures as they are)'}\n"
-           + ("A {details@Picture n} in the request stands for the description of <Picture n>: write the visible "
-              "features of that picture in its place.\n" if "{details@" in instruction else "")
+           f"{rel}\n\nThe user's request: {instruction.strip() or ('(none: follow the template)' if template else '(none: use the reference pictures as they are)')}\n"
+           + (f"\nThe prompt template:\n{template.strip()}\n" if template else "")
+           + ("A {details@Picture n} stands for the description of <Picture n>: write the visible features of that "
+              "picture in its place.\n" if "{details@" in instruction + template else "")
            + ("".join(f"\n{n}" for n in notes)) + "\n\n"
            + rules)
     text = vlm_generate(clip, ask, _letterbox_batch(list(frames) + list(pictures)), max(1536, int(max_tokens)))
-    return tidy_h3_prompt(text, seg, trigger)
+    return tidy_h3_prompt(text, seg, trigger, bool(cuts))
 
 
 def request_trigger(text: str) -> str:
@@ -2229,7 +2241,7 @@ def is_template(text: str) -> bool:
     return len(re.findall(r"(?i)\b(subject_definitions|summary|detailed_description)\s*:", str(text or ""))) >= 2
 
 
-def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "") -> str:
+def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "", cuts: bool = True) -> str:
     """The VLM's answer as a prompt: from subject_definitions on (after the request's trigger word, kept first), no
     code fences or Markdown bold around the section names, labels with their angle brackets, and the Colored Mark
     mapping added when the writer left a mark color out."""
@@ -2241,6 +2253,10 @@ def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "") -> str
         t = t[i:]
     if trigger and not t.lower().startswith(trigger.lower() + ":"):
         t = f"{trigger}: {t}"
+    # [Shot 1] has no timestamp; a one-shot source has none at all (the VLM still writes them from the frame times)
+    t = re.sub(r"(\[Shot 1\])\s*At \d+:\d+(?:\.\d+)?\s*,\s*(\w)", lambda m: f"{m.group(1)} {m.group(2).upper()}", t)
+    if not cuts:
+        t = re.sub(r"\bAt \d+:\d+(?:\.\d+)?\s*,\s*(\w)", lambda m: m.group(1).upper(), t)
     # 'Picture 1' / 'Subject 2' / 'Video 1' written without their brackets
     t = re.sub(r"(?<![<\w])(Picture|Subject|Video|Audio) (\d+)(?![\w>])", r"<\1 \2>", t)
     if seg and seg.get("color_guide"):
@@ -2250,26 +2266,42 @@ def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "") -> str
     return t.strip()
 
 
+def key_frames(start: int, end: int, cuts: list, n: int) -> list[int]:
+    """n frames of [start, end) for the writer: at least one in the middle of each piece between camera cuts, the
+    rest shared by length (at most 12)."""
+    edges = [start] + [c for c in cuts if start < c < end] + [end]
+    pieces = [(a, b) for a, b in zip(edges[:-1], edges[1:]) if b > a][:12]
+    n = max(n, len(pieces))
+    share = [1 + int((n - len(pieces)) * (b - a) / max(1, end - start)) for a, b in pieces]
+    out = []
+    for (a, b), k in zip(pieces, share):
+        out += [int(round(a + (b - a) * (j + 0.5) / k)) for j in range(k)]
+    return sorted(set(min(end - 1, f) for f in out))
+
+
 def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, names: list, pictures: list,
-                     pic_details: dict, instruction: str, vcfg: dict) -> dict:
+                     pic_details: dict, instruction: str, vcfg: dict, template: str = "") -> dict:
     """Write one shot's prompt: {"text", "for"} (what it was made from, see auto_prompt_for)."""
     ap = {**AUTO_PROMPT_DEFAULTS, **(plan.get("auto_prompt") or {})}
     fps = float(analysis["fps"])
     L = seg["end"] - seg["start"]
     n = auto_frame_count(L, fps, int(ap.get("frames") or 0))
     src = _timeline(analysis["n_src"], analysis["fps_src"], fps)
-    picks = np.clip(np.linspace(seg["start"], seg["end"] - 1, n).round().astype(int), 0, analysis["n"] - 1)
+    cuts = [c for c in find_cuts(path, analysis, plan.get("detector", "adaptive"), float(plan.get("sensitivity", 0.5)))[0]
+            if seg["start"] < c < seg["end"]]
+    picks = np.clip(np.array(key_frames(seg["start"], seg["end"], cuts, n)), 0, analysis["n"] - 1)
     side = max(224, min(4096, int(vcfg.get("image_max_side") or 1024)))
     sc = side / max(analysis["width"], analysis["height"])
     size = (max(32, int(analysis["width"] * sc) // 2 * 2), max(32, int(analysis["height"] * sc) // 2 * 2))
     frames = [torch.from_numpy(f.astype(np.float32) / 255.0)[None] for f in _read_frames(path, src[picks], size)]
     # the request may name pictures with {details...}: their saved descriptions; the writer fills the others
     request = fill_picture_details(picture_markers(instruction), names, pictures, pic_details, keep_missing=True)
+    tmpl = fill_picture_details(picture_markers(template), names, pictures, pic_details, keep_missing=True)
     _status("Writing the shot's prompt with the VLM", force=True)
     text = write_h3_prompt(clip, frames, [(int(x) - seg["start"]) / fps for x in picks], pictures,
                            [pic_details.get(nm, "") for nm in names], request, seg, ap.get("source") or "guide", L / fps,
-                           int(vcfg.get("max_tokens") or 1024))
-    return {"text": text, "for": auto_prompt_for(instruction, names, seg)}
+                           int(vcfg.get("max_tokens") or 1024), [(c - seg["start"]) / fps for c in cuts], tmpl)
+    return {"text": text, "for": auto_prompt_for(instruction, names, seg, template)}
 
 
 PLACE_Q = ("This picture shows a place; the patch of black-and-white noise only hides a person, ignore it. Describe the "
@@ -3263,29 +3295,33 @@ class BFSShotPlanner:
         vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in work} if use_vlm else {}
         # 🤖 Auto prompt: the prompt box is the request, the shot's prompt is the one written for it (in the panel, or
         # now by the VLM for a shot without one, before any SAM 3 work; the panel stores the new ones)
+        # the prompt input is then the template (e.g. a LoRA's); the panel's text is the request
         ap = {**AUTO_PROMPT_DEFAULTS, **(p.get("auto_prompt") or {})}
         written, new_written = {}, {}
         if ap["enabled"]:
             stored = p.get("auto_prompts") or {}
+            template = prompt or ""
             for i in work:
-                key, request = f"{segs[i]['start']}-{segs[i]['end']}", segs[i]["prompt"] or g_prompt or ""
+                key, request = f"{segs[i]['start']}-{segs[i]['end']}", segs[i]["prompt"] or p.get("global_prompt", "")
                 got = stored.get(key) or {}
                 if got.get("text"):
                     written[i] = got["text"]
-                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i]):
+                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template):
                         print(f"[BFS Shot Planner] shot {i + 1}: its written prompt is older than its request, pictures or "
                               "marks (🤖 Write in the panel to write it again)", flush=True)
                 elif vlm is not None:
                     new_written[key] = auto_prompt_shot(vlm, p, a, path, segs[i], names_of(segs[i]), refs_of(segs[i]),
-                                                        pic_details, request, vcfg)
+                                                        pic_details, request, vcfg, template)
                     written[i] = new_written[key]["text"]
                     print(f"[BFS Shot Planner] shot {i + 1}: prompt written by the VLM ({len(written[i].split())} words)",
                           flush=True)
                 else:
+                    written[i] = template or request
                     print(f"[BFS Shot Planner] shot {i + 1}: Auto prompt is on, but the shot has no written prompt and the "
-                          "planner has no VLM: its request is used as the prompt", flush=True)
-            if new_written:
-                _notify("bfs-shotloop-autoprompt", {"video": p["video"], "prompts": new_written})
+                          f"planner has no VLM: its {'template (prompt input)' if template else 'request'} is used as the "
+                          "prompt", flush=True)
+            # the panel's 🤖 Write uses the same template (it cannot see the prompt input)
+            _notify("bfs-shotloop-autoprompt", {"video": p["video"], "prompts": new_written, "template": template})
         # descriptions nobody wrote: each picture described now, by itself, before any SAM 3 work (switching between
         # SAM 3 and the VLM mid-generation breaks the VLM: that is why the button worked and the run did not)
         if vlm is not None:
@@ -5610,7 +5646,7 @@ try:
                     names = shot_ref_names(seg["refs"], p["global_refs"])
                     out[f"{seg['start']}-{seg['end']}"] = auto_prompt_shot(
                         clip, p, a, path, seg, names, [_load_image(n) for n in names], details,
-                        seg["prompt"] or p.get("global_prompt", ""), cfg)
+                        seg["prompt"] or p.get("global_prompt", ""), cfg, (p.get("auto_prompt") or {}).get("template", ""))
                 return out
             prompts = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001

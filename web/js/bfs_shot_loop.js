@@ -524,7 +524,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const autoFor = s => {
     const marks = s.color_guide ? [[s.color_guide_picture, pictureColor(plan, s.color_guide_picture)],
       ...s.regions.filter(r => String(r.text || "").trim() || (r.points || []).length).map(r => [r.picture, pictureColor(plan, r.picture)])] : [];
-    return JSON.stringify([s.prompt || plan.global_prompt || "", s.names, marks, modeOf(s), s.mask?.text || "", s.target || ""]);
+    return JSON.stringify([s.prompt || plan.global_prompt || "", s.names, marks, modeOf(s), s.mask?.text || "", s.target || "",
+      plan.auto_prompt?.template || ""]);
   };
   const writtenOf = s => plan.auto_prompts?.[segKey(s)] || null;
   const setAuto = (k, v) => { plan.auto_prompt = { ...plan.auto_prompt, [k]: v }; save(); };
@@ -764,7 +765,12 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   let clock = 0;
   const onVlm = e => { if (e.detail?.video === plan.video) mergeSug(e.detail.segs); };
   // prompts the planner's VLM wrote while running (shots that had none): kept in the plan, so they stay the same
-  const onAutoPrompt = e => { if (e.detail?.video === plan.video) { plan.auto_prompts = { ...plan.auto_prompts, ...e.detail.prompts }; save(); } };
+  const onAutoPrompt = e => {
+    const d = e.detail; if (d?.video !== plan.video) return;
+    const tpl = typeof d.template === "string" && d.template !== (plan.auto_prompt.template || "");
+    if (tpl) plan.auto_prompt = { ...plan.auto_prompt, template: d.template };   // the prompt input of the last run
+    if (tpl || Object.keys(d.prompts || {}).length) { plan.auto_prompts = { ...plan.auto_prompts, ...(d.prompts || {}) }; save(); }
+  };
   const onNext = e => { onProg(e); if (plan.run === "queue" && plan.auto_continue) setTimeout(() => app.queuePrompt(0, 1), 300); };
   onMounted(() => {
     load(); refreshFiles(); analyze(); progress(); refreshVram(); raf = requestAnimationFrame(loop);

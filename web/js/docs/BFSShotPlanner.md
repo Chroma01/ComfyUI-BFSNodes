@@ -407,11 +407,17 @@ writes each shot's MiniMax H3 prompt in the official full-reference format (Mini
 - **how the source is given**: *guide video* (aligned guide, no tag) or `<Video 1>` (native reference video) — match the
   conditioning node's `guide_mode`.
 
-**A request that is already a prompt** (it has `subject_definitions:` / `summary:` / `detailed_description:`, like the
-template a LoRA was trained with, e.g. `body_swap: subject_definitions: ...`) is kept as it is: same sentences, same
-order, its trigger word first; the writer only adds the pictures' visible features and, after `[Shot 1]`, this shot's
-camera, place, light and actions. A short request ("replace the main person with Picture 1") gets the full six-section
-prompt. Timestamps are written only to start a new shot at a real cut, labels always keep their `< >`.
+**Template:** with Auto prompt on, the planner's `prompt` input (e.g. the template a LoRA was trained with,
+`body_swap: subject_definitions: ...`) is the **template** and the panel's text is the **request** applied to it
+("Troque a mulher no vídeo pela mulher da <Picture 1>"). The template is kept as it is: same sentences, same order, its
+trigger word first; the writer applies the request, adds the pictures' visible features and, after `[Shot 1]`, this
+shot's camera, place, light and actions. The panel's 🤖 Write uses the template of the last run (shown in the card).
+A request that is itself a whole prompt (H3 sections) is used as the template the same way. Without a template, a
+short request gets the full six-section prompt. Without a VLM, the template (else the request) is the prompt.
+
+**Cuts:** the writer gets the shot's real camera cuts (the planner's cut detector) and writes `[Shot N] At MM:SS.mmm`
+exactly there, with at least one key frame in each piece between cuts; a shot with no cut gets no timestamp at all.
+Labels always keep their `< >`.
 
 **🤖 Write all prompts** (or *only the missing*) writes them now; each shot shows its written prompt in the Shots tab,
 editable, with **🤖 Write / Write again**. A shot without one is written when the workflow runs (with the VLM on the

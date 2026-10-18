@@ -124,6 +124,8 @@ function autoSection(c) {
       h("button", { disabled: !!busy.value || !missing, onClick: () => c.writePrompts(S.map((s, i) => (c.writtenOf(s)?.text ? -1 : i)).filter(i => i >= 0)) },
         `only the missing (${missing})`),
     ]),
+    A.enabled && A.template ? h("div", { class: "hint", style: "display:block;margin-top:4px", title: A.template },
+      `Template (the node's prompt input, last run): ${A.template.slice(0, 110)}${A.template.length > 110 ? "…" : ""} · the prompt boxes are the request applied to it`) : null,
     hint(A.enabled ? `${S.length - missing}/${S.length} shots have a written prompt${stale ? ` · ${stale} older than their request, pictures or marks` : ""} · shots without one are written when the workflow runs (with the VLM on the planner) · edit them in each shot (Shots tab)`
       : "Off: the prompt boxes are the prompts.", "display:block;margin-top:4px"),
   ], { sub: "request + video + pictures -> MiniMax H3 prompt", right: A.enabled ? pill("on", "ok") : pill("off") });

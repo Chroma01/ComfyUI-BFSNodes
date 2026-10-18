@@ -1007,6 +1007,31 @@ class MultiRefTest(unittest.TestCase):
         self.assertEqual(SL.request_trigger("head_swap: subject_definitions: x"), "head_swap")
         self.assertFalse(SL.is_template("replace the bottle with the can"))
 
+    def test_key_frames_cover_every_piece_and_the_cuts_reach_the_writer(self):
+        self.assertEqual(SL.key_frames(0, 100, [], 4), [12, 38, 62, 88])
+        frames = SL.key_frames(0, 300, [43, 86, 129, 172, 215, 258], 3)    # a montage: 7 pieces, one frame each at least
+        self.assertEqual(len(frames), 7)
+        self.assertTrue(all(any(a <= f < b for f in frames) for a, b in zip([0, 43, 86, 129, 172, 215, 258], [43, 86, 129, 172, 215, 258, 300])))
+        seen = {}
+
+        def fake(clip, prompt, images, max_tokens, *a):
+            seen["prompt"] = prompt
+            return ("subject_definitions:\n<Subject 1> is x.\ndetailed_description:\n[Shot 1] At 00:00.000, a woman stands. "
+                    "At 00:01.792, she walks.")
+        old, SL.vlm_generate = SL.vlm_generate, fake
+        try:
+            one = SL.write_h3_prompt(None, [torch.zeros(1, 8, 8, 3)], [0.0], [], [], "Troque a mulher pela <Picture 1>", {})
+            two = SL.write_h3_prompt(None, [torch.zeros(1, 8, 8, 3)], [0.0], [], [], "swap", {}, cuts=[1.792],
+                                     template="body_swap: subject_definitions: a. summary: b. detailed_description: [Shot 1] c")
+        finally:
+            SL.vlm_generate = old
+        self.assertIn("[Shot 1] A woman stands. She walks.", one)            # no timestamps for one continuous shot
+        self.assertIn('"[Shot 2] At 00:01.792, the shot cuts to ..."', seen["prompt"])
+        self.assertIn("The user's request: swap", seen["prompt"])
+        self.assertIn("The prompt template:\nbody_swap:", seen["prompt"])
+        self.assertTrue(two.startswith("body_swap: "))
+        self.assertIn("[Shot 1] A woman stands. At 00:01.792", two)
+
     def test_a_written_prompt_is_part_of_the_shot_signature_only_with_auto_prompt_on(self):
         seg = {"start": 0, "end": 10, "ref": "", "ref2": "", "prompt": "make it rain"}
         plan = dict(SL.DEFAULT_PLAN, auto_prompts={"0-10": {"text": "A"}})
