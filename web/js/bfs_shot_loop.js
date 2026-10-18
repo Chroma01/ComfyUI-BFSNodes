@@ -294,7 +294,9 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     if (!plan.video) return;
     busy.value = "Detecting cuts…"; error.value = "";
     try {
-      const body = { plan: { ...plan, bounds: apply ? [] : plan.bounds } };
+      // every detected boundary is kept (Max shots only picks how many shots run): asked for without the limit, the
+      // last kept shot would otherwise have no end and run to the end of the range
+      const body = { plan: { ...plan, bounds: apply ? [] : plan.bounds, max_parts: apply ? 0 : plan.max_parts } };
       const r = await api.fetchApi("/bfs/shotloop/plan", { method: "POST", body: JSON.stringify(body) });
       const j = await r.json();
       if (j.error) throw new Error(j.error);
