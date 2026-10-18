@@ -914,8 +914,26 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
 // A workflow saved before 1.113 keeps the old slots of these nodes (ComfyUI restores a node's saved slots): the
 // planner's ref_image / ref_image_2 inputs are gone, the planner's and Unpack's ref_image / ref_image_2 outputs are now
 // refs / ref_count, and what fed Repack's ref_image now feeds its refs input.
-function upgradeLegacySlots(node) {
+// BFS Shot H3 Conditioning (Advanced) before 1.113 had duet widgets in the middle: its saved values are put back by name
+const OLD_ADVANCED_WIDGETS = ["guide_mode", "use_ref_2", "first_frame", "ref_image_size", "with_audio", "duet",
+  "panel_position", "panel_size", "panel_noise", "rope_gap", "task", "instruction", "setting_ref", "inpaint", "mask_guide",
+  "source_blur", "source_blur_strength", "source_blur_segmenter", "source_blur_effect", "mask_guide_look", "mask_ref_size"];
+function upgradeAdvancedWidgets(node, info) {
+  const v = info?.widgets_values;
+  if (!Array.isArray(v) || !["off", "canvas", "shifted RoPE"].includes(v[5]) || !["left", "right", "top", "bottom"].includes(v[6])) return;
+  // 19 values: saved before source_blur_segmenter / source_blur_effect existed
+  const names = v.length === 19 ? OLD_ADVANCED_WIDGETS.filter(n => n !== "source_blur_segmenter" && n !== "source_blur_effect") : OLD_ADVANCED_WIDGETS;
+  names.forEach((name, k) => { const w = node.widgets?.find(x => x.name === name); if (w && k < v.length) w.value = v[k]; });
+  // widgets the saved workflow did not have got a shifted value: back to their default (a list's first choice)
+  node.widgets?.forEach(w => {
+    const choices = w.options?.values;
+    if (!names.includes(w.name) && Array.isArray(choices) && !choices.includes(w.value)) w.value = w.options.default ?? choices[0];
+  });
+}
+
+function upgradeLegacySlots(node, info) {
   const cls = node.comfyClass;
+  if (cls === "BFSShotH3Conditioning") { upgradeAdvancedWidgets(node, info); return; }
   // ref_image / ref_image_2 outputs at slots `at`, at+1 -> refs (list) / ref_count
   const listOutputs = at => {
     const a = node.outputs?.[at], b = node.outputs?.[at + 1];
@@ -948,11 +966,11 @@ function upgradeLegacySlots(node) {
 app.registerExtension({
   name: "BFSNodes.ShotPlanner",
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (!["BFSShotPlanner", "BFSShotUnpack", "BFSShotRepack"].includes(nodeData.name)) return;
+    if (!["BFSShotPlanner", "BFSShotUnpack", "BFSShotRepack", "BFSShotH3Conditioning"].includes(nodeData.name)) return;
     const prev = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function () {
+    nodeType.prototype.onConfigure = function (info) {
       const r = prev?.apply(this, arguments);
-      upgradeLegacySlots(this);
+      upgradeLegacySlots(this, info);
       return r;
     };
   },
