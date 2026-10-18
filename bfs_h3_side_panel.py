@@ -1038,11 +1038,8 @@ class BFSShotH3Duet:
                panel_noise, ref_image_size, steps, sampler_name, scheduler, seed, decode_canvas, audio_vae=None,
                rope_mode="canvas", rope_gap=0.0, source_blur="off", source_blur_strength=1.0, vlm=None,
                source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
-        imgs = {}
-        if shot.get("ref") is not None:
-            imgs["ref_image_1"] = shot["ref"]
-        if use_ref_2 and shot.get("ref2") is not None:
-            imgs[f"ref_image_{len(imgs) + 1}"] = shot["ref2"]
+        own = _shot_loop().shot_refs(shot)
+        imgs = {f"ref_image_{k + 1}": r for k, r in enumerate(own[:_shot_loop().MAX_REFS if use_ref_2 else 1])}
         duet, guided = mode != self.MODES[1], mode != self.MODES[0]
         try:
             from .bfs_shot_loop import chain_image, remember_result, shot_history
@@ -1052,9 +1049,9 @@ class BFSShotH3Duet:
         if prev is not None and shot.get("chain") == "reference":
             imgs[f"ref_image_{len(imgs) + 1}"] = prev
         text = _resolve_prompt(shot.get("prompt", ""), task, instruction, len(imgs), 0)
-        if "{details}" in text:
-            text = _shot_loop().fill_details_now(text, vlm, [shot.get("ref"), shot.get("ref2")],
-                                                 f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}")
+        if "{details" in text:
+            text = _shot_loop().fill_details_now(text, vlm, own, f"[BFS Shot H3 Duet] shot {int(shot.get('index', 0)) + 1}",
+                                                 shot.get("ref_names"))
         hist, hsrc = shot_history(shot) if shot_history else (None, None)
         area = None
         if source_blur and source_blur.startswith("masked area") and (shot.get("mask_src") or (shot.get("crop") or {}).get("crop_mask") is not None):

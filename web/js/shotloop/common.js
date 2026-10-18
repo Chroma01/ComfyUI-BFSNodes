@@ -371,11 +371,11 @@ export const rawH = (...args) => vueH(...args);
 export const GRIDS = { "H3 (17n+5)": [17, 5], "LTX / Wan (8n+1)": [8, 1], "Wan (4n+1)": [4, 1], "any": [1, 0] };
 export const DEFAULTS = {
   video: "", fps: 24, grid: "H3 (17n+5)", mode: "shots", max_s: 4.5, min_s: 1.0, sensitivity: 0.5,
-  max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_ref: "", global_ref2: "", global_prompt: "", global_color_guide_ref1: "#00ff00", global_color_guide_ref2: "#9b30ff", mask_video: "",
+  max_parts: 0, max_total_s: 0, start_s: 0, end_s: 0, start_f: null, end_f: null, track: null, bounds: [], segs: [], global_refs: [], global_ref: "", global_ref2: "", global_prompt: "", global_color_guide_ref1: "#00ff00", global_color_guide_ref2: "#9b30ff", mask_video: "",
   megapixels: 0.5, multiple: 32, generation_size_mode: "megapixels", custom_width: 1024, custom_height: 1024,
   second_pass: { enabled: false, mode: "scale", scale: 2, width: 1280, height: 704, megapixels: 1, align: 32 },
   detector: "adaptive", run: "recursive", between_shots: "keep", shot_cache: "output", shot_storage: "lossless", unload_before_join: true, auto_continue: true,
-  skip_fill: "original", audio_mode: "auto", ref_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
+  skip_fill: "original", audio_mode: "auto", ref_details: {}, picture_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
@@ -470,3 +470,66 @@ export const secondPassSize = (w, h, sp) => {
   const al = Math.max(1, Math.round(+sp.align || 1)), r = x => Math.round(x / al) * al, c16 = x => Math.max(16, Math.round(x / 16) * 16);
   return { w: c16(r(tw)), h: c16(r(th)) };
 };
+
+// ---- reference pictures (<Picture 1..12>)
+export const MAX_REFS = 12;
+// a reference list of the plan: `refs` (plans from 1.113 on), else the old ref / ref2 pair; empty slots at the end dropped
+export const refList = (refs, a = "", b = "") => {
+  const out = (Array.isArray(refs) ? refs : [a, b]).map(x => (typeof x === "string" ? x : "")).slice(0, MAX_REFS);
+  while (out.length && !out[out.length - 1]) out.pop();
+  return out;
+};
+// the pictures a shot uses, in <Picture n> order: its own slot, else the global one at the same position; a slot with
+// neither is left out (same rule as bfs_shot_loop.shot_ref_names)
+export const shotRefNames = (own, glob) => {
+  const out = [];
+  for (let k = 0; k < Math.max(own.length, glob.length); k++) { const x = own[k] || glob[k]; if (x) out.push(x); }
+  return out.slice(0, MAX_REFS);
+};
+// one slot per picture, then "+" (up to 12). Click: upload (the "+" takes several files at once); drop image files or a
+// recent thumbnail on a slot to replace it, anywhere else in the box to add them. `fallback`: the global pictures a
+// shot's empty slots use (shown faded). `extra(k, name)`: more controls under slot k.
+export function refBox(c, target, own, fallback = [], extra = () => null) {
+  const n = Math.max(own.length, fallback.length);
+  const drop = k => ({ onDragover: e => e.preventDefault(),
+                       onDrop: e => { e.preventDefault(); e.stopPropagation(); c.dropRefs(target, k, e); } });
+  const slots = [];
+  for (let k = 0; k < n; k++) {
+    const name = own[k] || "", via = name ? "" : fallback[k] || "";
+    slots.push(h("div", { class: "rslot" }, [
+      h("div", { class: "refslot", ...drop(k),
+        title: name ? `<Picture ${k + 1}>: ${name} (click to replace)` : via ? `<Picture ${k + 1}>: ${via} (global; click to use another picture in this shot)` : "click to upload",
+        onClick: () => c.uploadRef(target, k) },
+        name || via ? [h("img", { src: c.viewUrl(name || via), style: via ? "opacity:.45" : "" }), h("span", { class: "rnum" }, String(k + 1))]
+          : [`⬆ ${k + 1}`]),
+      h("div", { class: "rbtns" }, [name ? h("button", { title: target === "global" || k >= fallback.length ? "remove this picture"
+        : "remove (use the global picture)", onClick: () => c.setRef(target, k, "") }, "✕") : null]),
+      extra(k, name || via),
+    ]));
+  }
+  if (n < MAX_REFS) slots.push(h("div", { class: "rslot" }, [
+    h("div", { class: "refslot add", ...drop(n), title: `add pictures (up to ${MAX_REFS}): click to upload one or more, or drop image files here`,
+      onClick: () => c.uploadRef(target, n, true) }, "+"),
+    h("div", { class: "rbtns" }, []),
+  ]));
+  return h("div", { class: "refbox", ...drop(null) }, slots);
+}
+// chips under a prompt, one per picture: @PictureN inserts <Picture N> at the cursor, 📝 inserts {details@Picture N}
+// (the description of that picture alone). The prompt box and its chips sit in one .pbox.
+export function promptChips(c, names, onSet) {
+  if (!names.length) return null;
+  const insert = (e, tag) => {
+    e.preventDefault();   // mousedown: the prompt keeps its focus and cursor
+    const ta = e.currentTarget.closest(".pbox")?.querySelector("textarea"); if (!ta) return;
+    const v = ta.value, a = ta.selectionStart ?? v.length, b = ta.selectionEnd ?? v.length;
+    const before = v.slice(0, a) + (a && !/\s$/.test(v.slice(0, a)) ? " " : "") + tag;
+    onSet(before + v.slice(b));
+    requestAnimationFrame(() => { ta.focus(); ta.setSelectionRange(before.length, before.length); });
+  };
+  return h("div", { class: "pchips" }, names.map((name, k) => h("span", { class: "pchip" }, [
+    h("button", { class: "sm", title: `insert <Picture ${k + 1}> (${name})`, onMousedown: e => insert(e, `<Picture ${k + 1}>`) },
+      [h("img", { src: c.viewUrl(name) }), `@Picture${k + 1}`]),
+    h("button", { class: "sm", title: `insert {details@Picture ${k + 1}}: the description of this picture (📝 Describe each picture, or the VLM at run time)`,
+      onMousedown: e => insert(e, `{details@Picture ${k + 1}}`) }, "📝"),
+  ])));
+}

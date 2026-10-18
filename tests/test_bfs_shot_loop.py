@@ -861,6 +861,23 @@ class ConditionFlowTest(unittest.TestCase):
         self.assertEqual(len(self.calls["guides"]), 1)
         self.assertAlmostEqual(float(self.calls["guides"][0][0, 2, 2, 0]), 0.5)   # it is the masked one
 
+    def test_passes_every_reference_in_order(self):
+        refs = [torch.full((1, 32, 32, 3), k / 12) for k in range(12)]
+        shot, _ = self._shot(inpaint=False)
+        shot.pop("mask_src")
+        shot.update(refs=refs, ref=refs[0], ref2=refs[1], ref_names=[f"r{k}.png" for k in range(12)],
+                    prompt="<Picture 12> is the {details@Picture 12}.")
+        out = SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[3], True,
+                                                   "none", "match", inpaint="off")
+        kw = self.calls["r2v"][0]
+        self.assertEqual(list(kw["ref_images"]), [f"ref_image_{k}" for k in range(12)])
+        self.assertIs(kw["ref_images"]["ref_image_11"], refs[11])
+        self.assertEqual(out[3], "<Picture 12> is the character.")   # no VLM and no saved description
+        self.calls["r2v"].clear()
+        SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[3], False,
+                                             "none", "match", inpaint="off")
+        self.assertEqual(list(self.calls["r2v"][0]["ref_images"]), ["ref_image_0"])
+
     def test_ignored_outside_mask_only(self):
         shot, m = self._shot(inpaint=False)
         self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3])
@@ -869,6 +886,55 @@ class ConditionFlowTest(unittest.TestCase):
         self.calls["r2v"].clear()
         self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3])
         self.assertNotIn("ref_videos", self.calls["r2v"][0])
+
+
+class MultiRefTest(unittest.TestCase):
+    """Up to 12 reference pictures per shot (plans before 1.113 had ref / ref2)."""
+
+    def test_old_plans_become_a_list_and_keep_ref_and_ref2(self):
+        p = SL._load_plan('{"global_ref": "a.png", "global_ref2": "b.png"}')
+        self.assertEqual(p["global_refs"], ["a.png", "b.png"])
+        p = SL._load_plan('{"global_refs": ["a.png", "", "c.png", ""], "global_ref": "stale.png"}')
+        self.assertEqual(p["global_refs"], ["a.png", "", "c.png"])
+        self.assertEqual((p["global_ref"], p["global_ref2"]), ("a.png", ""))
+        self.assertEqual(len(SL.ref_list([f"{k}.png" for k in range(20)])), SL.MAX_REFS)
+
+    def test_a_shot_slot_falls_back_to_the_global_one_and_gaps_close(self):
+        self.assertEqual(SL.shot_ref_names(["", "x.png"], ["a.png", "b.png", "c.png"]), ["a.png", "x.png", "c.png"])
+        self.assertEqual(SL.shot_ref_names(["", "", "z.png"], ["a.png"]), ["a.png", "z.png"])
+
+    def test_signature_of_a_two_reference_shot_is_unchanged(self):
+        seg = {"start": 0, "end": 10, "ref": "a.png", "ref2": "b.png", "prompt": ""}
+        plan = dict(SL.DEFAULT_PLAN, global_ref="g.png")
+        old = SL.shot_signature(plan, seg, 0, {})
+        new = SL.shot_signature(dict(plan, global_refs=["g.png"]), dict(seg, refs=["a.png", "b.png"]), 0, {})
+        self.assertEqual(old, new)
+        three = SL.shot_signature(dict(plan, global_refs=["g.png"]), dict(seg, refs=["a.png", "b.png", "c.png"]), 0, {})
+        self.assertNotEqual(old, three)
+
+    def test_picture_details(self):
+        names, imgs = ["a.png", "b.png"], [torch.zeros(1, 4, 4, 3)] * 2
+        text = "<Subject 1> is the {details@Picture 2} shown in <Picture 2>, {details@Picture1}."
+        out = SL.fill_picture_details(text, names, imgs, {"b.png": "the tall man"})
+        self.assertEqual(out, "<Subject 1> is the tall man shown in <Picture 2>, character.")
+        kept = SL.fill_picture_details(text, names, imgs, {"b.png": "tall man"}, keep_missing=True)
+        self.assertIn("{details@Picture1}", kept)
+        self.assertEqual(SL.fill_picture_details("{details@Picture 5}", names, imgs, {}), "character")
+        self.assertEqual(SL.prompt_slot(text, "{details@Picture 2}"),
+                         "<Subject 1> is the ___ shown in <Picture 2>, the subject of <Picture 1>.")
+        self.assertEqual(SL.picture_marker(text, 1), "{details@Picture1}")
+        self.assertEqual(SL.expand_two_ref_prompt(text), text)   # the prompt already says what <Picture 2> is
+
+    def test_repack_replaces_the_first_two_and_keeps_the_rest(self):
+        refs = [torch.zeros(1, 4, 4, 3) for _ in range(3)]
+        new = torch.ones(1, 4, 4, 3)
+        out = SL.BFSShotRepack().repack(dict(_shot(0, 0, 20), refs=list(refs), ref=refs[0], ref2=refs[1]),
+                                        ref_image_2=new)[0]
+        self.assertTrue(torch.equal(out["refs"][1], new) and torch.equal(out["ref2"], new))
+        self.assertIs(out["refs"][2], refs[2])
+
+    def test_the_planner_has_no_reference_inputs(self):
+        self.assertNotIn("ref_image", SL.BFSShotPlanner.INPUT_TYPES()["optional"])
 
 
 class DescribeShortTest(unittest.TestCase):

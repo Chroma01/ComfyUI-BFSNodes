@@ -1,6 +1,6 @@
 // 🎬 Shots tab: one card per shot, then the selected shot's editor (preview, reference & prompt, who is replaced,
 // continuity, copy to other shots).
-import { h, hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section } from "./common.js";
+import { h, hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section, refBox, promptChips } from "./common.js";
 import { h as rawH } from "../vendor/vue.esm-browser.prod.mjs";
 
 const GUIDE_COLORS = [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
@@ -38,11 +38,10 @@ function shotCard(c, s, i) {
     why ? h("div", { class: "t", style: "color:#ffc46b" }, why) : null,
     h("div", { class: "t" }, `${fmtT(s.start, fps)} → ${fmtT(s.end, fps)} · ${s.len}f → ${s.gen}f`),
     h("div", { class: "thumbs" }, [
-      ...["ref", "ref2"].map(k => {
-        const own = s[k], name = own || plan["global_" + k];
-        return name ? h("img", { class: "rt", src: c.viewUrl(name), title: own ? name : `${name} (global)`,
-          style: own ? "" : "opacity:.45" }) : h("div", { class: "rt ph2" }, k);
-      }),
+      ...(s.names.length ? s.names.slice(0, 3).map((name, k) => h("img", { class: "rt", src: c.viewUrl(name),
+          title: s.refs.includes(name) ? name : `${name} (global)`, style: s.refs.includes(name) ? "" : "opacity:.45" }))
+        : [h("div", { class: "rt ph2" }, "ref")]),
+      s.names.length > 3 ? h("div", { class: "rt ph2", title: s.names.slice(3).join("\n") }, `+${s.names.length - 3}`) : null,
       h("img", { class: "rt", style: "width:56px", src: showMasks.value && mp?.frames?.length
         ? mp.frames[Math.floor(mp.frames.length / 2)].src : c.thumbFor(s.start + Math.floor(s.len / 2)) }),
     ]),
@@ -76,19 +75,10 @@ function player(c, cur) {
   ]);
 }
 
-function refSlot(c, name, label, target, field) {
-  return h("div", { class: "rslot" }, [
-    h("div", { class: "refslot", title: name ? name + " (click to replace)" : "click to upload",
-      onClick: () => c.uploadRef(target, field) },
-      name ? [h("img", { src: c.viewUrl(name) })] : [label]),
-    h("div", { class: "rbtns" }, [name ? h("button", { title: "remove (use the global reference)", onClick: () => c.setRef(target, field, "") }, "✕") : null]),
-  ]);
-}
-
 function editor(c, cur) {
   const { plan, sel, segs, maskPrev, targetCrop, vlmSug, busy, usedRefs, copyOpts, COPY_FIELDS } = c;
   const i = sel.value, S = segs.value, k = segKey(cur), mp = maskPrev.value[k], g = vlmSug.value[k];
-  const hasRef2 = !!(cur.ref2 || plan.global_ref2);
+  const hasRef2 = cur.names.length > 1;
   const issues = c.checksFor(i);
 
   const head = h("div", { class: "edhd" }, [
@@ -110,24 +100,22 @@ function editor(c, cur) {
     h("div", { class: "ck" }, [h("span", { class: "lvl" }, x.lvl === "warn" ? "⚠" : "ℹ"), h("span", x.text)]))) : null;
 
   const refPrompt = section("Reference & prompt", [
-    h("div", { class: "row", style: "align-items:flex-start;gap:10px" }, [
-      h("div", { class: "refbox" }, [
-        refSlot(c, cur.ref, "⬆ reference", i, "ref"),
-        refSlot(c, cur.ref2, "⬆ ref 2", i, "ref2"),
-      ]),
-      h("div", { style: "flex:1;min-width:200px" }, [
-        h("textarea", { placeholder: "Prompt for this shot (empty = global prompt). Placeholders: {target} {details} {shot} {setting}",
-          value: cur.prompt, onChange: e => c.setMeta(i, "prompt", e.target.value) }),
-        !cur.prompt && plan.global_prompt ? rawH("span", { class: "hint" }, `↳ uses the global prompt: ${plan.global_prompt.slice(0, 120)}${plan.global_prompt.length > 120 ? "…" : ""}`) : null,
-      ]),
+    refBox(c, i, cur.refs, plan.global_refs),
+    h("div", { class: "pbox", style: "margin-top:6px" }, [
+      h("textarea", { placeholder: "Prompt for this shot (empty = global prompt). Placeholders: {target} {details} {details@Picture n} {shot} {setting}",
+        value: cur.prompt, onChange: e => c.setMeta(i, "prompt", e.target.value) }),
+      promptChips(c, cur.names, v => c.setMeta(i, "prompt", v)),
+      !cur.prompt && plan.global_prompt ? rawH("span", { class: "hint" }, `↳ uses the global prompt: ${plan.global_prompt.slice(0, 120)}${plan.global_prompt.length > 120 ? "…" : ""}`) : null,
     ]),
-    usedRefs.value.length ? h("div", { class: "recent" }, [hint("recent (click = ref, shift+click = ref 2):"),
-      ...usedRefs.value.map(n => h("img", { src: c.viewUrl(n), title: n, onClick: e => c.setRef(i, e.shiftKey ? "ref2" : "ref", n) })),
+    usedRefs.value.length ? h("div", { class: "recent" }, [hint("recent (click = picture 1, shift+click = add, or drag onto a slot):"),
+      ...usedRefs.value.map(n => h("img", { src: c.viewUrl(n), title: n, draggable: true,
+        onDragstart: e => e.dataTransfer.setData("text/bfs-ref", n),
+        onClick: e => (e.shiftKey ? c.putRefs(i, cur.refs.length, [n]) : c.setRef(i, 0, n)) })),
       h("button", { class: "sm", title: "Forget the recent pictures (the ones this plan still uses stay)", onClick: () => c.clearRecent() }, "✕ clear"),
       h("button", { class: "sm dng", title: "Remove EVERY reference from this plan (global and all shots) and the recent list", onClick: () => c.clearAllRefs() }, "✕ clear all")]) : null,
     h("div", { class: "row", style: "margin-top:6px" }, [
       h("button", { class: "dng", title: "clear this shot's references and prompt: it uses the global ones",
-        onClick: () => { ["ref", "ref2", "prompt"].forEach(f => { c.meta(i)[f] = ""; }); c.save(); } }, "Use global"),
+        onClick: () => { Object.assign(c.meta(i), { refs: [], prompt: "" }); c.save(); } }, "Use global"),
       hint("empty slots use the global references (Prompts & refs tab)"),
     ]),
   ], { sub: "who the shot becomes" });
@@ -265,7 +253,7 @@ function editor(c, cur) {
   const copy = section("Copy to other shots", [
     h("div", { class: "copy" }, Object.entries(COPY_FIELDS).map(([f, label]) =>
       check(copyOpts[f], v => { copyOpts[f] = v; }, label, {
-        ref: "reference + ref 2", prompt: "this shot's prompt", mask_text: "the mask text (shots keep their own points)",
+        ref: "every reference picture", prompt: "this shot's prompt", mask_text: "the mask text (shots keep their own points)",
         points: "the points, on each shot's frame at the same relative position (a subject that stays in place)",
         mask_video: "the shot's mask video (it covers only its own shot: usually you want a different one per shot)",
         crop: "the generation mode (Full frame / Frame + paste / Mask only / Crop / Crop + mask) and its mask strength (shots with a mask)", target: "the {target} description",

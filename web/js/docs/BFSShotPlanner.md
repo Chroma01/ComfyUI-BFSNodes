@@ -238,16 +238,24 @@ Face identities are used for filtering and optional shot splitting. References a
 
 ## References and prompts
 
-Every shot can have its own reference, second reference and prompt; shots without them use the
-global ones. Click an empty reference slot to upload an image straight from your computer; a filled
-slot has **✕** to remove it; **Copy to other shots** gives a shot's references to every shot. The last ten
-references you picked are shown under the shot editor for one-click reuse (click = reference,
-shift+click = second reference). Connected `ref_image`, `ref_image_2` and `prompt` inputs override
-the panel's global values, so an edited first frame or a prompt from another node can drive the
-defaults.
+Up to **12 reference pictures** (1.113.0): the global list starts with one slot and **+** adds more; they are
+`<Picture 1>` to `<Picture 12>`, in order. Click a slot to upload a picture (the **+** takes several files at once),
+or drop image files on a slot (replaces it) or anywhere on the box (adds them). A filled slot has **✕**: a global
+picture is taken out (the next ones move up), a shot's own picture falls back to the global one.
 
-The planner also outputs `ref_image` and `ref_image_2`: the references the shots actually use,
-without repeats, so a plan where every shot shares one reference returns a single image.
+Every shot can have its own pictures and prompt. A shot's empty slot uses the global picture at the same position
+(shown faded), so a shot can change only `<Picture 2>` and keep the rest. **Copy to other shots** gives a shot's
+pictures to every shot. The last ten pictures you picked are shown under the shot editor: click = picture 1,
+shift+click = add it as the next picture, or drag it onto any slot.
+
+Under every prompt (global and per shot) there is a chip per picture: **@PictureN** inserts `<Picture N>` at the
+cursor, **📝** inserts `{details@Picture N}` (that picture's description, below).
+
+The node no longer has `ref_image` / `ref_image_2` inputs (the pictures live in the panel); a workflow saved with
+them connected still runs, and the log says the images are ignored. A connected `prompt` input still overrides the
+global prompt. The planner still outputs `ref_image` and `ref_image_2`: pictures 1 and 2 the shots use, without
+repeats. **BFS Shot H3 Conditioning** passes every picture of the shot (*use_ref_2* off: only the first); H3's own
+node stops at 9 and LoRAs trained like OpenJutsu saw up to 9, so the log notes a shot with more.
 
 ## Mask & crop (SAM 3)
 
@@ -371,9 +379,17 @@ default). Aspect ratio is preserved; the model's own image processor may resize 
 reference details matter, or lower it to reduce analysis cost. This does not change the generated video size.
 
 When a shot has two references, the planner expands a one-reference template at run time to include `<Subject 2>` and
-`{details2}` for `<Picture 2>`. The Describe refs panel provides a separate description field for each reference.
+`{details2}` for `<Picture 2>` (not when the prompt already names `<Picture 2>` or uses `{details@Picture n}`). The Describe refs panel provides a separate description field for each reference.
 Existing one-reference templates remain unchanged in shots with only one reference. You can also use `{details2}`
 explicitly in any template.
+
+### One description per picture ({details@Picture n})
+
+**📝 Describe each picture** (same tab) describes every picture the plan uses by itself, once per image, with the same
+preset, temperature and seed as Describe refs; each description is editable. Write **`{details@Picture 3}`** (or
+`{details@Picture3}`) in a prompt and each shot gets the description of *its* third picture. A picture without a
+description is described at run time by the planner's VLM, else by the conditioning node's VLM, else it becomes
+"character". `{details}` and `{details2}` work as before.
 
 **Fit the prompt** (on by default, next to 📝 Describe refs): the VLM gets the sentence of the prompt that holds the
 marker, with a blank in its place (e.g. `<Subject 1> is the ___ shown in <Picture 1>`), and writes the description for

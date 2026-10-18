@@ -452,12 +452,12 @@ def plan_segments(n: int, cuts: list[int], mode: str, max_len: int, min_len: int
 DEFAULT_PLAN = {
     "video": "", "fps": 24.0, "grid": DEFAULT_GRID, "mode": "shots", "max_s": 4.5, "min_s": 1.0,
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "start_s": 0.0, "end_s": 0.0, "bounds": [], "segs": [],
-    "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
+    "global_refs": [], "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
     "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
-    "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless", "unload_before_join": True,
+    "picture_details": {}, "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless", "unload_before_join": True,
 }
 
 
@@ -499,7 +499,38 @@ def _load_plan(plan_json: str) -> dict:
         raise ValueError(f"BFS Shot Planner: the plan is not valid JSON ({exc})") from exc
     out = dict(DEFAULT_PLAN)
     out.update({k: v for k, v in p.items() if v is not None})
+    out["global_refs"] = ref_list(p.get("global_refs"), out.get("global_ref"), out.get("global_ref2"))
+    out["global_ref"], out["global_ref2"] = (out["global_refs"] + ["", ""])[:2]
     return out
+
+
+MAX_REFS = 12   # reference pictures per shot, <Picture 1..12>; the continuity and setting pictures come after them
+
+
+def ref_list(refs, ref="", ref2="") -> list[str]:
+    """A reference list of the plan: `refs` (plans from 1.113 on), else the old ref / ref2 pair. '' = not set (a shot's
+    empty slot uses the global reference at the same position); empty slots at the end are dropped."""
+    out = [str(x or "") for x in refs] if isinstance(refs, list) else [str(ref or ""), str(ref2 or "")]
+    out = out[:MAX_REFS]
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def shot_ref_names(own: list, global_refs: list) -> list[str]:
+    """The pictures a shot uses, in <Picture n> order: its own slot, else the global one at the same position. A slot
+    with neither is left out, so the pictures after it move up one number."""
+    n = max(len(own), len(global_refs))
+    names = [(own[k] if k < len(own) else "") or (global_refs[k] if k < len(global_refs) else "") for k in range(n)]
+    return [x for x in names if x][:MAX_REFS]
+
+
+def shot_refs(shot: dict) -> list:
+    """The reference images of a shot handed out by the planner, in <Picture n> order."""
+    refs = shot.get("refs")
+    if refs is None:
+        refs = [shot.get("ref"), shot.get("ref2")]
+    return [r for r in refs if r is not None]
 
 
 def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[dict]:
@@ -528,8 +559,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
     for i, s in enumerate(segs):
         m = meta[i] if i < len(meta) and isinstance(meta[i], dict) else {}
         s["enabled"] = bool(m.get("enabled", True))
-        s["ref"] = m.get("ref") or ""
-        s["ref2"] = m.get("ref2") or ""
+        s["refs"] = ref_list(m.get("refs"), m.get("ref"), m.get("ref2"))
+        s["ref"], s["ref2"] = (s["refs"] + ["", ""])[:2]
         s["prompt"] = m.get("prompt") or ""
         s["chain"] = m.get("chain") or "head"   # a continuing take starts on the previous end (cuts skip it)
         s["chain_frame"] = m.get("chain_frame") or "first"
@@ -1524,13 +1555,27 @@ def prompt_slot(prompt: str, marker: str, limit: int = 360) -> str:
     for other, plain in (("{target}", "the guide subject"), ("{details2}", "the second character"),
                          ("{details}", "the character"), ("{shot}", ""), ("{setting}", "")):
         snippet = snippet.replace(other, plain)
+    snippet = PICTURE_DETAILS.sub(lambda m: f"the subject of <Picture {m.group(1)}>", snippet)
     return snippet[:limit]
 
 
+# {details@Picture 3} (or {details@Picture3}): the description of the shot's third picture alone
+PICTURE_DETAILS = re.compile(r"\{details@Picture\s*(\d+)\}")
+
+
+def picture_marker(prompt: str, k: int | None = None) -> str:
+    """The prompt's {details@Picture k} marker as written (the first one of any picture with k=None), or ''."""
+    for m in PICTURE_DETAILS.finditer(str(prompt or "")):
+        if k is None or int(m.group(1)) == k:
+            return m.group(0)
+    return ""
+
+
 def expand_two_ref_prompt(prompt: str) -> str:
-    """Add a second subject slot when a shot has a second reference and its template has only one."""
+    """Add a second subject slot when a shot has a second reference and its template has only one (not when the
+    prompt already says what <Picture 2> is, or names its pictures with {details@Picture n})."""
     text = str(prompt or "")
-    if "{details2}" in text or "<Subject 2>" in text:
+    if "{details2}" in text or "<Subject 2>" in text or "<Picture 2>" in text or "{details@" in text:
         return text
     second = "<Subject 2> is the {details2} shown in <Picture 2>."
     if re.search(r"(?im)^\s*subject_definitions\s*:", text):
@@ -1895,6 +1940,42 @@ def vlm_describe(clip, images: list, instruction: str, max_tokens: int = 320, te
 def ref_set_key(ref: str, ref2: str) -> str:
     """Key of a reference set in plan['ref_details'] (edited descriptions)."""
     return f"{ref or ''}|{ref2 or ''}"
+
+
+def describe_picture(clip, image, prompt: str, marker: str, cfg: dict) -> str:
+    """One picture described alone ({details@Picture k}), written for the prompt sentence that holds `marker`."""
+    slot = prompt_slot(prompt, marker) if marker and cfg.get("fit_prompt", True) else ""
+    d = tidy_details(vlm_describe(clip, [image], describe_instruction(cfg, slot), int(cfg["max_tokens"]),
+                                  float(cfg.get("temperature") or 0), int(cfg.get("seed") or 0),
+                                  int(cfg.get("image_max_side") or 1024)), cfg)
+    return tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") == "short" else d
+
+
+def fill_picture_details(text: str, names: list, images: list, saved: dict, clip=None, cfg: dict | None = None,
+                         tag: str = "", keep_missing: bool = False) -> str:
+    """{details@Picture k} = the description of the shot's k-th picture: the one saved for that image (📝 Describe each
+    picture, or typed in the panel), else the VLM describes it now, else 'character' (keep_missing: the marker stays,
+    for the conditioning node's VLM)."""
+    if "{details@" not in (text or ""):
+        return text
+
+    def sub(m):
+        k = int(m.group(1)) - 1
+        name = names[k] if 0 <= k < len(names) else ""
+        image = images[k] if 0 <= k < len(images) else None
+        d = (saved or {}).get(name, "") if name else ""
+        if not d and clip is not None and image is not None:
+            d = describe_picture(clip, image, text, m.group(0), cfg or vlm_cfg({}))
+            if d:
+                print(f"{tag}: {m.group(0)} = {d!r} (described automatically)", flush=True)
+        if d:
+            return clean_slot(d)
+        if image is None:
+            print(f"{tag}: {m.group(0)}: the shot has no picture {k + 1}", flush=True)
+        elif keep_missing:
+            return m.group(0)
+        return "character"
+    return PICTURE_DETAILS.sub(sub, text)
 
 
 # ---------------------------------------------------------------------------- prompt writer (VLM)
@@ -2500,11 +2581,12 @@ def _skip_head(masks: torch.Tensor, shot: dict) -> torch.Tensor:
     return masks[n:] if n and masks.ndim == 3 and masks.shape[0] > n else masks
 
 
-def fill_details_now(text: str, vlm, refs: list, tag: str = "") -> str:
-    """Fill legacy combined details or the separate per-reference details slots at render time."""
+def fill_details_now(text: str, vlm, refs: list, tag: str = "", names: list | None = None) -> str:
+    """Fill legacy combined details, the separate per-reference details slots and {details@Picture k} at render time."""
+    refs = [r for r in refs if r is not None]
+    text = fill_picture_details(text, names or [], refs, {}, vlm, vlm_cfg({}), tag)
     if "{details}" not in (text or "") and "{details2}" not in (text or ""):
         return text
-    refs = [r for r in refs if r is not None]
     if "{details2}" in text:
         cfg = vlm_cfg({})
         values = []
@@ -2585,7 +2667,7 @@ def run_dir(run_id: str, create: bool = True) -> str:
 
 
 # ---------------------------------------------------------------------------- shot cache (signatures, redo)
-_SIG_SKIP = ("stats", "people", "main", "cast_skip", "skip_reason", "run", "enabled", "force")
+_SIG_SKIP = ("stats", "people", "main", "cast_skip", "skip_reason", "run", "enabled", "force", "refs")
 _SIG_PLAN = ("grid", "fps", "megapixels", "generation_size_mode", "custom_width", "custom_height", "multiple",
              "global_prompt", "global_ref", "global_ref2", "global_color_guide_ref1", "global_color_guide_ref2",
              "mask_cfg", "vlm_cfg", "ref_details", "audio_mode", "mask_video")
@@ -2605,6 +2687,13 @@ def shot_signature(plan: dict, seg: dict, head: int, extra: dict) -> str:
     conditioning settings)."""
     doc = {"s": {k: v for k, v in seg.items() if k not in _SIG_SKIP}, "head": int(head),
            "g": {k: plan.get(k) for k in _SIG_PLAN}, "x": extra}
+    # pictures 3+ and per-picture descriptions only count when used: shots stored before them keep their signature
+    if len(seg.get("refs") or []) > 2:
+        doc["s"]["refs_more"] = seg["refs"][2:]
+    if len(plan.get("global_refs") or []) > 2:
+        doc["g"]["global_refs_more"] = plan["global_refs"][2:]
+    if plan.get("picture_details"):
+        doc["g"]["picture_details"] = plan["picture_details"]
     return hashlib.sha1(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -2869,9 +2958,6 @@ class BFSShotPlanner:
                                                "boundaries and the per-shot reference and prompt."}),
             },
             "optional": {
-                "ref_image": ("IMAGE", {"tooltip": "Default reference for every shot that has none of its own "
-                                                   "(overrides the panel's global reference)."}),
-                "ref_image_2": ("IMAGE", {"tooltip": "Default second reference (e.g. a full-body photo)."}),
                 "prompt": ("STRING", {"forceInput": True,
                                       "tooltip": "Default prompt for shots without their own "
                                                  "(overrides the panel's global prompt)."}),
@@ -2921,9 +3007,14 @@ class BFSShotPlanner:
             pass
         return plan
 
-    def plan_shots(self, plan, ref_image=None, ref_image_2=None, prompt=None, vlm=None, mask=None, graph=None,
-                   node_id=None):
+    def plan_shots(self, plan, prompt=None, vlm=None, mask=None, graph=None, node_id=None, ref_image=None,
+                   ref_image_2=None):
         p = _load_plan(plan)
+        if ref_image is not None or ref_image_2 is not None:
+            # the ref_image / ref_image_2 inputs were removed in 1.113 (the references live in the panel, up to
+            # 12); a workflow saved with them connected still links them, and they are ignored
+            print("[BFS Shot Planner] ref_image / ref_image_2 are no longer planner inputs: the connected images "
+                  "are ignored. Set the references in the panel (Prompts & refs tab, up to 12).", flush=True)
         if vlm is not None:
             _VLM["clip"] = vlm       # the panel's Analyse button uses it too
         vcfg = vlm_cfg(p.get("vlm_cfg"))
@@ -2945,8 +3036,6 @@ class BFSShotPlanner:
         W, H = plan_generation_size(a["width"], a["height"], p, int(p["multiple"]))
         src = _timeline(a["n_src"], a["fps_src"], fps)
         audio = _read_audio(path) if p.get("audio_mode", "auto") != "silent" else None
-        g_ref = ref_image if ref_image is not None else _load_image(p.get("global_ref", ""))
-        g_ref2 = ref_image_2 if ref_image_2 is not None else _load_image(p.get("global_ref2", ""))
         g_prompt = prompt if prompt is not None else p.get("global_prompt", "")
         queue = p.get("run") in STORED_RUNS
         rid = run_key(p, path) if queue else ""
@@ -2955,7 +3044,8 @@ class BFSShotPlanner:
         st: dict = {}
         assemble_only = False   # every shot stored and up to date: nothing is generated, the join only assembles
         if queue:
-            extra = {"ref": _tensor_sig(ref_image), "ref2": _tensor_sig(ref_image_2), "prompt": prompt or "",
+            # "ref" / "ref2": the removed reference inputs, always empty now (kept so stored shots stay valid)
+            extra = {"ref": "", "ref2": "", "prompt": prompt or "",
                      "mask": _tensor_sig(mask) if mask is not None else "", "size": [W, H],
                      "render": render_fingerprint(graph, node_id)}
             sigs = [shot_signature(p, s, head_length(segs, i, p["grid"]), extra) for i, s in enumerate(segs)]
@@ -2978,29 +3068,38 @@ class BFSShotPlanner:
         work = [] if assemble_only else todo
         cache_imgs: dict[str, torch.Tensor] = {}
 
-        def ref_for(name, default):
+        def ref_for(name):
             if not name:
-                return default
+                return None
             if name not in cache_imgs:
                 cache_imgs[name] = _load_image(name)
             return cache_imgs[name]
 
-        g_names = {"ref": "__socket__" if ref_image is not None else p.get("global_ref", ""),
-                   "ref2": "__socket__" if ref_image_2 is not None else p.get("global_ref2", "")}
+        def names_of(s):
+            return shot_ref_names(s["refs"], p["global_refs"])
 
-        def unique(field, default):
+        def refs_of(s):
+            return [ref_for(n) for n in names_of(s)]
+
+        def pair(s):   # pictures 1 and 2 (names, images): {details} / {details2}, Colored Mark, ref_image outputs
+            names, imgs = names_of(s), refs_of(s)
+            return ((names + ["", ""])[0], (names + ["", ""])[1], (imgs + [None, None])[0], (imgs + [None, None])[1])
+
+        def unique(k):
             seen, out = set(), []
             for s in segs:
-                key = s[field] or g_names[field]          # the image this shot actually uses
-                img = ref_for(s[field], default)
-                if img is None or key in seen:
+                names = names_of(s)
+                if len(names) <= k or names[k] in seen:
                     continue
-                seen.add(key)
-                out.append(img)
+                img = ref_for(names[k])
+                if img is not None:
+                    seen.add(names[k])
+                    out.append(img)
             return out or [_grey()]
 
-        used_refs, used_refs2 = unique("ref", g_ref), unique("ref2", g_ref2)
+        used_refs, used_refs2 = unique(0), unique(1)
         details = p.get("ref_details") or {}
+        pic_details = dict(p.get("picture_details") or {})
 
         auto_details = {}
 
@@ -3050,23 +3149,27 @@ class BFSShotPlanner:
         if vlm is not None and vcfg.get("write_prompt"):   # the VLM writes the prompt of every shot without its own
             for i in work:
                 if not segs[i]["prompt"]:
-                    written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"],
-                                                  [ref_for(segs[i]["ref"], g_ref), ref_for(segs[i]["ref2"], g_ref2)],
+                    written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"], refs_of(segs[i]),
                                                   vcfg["write_task"], vcfg["write_change"], int(vcfg["max_tokens"]))
         # {details} with no edited description: described now, before any SAM 3 work (switching between SAM 3 and the
         # VLM mid-generation breaks the VLM: that is why the button worked and the run did not), once per reference set
         if vlm is not None:
             for i in work:
                 text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
-                rn, r2n = segs[i]["ref"] or g_names["ref"], segs[i]["ref2"] or g_names["ref2"]
+                names = names_of(segs[i])
+                for m in PICTURE_DETAILS.finditer(text):   # {details@Picture k}: each picture once, by itself
+                    k = int(m.group(1)) - 1
+                    if k < len(names) and not pic_details.get(names[k]):
+                        pic_details[names[k]] = describe_picture(vlm, ref_for(names[k]), text, m.group(0), vcfg)
+                        print(f"[BFS Shot Planner] {m.group(0)} = {pic_details[names[k]]!r} (described automatically)",
+                              flush=True)
+                rn, r2n, r1, r2 = pair(segs[i])
                 separate = bool(r2n) or "{details2}" in text
                 if r2n:
                     text = expand_two_ref_prompt(text)
                 if "{details}" not in text and "{details2}" not in text:
                     continue
                 k = ref_set_key(rn, r2n)
-                r1 = ref_for(segs[i]["ref"], g_ref)
-                r2 = ref_for(segs[i]["ref2"], g_ref2) if r2n else None
                 saved = details.get(k, "")
                 if separate:
                     saved = saved if isinstance(saved, dict) else {"details": saved}
@@ -3112,8 +3215,8 @@ class BFSShotPlanner:
             idx = np.clip(idx, 0, a["n"] - 1)          # past the end: hold the last frame
             frames = _read_frames(path, src[idx], (W, H))
             ft = torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
-            ref = ref_for(s["ref"], g_ref)
-            ref2 = ref_for(s["ref2"], g_ref2)
+            names, refs = names_of(s), refs_of(s)
+            rname, r2name, ref, ref2 = pair(s)
             prev_len = (segs[i - 1]["end"] - segs[i - 1]["start"]) if i > 0 else 0
             chain_img = None
             if queue and i > 0 and s["chain"] != "off":
@@ -3161,7 +3264,9 @@ class BFSShotPlanner:
             head_px = head_for(i, head, prev_len, queue, rid, W, H, crop, ft) if head and not assemble_only else None
             template = (s["prompt"] or written.get(i) or g_prompt or "").replace(
                 "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else "")
-            rname, r2name = s["ref"] or g_names["ref"], s["ref2"] or g_names["ref2"]
+            # {details@Picture k} left for the conditioning node's VLM when nobody described it yet
+            template = fill_picture_details(template, names, refs, pic_details, tag=f"[BFS Shot Planner] shot {i + 1}",
+                                            keep_missing=vlm is None)
             separate_details = bool(r2name) or "{details2}" in template
             if r2name:
                 template = expand_two_ref_prompt(template)
@@ -3186,7 +3291,7 @@ class BFSShotPlanner:
                 "color_guide_color2": str(s.get("color_guide_color2") or "#9b30ff"),
                 "color_guide_points2": list(s.get("color_guide_points2") or []),
                 "color_guide_key2": int(s.get("color_guide_key2") or 0),
-                "ref": ref, "ref2": ref2,
+                "ref": ref, "ref2": ref2, "refs": refs, "ref_names": names,
                 "prompt": shot_prompt,
                 "audio": _slice_audio(audio, g0 / fps, glen / fps),
                 "run_id": rid, "queue": queue, "run_mode": p.get("run"),
@@ -3228,7 +3333,7 @@ class BFSShotPlanner:
             lines.append(f"#{s['index'] + 1}: frames {s['start']}-{s['end'] - 1} ({s['length']} -> generate "
                          f"{s['gen_length']}{', the first ' + str(s['head']) + ' = previous end' if s.get('head') else ''})"
                          f"{' cut' if s['cut_before'] else ''}"
-                         f"{' ref' if s['ref'] is not None else ''}{' ref2' if s['ref2'] is not None else ''}")
+                         f"{' ' + str(len(s['refs'])) + ' ref' + ('s' if len(s['refs']) > 1 else '') if s['refs'] else ''}")
         sp = {**SECOND_PASS_DEFAULTS, **(p.get("second_pass") or {})}
         UW, UH = second_pass_size(W, H, sp)
         if sp["enabled"]:
@@ -3310,10 +3415,15 @@ class BFSShotRepack:
                       f"expected {n}; {'trimming' if fr.shape[0] > n else 'holding the last frame'}")
                 fr = fr[:n] if fr.shape[0] > n else torch.cat([fr, fr[-1:].expand(n - fr.shape[0], -1, -1, -1)], 0)
             out["frames"] = fr
-        if ref_image is not None:
-            out["ref"] = ref_image[:1]
-        if ref_image_2 is not None:
-            out["ref2"] = ref_image_2[:1]
+        refs = shot_refs(shot)
+        for k, img in ((0, ref_image), (1, ref_image_2)):
+            if img is not None:
+                if k < len(refs):
+                    refs[k] = img[:1]
+                else:
+                    refs.append(img[:1])
+        out["refs"] = refs
+        out["ref"], out["ref2"] = (refs + [None, None])[:2]
         if prompt is not None:
             out["prompt"] = prompt
         return (out,)
@@ -3709,7 +3819,8 @@ class BFSShotH3Conditioning:
                     "aligned guide: the shot's frames sit on the generated frames (MiniMax H3 Add Guide), "
                     "frame by frame. native reference video: the shot enters as <Video 1> like the reference "
                     "video input. both: the two together."}),
-                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Also pass the second reference."}),
+                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Pass every reference of the shot (<Picture 2> "
+                                                                      "on, up to 12). Off: only the first."}),
                 "first_frame": (["none", "shot's first frame"], {"default": "none", "tooltip":
                     "Anchor the shot's own first frame as an extra aligned image guide."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
@@ -3822,11 +3933,7 @@ class BFSShotH3Conditioning:
             from .bfs_h3_side_panel import build_prompt, fill_layout, make_info
         except ImportError:
             from bfs_h3_side_panel import build_prompt, fill_layout, make_info
-        refs = {}
-        if shot["ref"] is not None:
-            refs["ref_image_0"] = shot["ref"]
-        if use_ref_2 and shot["ref2"] is not None:
-            refs[f"ref_image_{len(refs)}"] = shot["ref2"]
+        refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS if use_ref_2 else 1])}
         if shot.get("color_guide") and (shot.get("color_guide_text2") or shot.get("color_guide_points2")):
             if not use_ref_2 or shot.get("ref2") is None:
                 raise ValueError("Colored Mark's second person is marked, but no second reference is being passed. Set the shot's ref 2 and enable use_ref_2.")
@@ -3875,8 +3982,11 @@ class BFSShotH3Conditioning:
                 ref_image_size = "max"
             refs[f"ref_image_{len(refs)}"] = setting
             text = add_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
-        text = fill_details_now(text, vlm, [shot.get("ref"), shot.get("ref2")],
-                                f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}")
+        text = fill_details_now(text, vlm, shot_refs(shot), f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}",
+                                shot.get("ref_names"))
+        if len(refs) > 9:   # H3's own node stops at 9; OpenJutsu-style LoRAs were trained with up to 9 pictures
+            print(f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}: {len(refs)} reference pictures "
+                  "(more than the 9 H3 and its LoRAs usually see)", flush=True)
         text = fill_layout(text, make_info(shot["width"], shot["height"], panel_position, panel_size, 0)
                            if on_canvas else None, rope_mode)
         kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],
@@ -4080,7 +4190,8 @@ class BFSShotH3ConditioningSimple:
                 "guide_mode": (cls.GUIDE_MODES, {"default": cls.GUIDE_MODES[0], "tooltip":
                     "aligned guide: preserve the shot frame by frame with MiniMax H3 Add Guide. "
                     "native reference video: provide it as <Video 1> context. both: use both paths."}),
-                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Also pass the second reference."}),
+                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Pass every reference of the shot (<Picture 2> "
+                                                                      "on, up to 12). Off: only the first."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
             },
             "optional": {
@@ -4945,7 +5056,7 @@ def comparison_video(video: torch.Tensor, parts: list, label: str = "", height: 
         prompt = " ".join(str(shot.get("prompt") or "").split())
         bottom = _text_bar([("prompt: " + prompt) if prompt else ("" if skipped else "prompt: (none)")], total_w,
                            max(10, int(size * 0.8)), 6)
-        refs = [r for r in (shot.get("ref"), shot.get("ref2")) if r is not None]
+        refs = shot_refs(shot)[:4]
         if refs:
             rh = H // len(refs)
             col = torch.cat([_fit_box(r, rw, rh) for r in refs] + ([torch.full((H - rh * len(refs), rw, 3), 0.1)]
@@ -5358,7 +5469,8 @@ try:
 
     @PromptServer.instance.routes.post("/bfs/shotloop/describe")
     async def _bfs_shot_describe(request):
-        """Descriptions for reference sets: body {plan, sets: [[ref, ref2], ...]} -> {texts: {key: text}}."""
+        """Descriptions for reference sets: body {plan, sets: [[ref, ref2], ...]} -> {texts: {key: text}}; with
+        body {plan, pictures: [name, ...]} each picture alone ({details@Picture k}) -> {pictures: {name: text}}."""
         body = await request.json()
         try:
             clip = _VLM.get("clip")
@@ -5372,6 +5484,19 @@ try:
             # fit_prompt: the descriptions are written for the global prompt's {details} sentence
             slot = prompt_slot(body.get("prompt") or p.get("global_prompt", ""), "{details}") if cfg.get("fit_prompt", True) else ""
             sets = [tuple(x) for x in body.get("sets", []) if any(x)]
+            pictures = [str(x) for x in body.get("pictures") or [] if x]
+
+            def describe_pictures():
+                prompt = body.get("prompt") or p.get("global_prompt", "")
+                out = {}
+                for name in pictures:
+                    k = p["global_refs"].index(name) + 1 if name in p["global_refs"] else None
+                    marker = (k and picture_marker(prompt, k)) or picture_marker(prompt)
+                    out[name] = describe_picture(clip, _load_image(name), prompt, marker or "{details}", cfg)
+                return out
+
+            if pictures:
+                return web.json_response({"pictures": await _off_loop(describe_pictures)})
 
             def work():
                 out = {}
@@ -5419,9 +5544,8 @@ try:
             def work():
                 a = analyze(path, float(p["fps"]))
                 seg = resolve_plan(p, a, path)[int(body.get("index", 0))]
-                r1 = _load_image(seg["ref"] or p.get("global_ref", "")) if (seg["ref"] or p.get("global_ref")) else None
-                r2 = _load_image(seg["ref2"] or p.get("global_ref2", "")) if (seg["ref2"] or p.get("global_ref2")) else None
-                return vlm_write_prompt(clip, path, a, seg["start"], seg["end"], [r1, r2], cfg["write_task"],
+                refs = [_load_image(n) for n in shot_ref_names(seg["refs"], p["global_refs"])]
+                return vlm_write_prompt(clip, path, a, seg["start"], seg["end"], refs, cfg["write_task"],
                                         cfg["write_change"], int(cfg["max_tokens"]))
             text = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001

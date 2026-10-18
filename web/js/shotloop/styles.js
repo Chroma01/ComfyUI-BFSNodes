@@ -140,6 +140,14 @@ const CSS = `
 .bsl .refslot:hover{border-color:var(--acc)}
 .bsl .refslot.sm{width:56px;height:56px;font-size:10px}
 .bsl .refslot.via{border-style:solid;border-color:#3b5b3b}
+.bsl .refslot{position:relative}
+.bsl .refslot .rnum{position:absolute;left:3px;top:2px;font-size:10px;padding:0 4px;border-radius:4px;background:#000a;color:#fff}
+.bsl .refslot.add{font-size:22px;color:#8a8a99}
+.bsl .refbox{flex-wrap:wrap;max-width:100%;align-items:flex-start}
+.bsl .pchips{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+.bsl .pchip{display:inline-flex;gap:1px}
+.bsl .pchip button{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;font-size:10px}
+.bsl .pchip img{width:16px;height:16px;border-radius:3px;object-fit:cover}
 .bsl .rslot{display:flex;flex-direction:column;gap:3px;align-items:center}
 .bsl .guidecolor{display:flex;flex-direction:column;align-items:center;gap:2px;max-width:112px}
 .bsl .guidecolor select{width:100%;font-size:10px;padding:2px 4px}

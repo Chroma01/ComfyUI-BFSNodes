@@ -13,7 +13,8 @@ import { api } from "../../scripts/api.js";
 import { showGuide } from "./bfs_md_view.js";
 import { wheelToCanvas } from "./bfs_wheel.js";
 import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
-import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill } from "./shotloop/common.js";
+import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill,
+         MAX_REFS, refList, shotRefNames } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
 // history lengths H3's VAE encodes whole (17k+5); old plans saved 17/34/51, read as the next valid one up
 const historyLen = n => (n = Number(n) || 22) <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
@@ -89,14 +90,23 @@ function Panel(io) {
     plan.mask_cfg = { ...MASK_DEFAULTS, ...(p.mask_cfg || {}) };
     plan.vlm_cfg = { ...VLM_DEFAULTS, ...(p.vlm_cfg || {}) };
     plan.ref_details = { ...(p.ref_details || {}) };
+    plan.picture_details = { ...(p.picture_details || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
+    // plans before 1.113 had two references (ref / ref2): now a list of up to 12 pictures
+    plan.global_refs = refList(p.global_refs, p.global_ref, p.global_ref2);
+    plan.segs.forEach(m => { if (m) m.refs = refList(m.refs, m.ref, m.ref2); });
     Object.values(plan.cast).forEach(person => { if (person && typeof person === "object") { delete person.ref; delete person.ref2; delete person.guide_color; } });
     plan.segs.forEach(meta => { if (meta) { delete meta.color_guide_person; delete meta.color_guide_person2; } });
   };
   // any change of the plan (a new video, a prompt, a setting...) is a new loop run on the server: show its progress
   let progTimer = 0;
-  const save = () => { io.setPlan(JSON.stringify(plan)); clearTimeout(progTimer); progTimer = setTimeout(() => progress(), 400); };
+  // ref / ref2 (and global_ref / global_ref2) keep pictures 1 and 2 for older readers of the plan
+  const syncRefs = () => {
+    plan.global_refs = refList(plan.global_refs); [plan.global_ref = "", plan.global_ref2 = ""] = plan.global_refs;
+    plan.segs.forEach(m => { if (m) { m.refs = refList(m.refs); [m.ref = "", m.ref2 = ""] = m.refs; } });
+  };
+  const save = () => { syncRefs(); io.setPlan(JSON.stringify(plan)); clearTimeout(progTimer); progTimer = setTimeout(() => progress(), 400); };
 
   const n = computed(() => (an.value ? an.value.n : 0));      // the whole video on the timeline
   // the part the plan works on [lo, hi): start / end (0 = the end), then "max total seconds" counted from the start
@@ -121,7 +131,7 @@ function Panel(io) {
       if (b[i + 1] <= b[i]) continue;
       const m = plan.segs[out.length] || {};
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
-                 cut: cs.has(b[i]), enabled: m.enabled !== false, ref: m.ref || "", ref2: m.ref2 || "", prompt: m.prompt || "",
+                 cut: cs.has(b[i]), enabled: m.enabled !== false, refs: refList(m.refs, m.ref, m.ref2), prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "head", chainFrame: m.chain_frame || "first", chainHistory: historyLen(m.chain_history),
                  color_guide: !!m.color_guide, color_guide_color: m.color_guide_color || "",
                  color_guide_opacity: m.color_guide_opacity ?? 0.35,
@@ -130,6 +140,7 @@ function Panel(io) {
                  crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "",
                  extMask: !!plan.mask_video || !!(plan.track?.points?.length), trackMask: !!(plan.track?.points?.length) });
     }
+    out.forEach(s => { s.names = shotRefNames(s.refs, plan.global_refs); [s.ref = "", s.ref2 = ""] = s.refs; });
     if (plan.max_parts > 0) out = out.slice(0, plan.max_parts);
     return out;
   });
@@ -173,8 +184,8 @@ const modeOf = s => (MODES.find(m => m[2] === !!s.crop && m[3] === !!s.inpaint &
 const modeName = s => MODES.find(m => m[0] === modeOf(s))[1];
 
 const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return plan.segs[i]; };
-  // the reference a shot uses: its own or the global one
-  const refOf = (s, k) => s[k] || plan["global_" + k] || "";
+  // the pictures a shot uses: "ref" = <Picture 1>, "ref2" = <Picture 2> (its own or the global ones)
+  const refOf = (s, k) => s.names[k === "ref2" ? 1 : 0] || "";
   const promptOf = s => s.prompt || plan.global_prompt || "";
   const detailsOf = s => {
     const value = plan.ref_details?.[`${refOf(s, "ref")}|${refOf(s, "ref2")}`] || "";
@@ -226,7 +237,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (/\{details2?\}/.test(p) && (plan.vlm_cfg?.describe_preset || "short") !== "short")
         add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
-      if (!refOf(s, "ref")) add("info", "no reference (fine when the node's ref_image input is connected)");
+      if (!refOf(s, "ref")) add("info", "no reference picture");
       if (vram.max_tokens && shotTokens(s, i) > 1.3 * vram.max_tokens)
         add("warn", "much bigger than any shot that ran on this GPU (over 1.3×): it may run out of memory. Lower Megapixels or Max seconds / shot, use head 5, or set Between shots = free memory (Run tab)");
       if (i > 0 && plan.run === "auto" && (s.chain === "head" || s.chain === "history") && !s.cut)
@@ -267,7 +278,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         .map(s => [`${s.start}-${s.end}`, { people: s.people, main: s.main }]));
       if (apply) {
         plan.bounds = j.segs.slice(1).map(s => s.start);
-        const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, ref: keep[i]?.ref || "", ref2: keep[i]?.ref2 || "", prompt: keep[i]?.prompt || "",
+        const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, refs: refList(keep[i]?.refs), prompt: keep[i]?.prompt || "",
           chain: keep[i]?.chain || "head", chain_frame: keep[i]?.chain_frame || "first", chain_history: historyLen(keep[i]?.chain_history),
           crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "",
           color_guide: !!keep[i]?.color_guide, color_guide_color: keep[i]?.color_guide_color || "", color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
@@ -410,7 +421,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const to = targets(scope, from);
     to.forEach(i => {
       const m = meta(i), x = segs.value[i];
-      if (fields.ref) { m.ref = src.ref; m.ref2 = src.ref2; }
+      if (fields.ref) m.refs = [...src.refs];
       if (fields.prompt) m.prompt = src.prompt;
       if (fields.mask_text) m.mask = { ...(m.mask || {}), text: src.mask.text || "" };
       if (fields.mask_video) m.mask = { ...(m.mask || {}), video: src.mask.video || "" };
@@ -443,10 +454,29 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const refSets = computed(() => {
     const out = new Map();
     const add = (a, b, where) => { if (!a && !b) return; const k = `${a || ""}|${b || ""}`; if (!out.has(k)) out.set(k, { a, b, where: [] }); out.get(k).where.push(where); };
-    add(plan.global_ref, plan.global_ref2, "global");
-    segs.value.forEach((x, i) => add(x.ref || plan.global_ref, x.ref2 || plan.global_ref2, `#${i + 1}`));
+    add(plan.global_refs[0], plan.global_refs[1], "global");
+    segs.value.forEach((x, i) => add(x.names[0], x.names[1], `#${i + 1}`));
     return [...out.entries()].map(([key, v]) => ({ key, ...v }));
   });
+  // every picture the plan uses, once, with where it is <Picture n>: one description each ({details@Picture n})
+  const pictures = computed(() => {
+    const out = new Map();
+    const add = (name, where) => { if (!name) return; if (!out.has(name)) out.set(name, []); out.get(name).push(where); };
+    plan.global_refs.forEach((x, k) => add(x, `global ${k + 1}`));
+    segs.value.forEach((x, i) => x.names.forEach((name, k) => { if (x.refs[k] === name) add(name, `#${i + 1}: ${k + 1}`); }));
+    return [...out.entries()].map(([name, where]) => ({ name, where }));
+  });
+  async function describePictures() {
+    busy.value = "Describing each picture with the VLM…"; error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/describe", { method: "POST",
+        body: JSON.stringify({ plan: { ...plan }, pictures: pictures.value.map(x => x.name) }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      plan.picture_details = { ...plan.picture_details, ...j.pictures }; save();
+    } catch (e) { error.value = String(e.message || e); }
+    busy.value = "";
+  }
+  const setPictureDetail = (name, v) => { plan.picture_details = { ...plan.picture_details, [name]: v }; save(); };
   async function describeRefs() {
     busy.value = "Describing the references with the VLM…"; error.value = "";
     try {
@@ -529,6 +559,16 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const pickFile = (accept, cb) => {
     const inp = document.createElement("input"); inp.type = "file"; inp.accept = accept;
     inp.onchange = () => inp.files[0] && upload(inp.files[0], cb); inp.click();
+  };
+  // several files: uploaded one after the other, cb gets the names in order
+  const uploadAll = async (files, cb) => {
+    const names = [];
+    for (const f of files) await upload(f, name => names.push(name));
+    if (names.length) cb(names);
+  };
+  const pickFiles = (accept, cb) => {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = accept; inp.multiple = true;
+    inp.onchange = () => uploadAll([...inp.files], cb); inp.click();
   };
   async function progress(reset = false) {
     if (!plan.video || plan.run === "auto") { prog.done = 0; prog.count = 0; Object.assign(cache, { ok: [], stored: [], mb: 0 }); return; }
@@ -713,24 +753,46 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     recent.value = [name, ...recent.value.filter(x => x !== name)].slice(0, 10);
     store.set(RECENT_KEY, recent.value);
   };
-  // target: shot index or "global"; field: ref | ref2 (global_ref | global_ref2 for "global")
-  const setRef = (target, field, name) => {
+  // target: shot index or "global"; k: the picture's slot (0 = <Picture 1>). "" removes it: a global picture is taken
+  // out of the list (the next ones move up), a shot's own picture falls back to the global one at that slot
+  const refsOf = target => (target === "global" ? plan.global_refs : (meta(target).refs ||= []));
+  const setRef = (target, k, name) => {
     if (isColorValue(name)) return; // colors belong to Colored Mark settings, never to image references
-    if (target === "global") plan[field] = name; else meta(target)[field] = name;
+    const list = refsOf(target);
+    if (name) { while (list.length < k) list.push(""); list[k] = name; }
+    else if (target === "global" || k >= plan.global_refs.length) list.splice(k, 1);
+    else list[k] = "";
     remember(name); save();
   };
-  const uploadRef = (target, field) => pickFile("image/*", name => setRef(target, field, name));
+  // pictures put in from slot k on (k = the list's end: added), never past 12
+  const putRefs = (target, k, names) => {
+    const list = refsOf(target);
+    names.slice(0, Math.max(0, MAX_REFS - k)).forEach((name, j) => { while (list.length < k + j) list.push(""); list[k + j] = name; remember(name); });
+    save();
+  };
+  const uploadRef = (target, k, many = false) => many
+    ? pickFiles("image/*", names => putRefs(target, k, names))
+    : pickFile("image/*", name => setRef(target, k, name));
+  // a drop on slot k replaces it (more files go on the next slots); k = null (the box): added at the end. A recent
+  // thumbnail dragged in carries its name, image files are uploaded
+  const dropRefs = (target, k, e) => {
+    const at = k ?? refsOf(target).length;
+    const name = e.dataTransfer?.getData("text/bfs-ref");
+    if (name) { putRefs(target, at, [name]); return; }
+    const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith("image/"));
+    if (files.length) uploadAll(files, names => putRefs(target, at, names));
+  };
   const clearRecent = () => { recent.value = []; store.set(RECENT_KEY, []); };
   // everything: the recent list and every reference this plan uses (global and per shot)
   const clearAllRefs = () => {
     if (!confirm("Remove every reference picture from this plan (global, every shot) and forget the recent list?")) return;
     clearRecent();
-    plan.global_ref = ""; plan.global_ref2 = "";
-    plan.segs.forEach(m => { if (m) { m.ref = ""; m.ref2 = ""; } });
+    plan.global_refs = [];
+    plan.segs.forEach(m => { if (m) m.refs = []; });
     save();
   };
   const usedRefs = computed(() => {
-    const set = new Set([...recent.value, plan.global_ref, plan.global_ref2, ...plan.segs.flatMap(m => [m?.ref, m?.ref2])].filter(Boolean));
+    const set = new Set([...recent.value, ...plan.global_refs, ...plan.segs.flatMap(m => m?.refs || [])].filter(Boolean));
     return [...set].slice(0, 10);
   });
 
@@ -743,7 +805,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
     openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
-    frameAt, thumbFor, playShot, playAll, stop, seek, setRef, uploadRef,
+    frameAt, thumbFor, playShot, playAll, stop, seek, setRef, putRefs, uploadRef, dropRefs, pictures, describePictures, setPictureDetail,
   };
 
   return () => {
