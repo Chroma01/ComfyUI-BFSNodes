@@ -550,4 +550,4 @@ export const markRegions = m => Array.isArray(m.color_guide_regions) ? m.color_g
     ? [{ picture: 2, text: m.color_guide_text2 || "", points: m.color_guide_points2 || [], key: m.color_guide_key2 || 0 }] : [];
 
 // ---- 🤖 Auto prompt: the VLM writes each shot's H3 prompt from the request in the prompt box
-export const AUTO_DEFAULTS = { enabled: false, frames: 0, source: "guide" };
+export const AUTO_DEFAULTS = { enabled: false, frames: 0, source: "guide", style: "h3" };

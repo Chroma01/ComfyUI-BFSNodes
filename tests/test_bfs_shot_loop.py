@@ -478,7 +478,7 @@ class ConditioningPromptTest(unittest.TestCase):
                     audio=None)
 
     def test_the_planner_prompt_goes_as_it_is_and_the_model_passes_through(self):
-        out = SL.BFSShotH3Conditioning().condition(self._shot(), "clip", "vae", "none", True, "none", "match", model="m")
+        out = SL.BFSShotH3Conditioning().condition(self._shot(), "clip", "vae", "none", "none", "match", model="m")
         self.assertEqual(out[3], self._shot()["prompt"])
         self.assertEqual(self.seen["prompt"], out[3])
         self.assertEqual(out[2], "m")
@@ -487,7 +487,7 @@ class ConditioningPromptTest(unittest.TestCase):
     def test_setting_picture_is_the_last_reference_with_static(self):
         mask = torch.zeros(22, 8, 8)
         mask[:, 2:4, 2:4] = 1
-        out = SL.BFSShotH3Conditioning().condition(self._shot(), "clip", "vae", "none", True, "none", "match",
+        out = SL.BFSShotH3Conditioning().condition(self._shot(), "clip", "vae", "none", "none", "match",
                                                     setting_ref="on (generation size)", setting_mask=mask)
         refs = list(self.seen["ref_images"].values())
         self.assertEqual(len(refs), 2)
@@ -520,13 +520,13 @@ class SimpleConditioningTest(unittest.TestCase):
         SL.BFSShotH3Conditioning.condition = fake
         try:
             out = SL.BFSShotH3ConditioningSimple().condition(
-                "shot", "clip", "vae", SL.BFSShotH3ConditioningSimple.GUIDE_MODES[0], True, "match",
+                "shot", "clip", "vae", SL.BFSShotH3ConditioningSimple.GUIDE_MODES[0], "match",
                 audio_vae="audio vae", with_audio=True)
         finally:
             SL.BFSShotH3Conditioning.condition = original
 
         self.assertEqual(out, ("positive", "latent", "prompt"))
-        self.assertEqual(seen["args"][5], "none")
+        self.assertEqual(seen["args"][4], "none")
         self.assertTrue(seen["kwargs"]["with_audio"])
         self.assertEqual(seen["kwargs"]["inpaint"], SL.INPAINT_MODES[0])
 
@@ -815,7 +815,7 @@ class ConditionFlowTest(unittest.TestCase):
         orig = SL.shot_mask
         SL.shot_mask = lambda *a: {"masks": m.to(torch.uint8)}
         try:
-            return SL.BFSShotH3Conditioning().condition(shot, None, VAE(), SL.BFSShotH3Conditioning.GUIDE_MODES[0], False,
+            return SL.BFSShotH3Conditioning().condition(shot, None, VAE(), SL.BFSShotH3Conditioning.GUIDE_MODES[0],
                                                         "none", "match", **kw)
         finally:
             SL.shot_mask = orig
@@ -849,16 +849,14 @@ class ConditionFlowTest(unittest.TestCase):
         shot.pop("mask_src")
         shot.update(refs=refs, ref=refs[0], ref2=refs[1], ref_names=[f"r{k}.png" for k in range(12)],
                     prompt="<Picture 12> is the {details@Picture 12}.")
-        out = SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[3], True,
+        out = SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[3],
                                                    "none", "match", inpaint="off")
         kw = self.calls["r2v"][0]
         self.assertEqual(list(kw["ref_images"]), [f"ref_image_{k}" for k in range(12)])
         self.assertIs(kw["ref_images"]["ref_image_11"], refs[11])
         self.assertEqual(out[3], "<Picture 12> is the character.")   # no VLM and no saved description
-        self.calls["r2v"].clear()
-        SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[3], False,
-                                             "none", "match", inpaint="off")
-        self.assertEqual(list(self.calls["r2v"][0]["ref_images"]), ["ref_image_0"])
+        self.assertNotIn("use_ref_2", SL.BFSShotH3Conditioning.INPUT_TYPES()["required"])
+        self.assertNotIn("use_ref_2", SL.BFSShotH3ConditioningSimple.INPUT_TYPES()["required"])
 
     def test_every_marked_person_in_their_picture_color(self):
         refs = [torch.zeros(1, 32, 32, 3) for _ in range(3)]
@@ -869,14 +867,14 @@ class ConditionFlowTest(unittest.TestCase):
         orig = SL.shot_mask
         SL.shot_mask = lambda path, a, start, length, spec: {"masks": second if spec.get("text") == "the man" else m.to(torch.uint8)}
         try:
-            SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[0], True,
+            SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[0],
                                                  "none", "match", inpaint="off")
             guide = self.calls["guides"][0]
             self.assertGreater(float(guide[0, 5, 5, 0]), 0.75)    # the second person, in red
             self.assertGreater(float(guide[0, 30, 30, 1]), 0.75)  # the selection, in green
             with self.assertRaisesRegex(ValueError, "Picture 3"):
                 SL.BFSShotH3Conditioning().condition(dict(shot, refs=refs[:2]), None, None,
-                                                     SL.BFSShotH3Conditioning.GUIDE_MODES[0], True, "none", "match", inpaint="off")
+                                                     SL.BFSShotH3Conditioning.GUIDE_MODES[0], "none", "match", inpaint="off")
         finally:
             SL.shot_mask = orig
 
@@ -958,7 +956,7 @@ class MultiRefTest(unittest.TestCase):
     def test_auto_prompt_asks_with_the_official_format(self):
         seen = {}
 
-        def fake(clip, prompt, images, max_tokens, *a):
+        def fake(clip, prompt, images, max_tokens, *a, **k):
             seen.update(prompt=prompt, n=images.shape[0], tokens=max_tokens)
             return "```\n**subject_definitions:**\n<Subject 1> is the robot in <Picture 2>.\nsummary:\n[video editing] x```"
         old, SL.vlm_generate = SL.vlm_generate, fake
@@ -987,7 +985,7 @@ class MultiRefTest(unittest.TestCase):
     def test_a_template_request_keeps_its_trigger_and_wording(self):
         seen = {}
 
-        def fake(clip, prompt, images, max_tokens, *a):
+        def fake(clip, prompt, images, max_tokens, *a, **k):
             seen["prompt"] = prompt
             return "subject_definitions: <Subject 1> is the woman in Picture 1. detailed_description: [Shot 1] She walks."
         old, SL.vlm_generate = SL.vlm_generate, fake
@@ -1014,7 +1012,7 @@ class MultiRefTest(unittest.TestCase):
         self.assertTrue(all(any(a <= f < b for f in frames) for a, b in zip([0, 43, 86, 129, 172, 215, 258], [43, 86, 129, 172, 215, 258, 300])))
         seen = {}
 
-        def fake(clip, prompt, images, max_tokens, *a):
+        def fake(clip, prompt, images, max_tokens, *a, **k):
             seen["prompt"] = prompt
             return ("subject_definitions:\n<Subject 1> is x.\ndetailed_description:\n[Shot 1] At 00:00.000, a woman stands. "
                     "At 00:01.792, she walks.")
@@ -1031,6 +1029,43 @@ class MultiRefTest(unittest.TestCase):
         self.assertIn("The prompt template:\nbody_swap:", seen["prompt"])
         self.assertTrue(two.startswith("body_swap: "))
         self.assertIn("[Shot 1] A woman stands. At 00:01.792", two)
+
+    def test_a_looping_answer_is_cleaned_and_the_labels_are_tied(self):
+        loop = " The goblin looks at the cat, and the cat looks at the goblin. The goblin then looks up." * 6
+        raw = ("subject_definitions:\n<Subject 1> is the gaunt, emaciated goblin with pale skin in <Picture 1>.\n"
+               "<Subject 2> is the stout goblin with red skin in <Picture 2>.\nsummary:\n[video editing] x\n"
+               "retention_analysis:\n<Subject 1>: fully_preserved - x\ndetailed_description:\n[Shot 1] A goblin types."
+               + loop + " The gaunt goblin")
+        self.assertIn("sentences are repeated in a loop", SL.h3_prompt_problems(raw, 2))
+        t = SL.tidy_h3_prompt(raw, {}, "", False, 2)
+        self.assertEqual(t.count("The goblin then looks up."), 1)
+        self.assertNotIn("The gaunt goblin\n", t)                     # the sentence cut in the middle
+        self.assertIn("overall_soundscape:", t)
+        self.assertIn("non_diegetic_music:\nN/A", t)
+        named = SL.name_subjects(t)
+        self.assertIn("[Shot 1] <Subject 1> is the gaunt. <Subject 2> is the stout goblin with red skin.", named)
+        self.assertEqual(SL.h3_prompt_problems(named, 2), [])
+
+    def test_caption_style_asks_for_the_training_captions_shape(self):
+        seen = {}
+
+        def fake(clip, prompt, images, max_tokens, *a, **k):
+            seen.update(prompt=prompt, tokens=max_tokens)
+            return ('"Replace the dog in the video with the gaunt goblin from Picture 1. Replace the cat in the video with '
+                    'the stout goblin from <Picture 2>. Keep the same background and location as in the video, and maintain '
+                    'the motion, camera angle, and timing."')
+        old, SL.vlm_generate = SL.vlm_generate, fake
+        try:
+            out = SL.write_h3_prompt(None, [torch.zeros(1, 8, 8, 3)], [0.0], [torch.zeros(1, 4, 4, 3)] * 2, ["", ""],
+                                     "Troque o cão pelo <Picture 1> e o gato pelo <Picture 2>", {}, style="captions")
+        finally:
+            SL.vlm_generate = old
+        self.assertIn("short style of a video-edit request", seen["prompt"])
+        self.assertNotIn("full-reference format", seen["prompt"])
+        self.assertEqual(seen["tokens"], 512)
+        self.assertTrue(out.startswith("Replace the dog in the video with the gaunt goblin from <Picture 1>."))
+        self.assertEqual(SL.caption_problems(out, 2), [])
+        self.assertTrue(SL.caption_problems("subject_definitions: <Subject 1> is x", 1))
 
     def test_a_written_prompt_is_part_of_the_shot_signature_only_with_auto_prompt_on(self):
         seg = {"start": 0, "end": 10, "ref": "", "ref2": "", "prompt": "make it rain"}

@@ -256,7 +256,7 @@ them connected still runs, and the log says the images are ignored. A connected 
 global prompt. The planner outputs `refs` (every picture the shots use, without repeats, as a list) and `ref_count`
 where `ref_image` / `ref_image_2` were. **BFS Shot Unpack** outputs `refs`, every picture of the shot as a list (the next node runs once per picture,
 e.g. a background remover), and `ref_count`; **BFS Shot Repack**'s `refs` input takes that list back and gives each
-shot its own pictures (a workflow from before 1.113 that wired `ref_image` still works). **BFS Shot H3 Conditioning** passes every picture of the shot (*use_ref_2* off: only the first); H3's own
+shot its own pictures (a workflow from before 1.113 that wired `ref_image` still works). **BFS Shot H3 Conditioning** passes every picture of the shot (the `use_ref_2` switch left in 1.114: the pictures are chosen in the planner); H3's own
 node stops at 9 and LoRAs trained like OpenJutsu saw up to 9, so the log notes a shot with more.
 
 ## Mask & crop (SAM 3)
@@ -296,7 +296,7 @@ too close to a color in the video. In a shot, turn on Colored Mark and pick whic
 SAM 3 text or points) becomes; **+ Mark another person** adds a person with their own picture and text or 🎯 points
 (the points window has one point set per person). This is only a visual marker: it does not create an inpainting mask
 or change **Full frame**, **Mask only** or crop behavior. More than one marked person needs Crop off, and the
-conditioning node must pass every picture the marks use (*use_ref_2* on). The overlay keeps movement and facial
+shot must have every picture the marks use. The overlay keeps movement and facial
 expression visible. Plans before 1.113 (a second region for ref 2) open with that region as `<Picture 2>`.
 
 ```text
@@ -412,7 +412,10 @@ writes each shot's MiniMax H3 prompt in the official full-reference format (Mini
 ("Troque a mulher no vídeo pela mulher da <Picture 1>"). The template is kept as it is: same sentences, same order, its
 trigger word first; the writer applies the request, adds the pictures' visible features and, after `[Shot 1]`, this
 shot's camera, place, light and actions. The panel's 🤖 Write uses the template of the last run (shown in the card).
-A request that is itself a whole prompt (H3 sections) is used as the template the same way. Without a template, a
+A request that is itself a whole prompt (H3 sections) is used as the template the same way. **Style** picks how a prompt without template is written: *H3
+official* (the six sections) or *OpenJutsu captions*, the short style of the OpenJutsu training captions ("Replace the
+dog in the video with the gaunt goblin … from <Picture 1>. Replace the cat … from <Picture 2>. Keep the same background
+and location as in the video, and maintain the motion, camera angle, and timing."). Without a template, a
 short request gets the full six-section prompt. Without a VLM, the template (else the request) is the prompt.
 
 **Cuts:** the writer gets the shot's real camera cuts (the planner's cut detector) and writes `[Shot N] At MM:SS.mmm`

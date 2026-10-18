@@ -525,7 +525,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const marks = s.color_guide ? [[s.color_guide_picture, pictureColor(plan, s.color_guide_picture)],
       ...s.regions.filter(r => String(r.text || "").trim() || (r.points || []).length).map(r => [r.picture, pictureColor(plan, r.picture)])] : [];
     return JSON.stringify([s.prompt || plan.global_prompt || "", s.names, marks, modeOf(s), s.mask?.text || "", s.target || "",
-      plan.auto_prompt?.template || ""]);
+      plan.auto_prompt?.template || "", plan.auto_prompt?.style || "h3"]);
   };
   const writtenOf = s => plan.auto_prompts?.[segKey(s)] || null;
   const setAuto = (k, v) => { plan.auto_prompt = { ...plan.auto_prompt, [k]: v }; save(); };
@@ -920,15 +920,27 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
 // A workflow saved before 1.113 keeps the old slots of these nodes (ComfyUI restores a node's saved slots): the
 // planner's ref_image / ref_image_2 inputs are gone, the planner's and Unpack's ref_image / ref_image_2 outputs are now
 // refs / ref_count, and what fed Repack's ref_image now feeds its refs input.
-// BFS Shot H3 Conditioning (Advanced) before 1.113 had duet widgets in the middle: its saved values are put back by name
+// Saved widget orders of the conditioning nodes (ComfyUI restores values by position): use_ref_2 (always second) left
+// in 1.114 and the Advanced node's duet widgets in 1.113, so older values are put back by name
 const OLD_ADVANCED_WIDGETS = ["guide_mode", "use_ref_2", "first_frame", "ref_image_size", "with_audio", "duet",
   "panel_position", "panel_size", "panel_noise", "rope_gap", "task", "instruction", "setting_ref", "inpaint", "mask_guide",
   "source_blur", "source_blur_strength", "source_blur_segmenter", "source_blur_effect", "mask_guide_look", "mask_ref_size"];
-function upgradeAdvancedWidgets(node, info) {
+const ADVANCED_1113 = ["guide_mode", "use_ref_2", "first_frame", "ref_image_size", "with_audio", "setting_ref", "inpaint",
+  "mask_guide", "source_blur", "source_blur_strength", "source_blur_segmenter", "source_blur_effect", "mask_guide_look", "mask_ref_size"];
+const OLD_SIMPLE_WIDGETS = ["guide_mode", "use_ref_2", "ref_image_size", "with_audio", "inpaint", "source_blur",
+  "source_blur_strength", "source_blur_segmenter", "source_blur_effect"];
+const NO_BLUR_PICKERS = n => n !== "source_blur_segmenter" && n !== "source_blur_effect";   // added later
+function oldWidgetNames(cls, v) {
+  if (typeof v[1] !== "boolean") return null;          // already without use_ref_2
+  if (cls === "BFSShotH3ConditioningSimple") return v.length >= 9 ? OLD_SIMPLE_WIDGETS : OLD_SIMPLE_WIDGETS.filter(NO_BLUR_PICKERS);
+  if (["off", "canvas", "shifted RoPE"].includes(v[5]) && ["left", "right", "top", "bottom"].includes(v[6]))
+    return v.length >= 21 ? OLD_ADVANCED_WIDGETS : OLD_ADVANCED_WIDGETS.filter(NO_BLUR_PICKERS);
+  return v.length >= 14 ? ADVANCED_1113 : ADVANCED_1113.filter(NO_BLUR_PICKERS);
+}
+function upgradeConditioningWidgets(node, info) {
   const v = info?.widgets_values;
-  if (!Array.isArray(v) || !["off", "canvas", "shifted RoPE"].includes(v[5]) || !["left", "right", "top", "bottom"].includes(v[6])) return;
-  // 19 values: saved before source_blur_segmenter / source_blur_effect existed
-  const names = v.length === 19 ? OLD_ADVANCED_WIDGETS.filter(n => n !== "source_blur_segmenter" && n !== "source_blur_effect") : OLD_ADVANCED_WIDGETS;
+  const names = Array.isArray(v) && oldWidgetNames(node.comfyClass, v);
+  if (!names) return;
   names.forEach((name, k) => { const w = node.widgets?.find(x => x.name === name); if (w && k < v.length) w.value = v[k]; });
   // widgets the saved workflow did not have got a shifted value: back to their default (a list's first choice)
   node.widgets?.forEach(w => {
@@ -939,7 +951,7 @@ function upgradeAdvancedWidgets(node, info) {
 
 function upgradeLegacySlots(node, info) {
   const cls = node.comfyClass;
-  if (cls === "BFSShotH3Conditioning") { upgradeAdvancedWidgets(node, info); return; }
+  if (cls === "BFSShotH3Conditioning" || cls === "BFSShotH3ConditioningSimple") { upgradeConditioningWidgets(node, info); return; }
   // ref_image / ref_image_2 outputs at slots `at`, at+1 -> refs (list) / ref_count
   const listOutputs = at => {
     const a = node.outputs?.[at], b = node.outputs?.[at + 1];
@@ -972,7 +984,7 @@ function upgradeLegacySlots(node, info) {
 app.registerExtension({
   name: "BFSNodes.ShotPlanner",
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (!["BFSShotPlanner", "BFSShotUnpack", "BFSShotRepack", "BFSShotH3Conditioning"].includes(nodeData.name)) return;
+    if (!["BFSShotPlanner", "BFSShotUnpack", "BFSShotRepack", "BFSShotH3Conditioning", "BFSShotH3ConditioningSimple"].includes(nodeData.name)) return;
     const prev = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (info) {
       const r = prev?.apply(this, arguments);

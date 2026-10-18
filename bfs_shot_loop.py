@@ -1731,7 +1731,8 @@ def _textgenerate_execute(TextGenerate, **kwargs):
         return TextGenerate.execute(**call_kwargs)
 
 
-def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int, temperature: float = 0.0, seed: int = 0) -> str:
+def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int, temperature: float = 0.0, seed: int = 0,
+                 sampling: dict | None = None) -> str:
     """Text from a vision-language CLIP. Some models end the answer before writing anything for some wordings:
     retry with a reworded request, then with sampling, and clean leftovers of the chat template. temperature > 0
     samples (with `seed`) from the first try, so another seed gives another answer."""
@@ -1739,6 +1740,8 @@ def vlm_generate(clip, prompt: str, images: torch.Tensor, max_tokens: int, tempe
     first = ({"sampling_mode": "on", "temperature": float(temperature), "top_k": 40, "top_p": 0.9, "min_p": 0.0,
               "repetition_penalty": 1.05, "presence_penalty": 0.0, "seed": int(seed)}
              if temperature and temperature > 0 else {"sampling_mode": "off"})
+    if sampling:   # e.g. long answers: greedy decoding falls into loops there
+        first = {"sampling_mode": "on", "top_k": 40, "top_p": 0.9, "min_p": 0.0, "seed": int(seed), **sampling}
     tries = [(prompt, first),
              ("Look at the picture(s) carefully. " + prompt + " Write the answer now.", {"sampling_mode": "off"}),
              (prompt, {"sampling_mode": "on", "temperature": 0.7, "top_k": 40, "top_p": 0.9, "min_p": 0.0,
@@ -2102,7 +2105,8 @@ def _clean_written(text: str) -> str:
 # VIDEO_PROMPT_WRITING_GUIDE_ref_en.md) from key frames of the shot, the reference pictures and their descriptions, the
 # user's request (the prompt box) and the shot's marks and mode.
 
-AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide"}   # frames 0 = from the shot's length
+# frames 0 = from the shot's length; style: "h3" (the official six sections) or "captions" (the short OpenJutsu captions)
+AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3"}
 H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
                "non_diegetic_music")
 
@@ -2118,7 +2122,7 @@ retention_analysis:
 One line per <Subject N>: "<Subject 1> (appears in [Shot 1]): fully_preserved - <what of it is kept>." The marker is one of fully_preserved, partially_preserved, attribute_transfer, weak_reference.
 
 detailed_description:
-Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then "[Shot 1]" with no timestamp. {shots_rule} Never write a timestamp inside a shot: describe what happens within a shot in order with words like then, as, while. Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Say plainly what changes: when a subject replaces someone of the source, write that the person of the {source_name} is replaced by <Subject N>, who takes their exact place, timing, pose, gestures, head motion, gaze and expressions. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
+Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then "[Shot 1]" with no timestamp. {shots_rule} Never write a timestamp inside a shot: describe what happens within a shot in order with words like then, as, while. Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Say plainly what changes: when a subject replaces someone of the source, write that the person of the {source_name} is replaced by <Subject N>, who takes their exact place, timing, pose, gestures, head motion, gaze and expressions. In detailed_description always call each subject by its label (<Subject 1>, <Subject 2>), with a few of its features at its first appearance, never only by a description. A subject acts with its own body: a person or creature replacing an animal uses hands and arms, an animal replacing a person uses paws. Describe each action once, in order; never repeat a sentence. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
 
 overall_soundscape:
 One to four sentences of ambience and physical sounds across the video.
@@ -2138,6 +2142,14 @@ AUTO_TEMPLATE_RULES = """The user's request is a prompt TEMPLATE (for example th
 - Keep every label as written, with angle brackets: <Subject 1>, <Picture 1>.
 Return only the finished prompt, with nothing before or after it."""
 
+# the short style of the OpenJutsu training captions (openjutsu/scripts/gen_empty_captions.py), written from the request
+AUTO_CAPTION_RULES = """Write the prompt in the short style of a video-edit request: two to four sentences in English, one paragraph, no section names, no labels other than <Picture n>, no lists, no markdown.
+- First, for each change the request asks for, one sentence like "Replace the man in the video with the young woman with long wavy red hair, wearing a black leather jacket and blue jeans, from <Picture 1>." Say who or what in the video is replaced, then a short description of what the picture shows, taken from the picture itself: for a person or creature its apparent gender and age, hair and clothes; for an animal its kind and coat; for an outfit or an object what it is, its colour and material; for a place what kind of place it is.
+- When there are several people or animals, say which one in the video becomes which picture (left, right, in front, behind, the one who enters later). Mention every picture the request uses, as <Picture 1>, <Picture 2> and so on, and call the source "the video".
+- A subject acts with its own body: a person or creature replacing an animal uses hands, an animal replacing a person walks on four legs.
+- Then one sentence on what stays: whether the background and location are kept or replaced (by a picture only if that picture shows a place), and that the motion, camera and timing follow the video.
+Do not invent anything. Reply with the prompt only."""
+
 
 def auto_frame_count(length: int, fps: float, frames: int = 0) -> int:
     """Key frames the writer looks at: the plan's number, else about 1.5 per second of the shot (3 to 8)."""
@@ -2153,16 +2165,16 @@ def shot_mode(seg: dict) -> str:
     return "mask" if seg.get("inpaint") else "paste" if seg.get("paste") else "frame"
 
 
-def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = "") -> str:
+def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = "", style: str = "h3") -> str:
     """What a written prompt was made from (the panel computes the same string to show it is out of date)."""
     marks = [[x["picture"], x["color"]] for x in seg.get("color_guide_marks") or []] if seg.get("color_guide") else []
     return json.dumps([instruction or "", names, marks, shot_mode(seg), (seg.get("mask") or {}).get("text") or "",
-                       seg.get("target") or "", template or ""], separators=(",", ":"), ensure_ascii=False)
+                       seg.get("target") or "", template or "", style or "h3"], separators=(",", ":"), ensure_ascii=False)
 
 
 def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_texts: list, instruction: str,
                     seg: dict, source: str = "guide", duration: float = 0.0, max_tokens: int = 2048,
-                    cuts: list | None = None, template: str = "") -> str:
+                    cuts: list | None = None, template: str = "", style: str = "h3") -> str:
     """One shot's prompt in H3's full-reference format, written by the VLM from key frames of the shot ([1,H,W,3] each,
     at `times` seconds into it), the shot's reference pictures (<Picture 1> first) with their descriptions, the user's
     request and the shot's Colored Marks, selection and mode."""
@@ -2214,9 +2226,14 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
                                                                 for k, t in enumerate(cuts)) + ".")
     else:
         shots_rule = "The source is one continuous shot: write only [Shot 1] and no timestamp at all."
-    rules = (AUTO_TEMPLATE_RULES.format(trigger=f" '{trigger}'" if trigger else "", shots_rule=shots_rule) if template
-             else AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start, source_name=source_name,
-                                           video_label=video_label, shots_rule=shots_rule))
+    captions = style == "captions" and not template
+    if captions:
+        rules = AUTO_CAPTION_RULES
+    elif template:
+        rules = AUTO_TEMPLATE_RULES.format(trigger=f" '{trigger}'" if trigger else "", shots_rule=shots_rule)
+    else:
+        rules = AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start, source_name=source_name,
+                                         video_label=video_label, shots_rule=shots_rule)
     ask = (f"You write the prompt for MiniMax H3, a video model, in its full-reference format. The target video is an "
            f"edited version of a source shot{f' of {duration:.2f} s' if duration else ''}: the first {nf} images are "
            f"frames of that shot in time order{f' (at {tt} on its clock)' if tt else ''}.{pics}\n\n"
@@ -2226,8 +2243,109 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
               "picture in its place.\n" if "{details@" in instruction + template else "")
            + ("".join(f"\n{n}" for n in notes)) + "\n\n"
            + rules)
-    text = vlm_generate(clip, ask, _letterbox_batch(list(frames) + list(pictures)), max(1536, int(max_tokens)))
-    return tidy_h3_prompt(text, seg, trigger, bool(cuts))
+    if captions:   # the caption style has no H3 sections, no shot structure and no <Subject n>
+        ask = ask.replace("You write the prompt for MiniMax H3, a video model, in its full-reference format.",
+                          "You write the request a user types to edit a video with a video model.")
+        ask = ask.replace(rel, "The source is the video; the target keeps its timing, camera and motion unless the "
+                               "request changes them.")
+    images = _letterbox_batch(list(frames) + list(pictures))
+    tokens = 512 if captions else max(1536, int(max_tokens))
+    sampling = {"temperature": 0.6, "repetition_penalty": 1.1, "presence_penalty": 0.8}
+    tidy = (lambda t: tidy_caption(t, seg)) if captions else \
+        (lambda t: tidy_h3_prompt(t, seg, trigger, bool(cuts), npics, bool(template)))
+    check = (lambda t: caption_problems(t, npics)) if captions else (lambda t: h3_prompt_problems(t, npics, bool(template)))
+    text = tidy(vlm_generate(clip, ask, images, tokens, sampling=sampling))
+    problems = check(text)
+    if problems:   # one more try, told what was wrong
+        print(f"[BFS Auto prompt] writing again: {'; '.join(problems)}", flush=True)
+        again = (ask + "\n\nA previous answer had these problems, avoid them: " + "; ".join(problems) + ".")
+        text2 = tidy(vlm_generate(clip, again, images, tokens, seed=1, sampling=sampling))
+        if len(check(text2)) < len(problems):
+            text = text2
+    return text if captions else name_subjects(text)
+
+
+def tidy_caption(text: str, seg: dict | None = None) -> str:
+    """A caption-style answer: one paragraph, no fences or quotes, no repeated sentences, labels with brackets, and
+    the Colored Mark mapping added when a mark color is missing."""
+    t = str(text or "").replace("```text", "").replace("```", "").strip().strip('"').strip()
+    t = " ".join(drop_repeats(t).split())
+    t = re.sub(r"(?<![<\w])(Picture) (\d+)(?![\w>])", r"<\1 \2>", t)
+    if seg and seg.get("color_guide"):
+        names = [_COLOR_GUIDE_NAMES.get(x["color"], x["color"]) for x in seg.get("color_guide_marks") or []]
+        if any(n not in t for n in names):
+            t = color_guide_prompt(t, seg["color_guide_marks"])
+    return t
+
+
+def caption_problems(text: str, npics: int) -> list[str]:
+    """What is wrong with a caption-style answer."""
+    problems = []
+    if re.search(r"(?i)\b(subject_definitions|summary|detailed_description)\s*:", text):
+        problems.append("it has H3 section names: write a short paragraph instead")
+    if "<Subject" in text:
+        problems.append("it uses <Subject n>: name the pictures as <Picture n>")
+    if npics and "<Picture" not in text:
+        problems.append("it never names a picture as <Picture n>")
+    if len(text.split()) > 170:
+        problems.append("it is too long: two to four sentences")
+    return problems
+
+
+def name_subjects(text: str) -> str:
+    """Last resort when detailed_description still never says <Subject N>: right after [Shot 1], one sentence that
+    ties each missing label to its short description from subject_definitions, so H3 knows who is who."""
+    i = text.find("detailed_description:")
+    if i < 0 or "[Shot 1]" not in text[i:]:
+        return text
+    j = text.find("overall_soundscape:", i)
+    body = text[i:j if j > 0 else len(text)]
+    defs = dict(re.findall(r"<Subject (\d+)> is (?:the |a |an )?([^.\n]+?)(?: in| shown in| from) <Picture", text.split("summary:")[0]))
+    missing = [k for k in sorted(defs, key=int) if f"<Subject {k}>" not in body]
+    if not missing:
+        return text
+    short = lambda d: " ".join(d.split(",")[0].split()[:8])
+    line = " ".join(f"<Subject {k}> is the {short(defs[k])}." for k in missing)
+    k0 = text.index("[Shot 1]", i) + len("[Shot 1]")
+    return text[:k0] + " " + line + text[k0:]
+
+
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[.!?])\s+", text) if x.strip()]
+
+
+def drop_repeats(text: str) -> str:
+    """A VLM stuck in a loop repeats its sentences: keep the first of each, per section."""
+    out = []
+    for line in text.split("\n"):
+        seen, kept = set(), []
+        for sent in _sentences(line):
+            key = re.sub(r"\W+", " ", sent.lower()).strip()
+            if key in seen and len(key.split()) > 3:
+                continue
+            seen.add(key)
+            kept.append(sent)
+        out.append(" ".join(kept) if kept else line)
+    return "\n".join(out)
+
+
+def h3_prompt_problems(text: str, npics: int, template: bool = False) -> list[str]:
+    """What is wrong with a written prompt: a missing section, a subject never named by its label in
+    detailed_description, a sentence repeated (a loop), an answer cut short."""
+    problems = []
+    if not template:
+        problems += [f"the section {n}: is missing" for n in H3_SECTIONS if f"{n}:" not in text]
+    i = text.find("detailed_description:")
+    body = text[i:text.find("overall_soundscape:", i) if "overall_soundscape:" in text[i:] else len(text)] if i >= 0 else ""
+    defined = sorted({int(k) for k in re.findall(r"<Subject (\d+)>", text.split("summary:")[0])})
+    missing = [k for k in defined if f"<Subject {k}>" not in body]
+    if body and missing:
+        problems.append("detailed_description never names " + ", ".join(f"<Subject {k}>" for k in missing)
+                        + " by its label")
+    keys = [re.sub(r"\W+", " ", x.lower()).strip() for x in _sentences(body)]
+    if keys and max(keys.count(k) for k in keys) >= 3:
+        problems.append("sentences are repeated in a loop")
+    return problems
 
 
 def request_trigger(text: str) -> str:
@@ -2241,7 +2359,8 @@ def is_template(text: str) -> bool:
     return len(re.findall(r"(?i)\b(subject_definitions|summary|detailed_description)\s*:", str(text or ""))) >= 2
 
 
-def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "", cuts: bool = True) -> str:
+def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "", cuts: bool = True, npics: int = 0,
+                   template: bool = False) -> str:
     """The VLM's answer as a prompt: from subject_definitions on (after the request's trigger word, kept first), no
     code fences or Markdown bold around the section names, labels with their angle brackets, and the Colored Mark
     mapping added when the writer left a mark color out."""
@@ -2257,6 +2376,14 @@ def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "", cuts: 
     t = re.sub(r"(\[Shot 1\])\s*At \d+:\d+(?:\.\d+)?\s*,\s*(\w)", lambda m: f"{m.group(1)} {m.group(2).upper()}", t)
     if not cuts:
         t = re.sub(r"\bAt \d+:\d+(?:\.\d+)?\s*,\s*(\w)", lambda m: m.group(1).upper(), t)
+    t = drop_repeats(t)
+    if not template:   # an answer cut short (a loop until max tokens) still ends with the sound sections
+        if "overall_soundscape:" not in t and not re.search(r"[.!?\"']\s*$", t):
+            t = re.sub(r"(?<=[.!?])\s+[^.!?\n]*$", "", t)   # the sentence cut in the middle
+        if "overall_soundscape:" not in t:
+            t = t.rstrip() + "\noverall_soundscape:\nThe ambient sound of the guide video continues throughout."
+        if "non_diegetic_music:" not in t:
+            t = t.rstrip() + "\nnon_diegetic_music:\nN/A"
     # 'Picture 1' / 'Subject 2' / 'Video 1' written without their brackets
     t = re.sub(r"(?<![<\w])(Picture|Subject|Video|Audio) (\d+)(?![\w>])", r"<\1 \2>", t)
     if seg and seg.get("color_guide"):
@@ -2300,8 +2427,9 @@ def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, nam
     _status("Writing the shot's prompt with the VLM", force=True)
     text = write_h3_prompt(clip, frames, [(int(x) - seg["start"]) / fps for x in picks], pictures,
                            [pic_details.get(nm, "") for nm in names], request, seg, ap.get("source") or "guide", L / fps,
-                           int(vcfg.get("max_tokens") or 1024), [(c - seg["start"]) / fps for c in cuts], tmpl)
-    return {"text": text, "for": auto_prompt_for(instruction, names, seg, template)}
+                           int(vcfg.get("max_tokens") or 1024), [(c - seg["start"]) / fps for c in cuts], tmpl,
+                           ap.get("style") or "h3")
+    return {"text": text, "for": auto_prompt_for(instruction, names, seg, template, ap.get("style") or "h3")}
 
 
 PLACE_Q = ("This picture shows a place; the patch of black-and-white noise only hides a person, ignore it. Describe the "
@@ -3306,7 +3434,7 @@ class BFSShotPlanner:
                 got = stored.get(key) or {}
                 if got.get("text"):
                     written[i] = got["text"]
-                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template):
+                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template, ap["style"]):
                         print(f"[BFS Shot Planner] shot {i + 1}: its written prompt is older than its request, pictures or "
                               "marks (🤖 Write in the panel to write it again)", flush=True)
                 elif vlm is not None:
@@ -4039,8 +4167,6 @@ class BFSShotH3Conditioning:
                     "aligned guide: the shot's frames sit on the generated frames (MiniMax H3 Add Guide), "
                     "frame by frame. native reference video: the shot enters as <Video 1> like the reference "
                     "video input. both: the two together."}),
-                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Pass every reference of the shot (<Picture 2> "
-                                                                      "on, up to 12). Off: only the first."}),
                 "first_frame": (["none", "shot's first frame"], {"default": "none", "tooltip":
                     "Anchor the shot's own first frame as an extra aligned image guide."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
@@ -4117,18 +4243,18 @@ class BFSShotH3Conditioning:
     DESCRIPTION = ("Build MiniMax H3 conditioning for one shot with the native nodes: Reference to Video "
                    "(prompt, references, length) plus the shot as an aligned guide and/or reference video.")
 
-    def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
+    def condition(self, shot, clip, vae, guide_mode, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, model=None, vlm=None, setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
                   source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
-        refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS if use_ref_2 else 1])}
+        # every picture of the shot, <Picture 1> first (chosen in the planner; use_ref_2 left in 1.113)
+        refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS])}
         if shot.get("color_guide"):
             marks = shot.get("color_guide_marks") or [{"picture": 1, "color": shot.get("color_guide_color", "#00ff00")}]
             for x in marks:
                 if x["picture"] > len(refs):
                     raise ValueError(f"Colored Mark: a person is marked as <Picture {x['picture']}>, but the shot passes "
-                                     f"{len(refs)} picture(s)" + (" (use_ref_2 is off: only the first)" if not use_ref_2
-                                                                  else ". Add the picture to the shot or the global list."))
+                                     f"{len(refs)} picture(s). Add the picture to the shot or the global list.")
             owner = {}
             for x in marks:
                 if owner.setdefault(x["color"], x["picture"]) != x["picture"]:
@@ -4316,8 +4442,6 @@ class BFSShotH3ConditioningSimple:
                 "guide_mode": (cls.GUIDE_MODES, {"default": cls.GUIDE_MODES[0], "tooltip":
                     "aligned guide: preserve the shot frame by frame with MiniMax H3 Add Guide. "
                     "native reference video: provide it as <Video 1> context. both: use both paths."}),
-                "use_ref_2": ("BOOLEAN", {"default": True, "tooltip": "Pass every reference of the shot (<Picture 2> "
-                                                                      "on, up to 12). Off: only the first."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
             },
             "optional": {
@@ -4350,11 +4474,11 @@ class BFSShotH3ConditioningSimple:
     DESCRIPTION = ("Build the usual MiniMax H3 shot conditioning with references, prompt and an aligned guide "
                    "and/or native reference video. Use the Advanced node for the mask guide, setting picture and first frame.")
 
-    def condition(self, shot, clip, vae, guide_mode, use_ref_2, ref_image_size,
+    def condition(self, shot, clip, vae, guide_mode, ref_image_size,
                   audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
                   source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
         positive, latent, _, prompt = BFSShotH3Conditioning().condition(
-            shot, clip, vae, guide_mode, use_ref_2, "none", ref_image_size,
+            shot, clip, vae, guide_mode, "none", ref_image_size,
             audio_vae=audio_vae, with_audio=with_audio, vlm=vlm, inpaint=inpaint,
             source_blur=source_blur, source_blur_strength=source_blur_strength,
             source_blur_segmenter=source_blur_segmenter, source_blur_effect=source_blur_effect)
