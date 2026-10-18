@@ -15,7 +15,9 @@ function globalSection(c) {
   return section("Global reference & prompt", [
     refBox(c, "global", plan.global_refs, [], marker),
     h("div", { class: "pbox", style: "margin-top:6px" }, [
-      h("textarea", { style: "min-height:78px", placeholder: "Global prompt (a connected `prompt` input overrides it)",
+      h("textarea", { style: "min-height:78px", placeholder: plan.auto_prompt?.enabled
+        ? "Request for every shot (🤖 Auto prompt writes the H3 prompt from it), e.g. 'replace the bottle with the red can from Picture 2'"
+        : "Global prompt (a connected `prompt` input overrides it)",
         value: plan.global_prompt, onChange: e => c.setPlan("global_prompt", e.target.value) }),
       promptChips(c, plan.global_refs.filter(Boolean), v => c.setPlan("global_prompt", v)),
     ]),
@@ -103,6 +105,30 @@ function vlmSection(c) {
   ];
 }
 
+// 🤖 Auto prompt: the VLM writes each shot's prompt in H3's full-reference format from key frames of the shot, its
+// pictures and their descriptions, the request in the prompt box and the shot's marks and mode
+function autoSection(c) {
+  const { plan, busy, segs } = c;
+  const A = plan.auto_prompt || {};
+  const S = segs.value, missing = S.filter(s => !c.writtenOf(s)?.text).length;
+  const stale = S.filter(s => c.writtenOf(s)?.text && c.writtenOf(s).for !== c.autoFor(s)).length;
+  return section("🤖 Auto prompt (H3)", [
+    h("div", { class: "row", style: "gap:12px;align-items:center" }, [
+      check(A.enabled, v => c.setAuto("enabled", v), "Write the prompts with the VLM",
+        "On: the prompt boxes (global and per shot) hold your request ('change the bottle into a red can', 'Picture 1 dances in the rain'); the VLM writes each shot's MiniMax H3 prompt from key frames of the shot, the pictures and their descriptions, the request and the shot's Colored Marks, selection and mode, in H3's official full-reference format."),
+      fld("Key frames", select(String(A.frames || 0), [["0", "auto (by length)"], ...[3, 4, 5, 6, 8, 10, 12].map(n => [String(n), String(n)])],
+        v => c.setAuto("frames", parseInt(v) || 0), { style: "width:auto" }), "auto: about 1.5 per second, 3 to 8"),
+      fld("Source video in the prompt", select(A.source || "guide", [["guide", "guide video (aligned guide)"], ["video", "<Video 1> (native reference video)"]],
+        v => c.setAuto("source", v), { style: "width:auto" }), "match the conditioning node's guide_mode"),
+      h("button", { class: "pri", disabled: !!busy.value || !S.length, onClick: () => c.writePrompts() }, "🤖 Write all prompts"),
+      h("button", { disabled: !!busy.value || !missing, onClick: () => c.writePrompts(S.map((s, i) => (c.writtenOf(s)?.text ? -1 : i)).filter(i => i >= 0)) },
+        `only the missing (${missing})`),
+    ]),
+    hint(A.enabled ? `${S.length - missing}/${S.length} shots have a written prompt${stale ? ` · ${stale} older than their request, pictures or marks` : ""} · shots without one are written when the workflow runs (with the VLM on the planner) · edit them in each shot (Shots tab)`
+      : "Off: the prompt boxes are the prompts.", "display:block;margin-top:4px"),
+  ], { sub: "request + video + pictures -> MiniMax H3 prompt", right: A.enabled ? pill("on", "ok") : pill("off") });
+}
+
 export function promptsTab(c) {
-  return h("div", { class: "card" }, [globalSection(c), ...vlmSection(c)]);
+  return h("div", { class: "card" }, [globalSection(c), autoSection(c), ...vlmSection(c)]);
 }

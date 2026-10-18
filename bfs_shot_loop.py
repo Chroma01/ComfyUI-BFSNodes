@@ -457,7 +457,7 @@ DEFAULT_PLAN = {
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
-    "picture_details": {}, "picture_cfg": {}, "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless", "unload_before_join": True,
+    "picture_details": {}, "picture_cfg": {}, "auto_prompt": {}, "auto_prompts": {}, "between_shots": "keep", "shot_cache": "output", "shot_storage": "lossless", "unload_before_join": True,
 }
 
 
@@ -1664,8 +1664,7 @@ def fill_target(text: str, desc: str) -> str:
 
 DEFAULT_VLM = {"enabled": False, "frames": 3, "max_tokens": 1024, "auto_segment": True, "auto_shot": True,
                "instruction": "", "describe_preset": "short", "describe_custom": "", "fit_prompt": True,
-               "temperature": 0.0, "seed": 0, "image_max_side": 1024,
-               "write_prompt": False, "write_task": "character swap", "write_change": ""}
+               "temperature": 0.0, "seed": 0, "image_max_side": 1024}
 _VLM: dict[str, Any] = {}            # the VLM connected to a planner (kept for the panel's Analyse button)
 _VLM_CACHE: dict[tuple, dict] = {}
 
@@ -2098,14 +2097,147 @@ def _clean_written(text: str) -> str:
     return t
 
 
-def vlm_write_prompt(clip, path: str, analysis: dict, start: int, end: int, refs: list, task: str, change: str,
-                     max_tokens: int = 1024, frames: int = 4) -> str:
-    """A duet prompt for one shot, written by the VLM from frames of the shot and the reference pictures."""
-    src = _timeline(analysis["n_src"], analysis["fps_src"], float(analysis["fps"]))
-    n = max(1, min(8, int(frames)))
-    picks = np.clip(np.linspace(start, end - 1, n).round().astype(int), 0, analysis["n"] - 1)
-    fr = [torch.from_numpy(f.astype(np.float32) / 255.0)[None] for f in _read_frames(path, src[picks], None)]
-    return write_duet_prompt(clip, fr, refs, task, change, max_tokens)
+# ---------------------------------------------------------------------------- auto prompt (MiniMax H3)
+# The VLM writes each shot's prompt in H3's full-reference format (MiniMaxAI/MiniMax-H3 docs/
+# VIDEO_PROMPT_WRITING_GUIDE_ref_en.md) from key frames of the shot, the reference pictures and their descriptions, the
+# user's request (the prompt box) and the shot's marks and mode.
+
+AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide"}   # frames 0 = from the shot's length
+
+AUTO_PROMPT_RULES = """Write exactly these six sections, in English, in this order, with nothing before or after them:
+
+subject_definitions:
+One line per referenced item. A <Subject N> is visible content taken from the reference pictures (a person, creature, object, place, outfit or style), written as "<Subject 1> is the <what it is> in <Picture 1>, with <its main visible features>." Number subjects from 1 in the order of their pictures. Cite each picture inside its subject's line; never give a picture a line of its own.{source_line}
+
+summary:
+One short paragraph that starts with the task type in square brackets, e.g. [video editing + reference generation], then {summary_start} Use only the labels defined above.
+
+retention_analysis:
+One line per <Subject N>: "<Subject 1> (appears in [Shot 1]): fully_preserved - <what of it is kept>." The marker is one of fully_preserved, partially_preserved, attribute_transfer, weak_reference.
+
+detailed_description:
+Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then [Shot 1] with no timestamp; only when the frames show a real camera cut, a later shot starts with "[Shot 2] At MM:SS.mmm, the shot cuts to ...". Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
+
+overall_soundscape:
+One to four sentences of ambience and physical sounds across the video.
+
+non_diegetic_music:
+N/A, or one to three sentences (instruments, tempo, dynamics) when the request asks for music only the audience hears.
+
+Write only what is seen or heard. No negations (not, no, never, without), no quality words (realistic, high quality, masterpiece, 4k), no names of real people, no explanations of the rules."""
+
+
+def auto_frame_count(length: int, fps: float, frames: int = 0) -> int:
+    """Key frames the writer looks at: the plan's number, else about 1.5 per second of the shot (3 to 8)."""
+    if frames:
+        return max(2, min(12, int(frames)))
+    return max(3, min(8, round(length / max(1.0, fps) * 1.5)))
+
+
+def shot_mode(seg: dict) -> str:
+    """frame, paste, mask, crop or cropmask (the panel's names for a shot's mode)."""
+    if seg.get("crop"):
+        return "cropmask" if seg.get("inpaint") else "crop"
+    return "mask" if seg.get("inpaint") else "paste" if seg.get("paste") else "frame"
+
+
+def auto_prompt_for(instruction: str, names: list, seg: dict) -> str:
+    """What a written prompt was made from (the panel computes the same string to show it is out of date)."""
+    marks = [[x["picture"], x["color"]] for x in seg.get("color_guide_marks") or []] if seg.get("color_guide") else []
+    return json.dumps([instruction or "", names, marks, shot_mode(seg), (seg.get("mask") or {}).get("text") or "",
+                       seg.get("target") or ""], separators=(",", ":"), ensure_ascii=False)
+
+
+def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_texts: list, instruction: str,
+                    seg: dict, source: str = "guide", duration: float = 0.0, max_tokens: int = 2048) -> str:
+    """One shot's prompt in H3's full-reference format, written by the VLM from key frames of the shot ([1,H,W,3] each,
+    at `times` seconds into it), the shot's reference pictures (<Picture 1> first) with their descriptions, the user's
+    request and the shot's Colored Marks, selection and mode."""
+    nf, npics = len(frames), len(pictures)
+    tt = ", ".join(_mmss(t) for t in times) if times else ""
+    pics = ""
+    if npics:
+        lines = [f"<Picture {k + 1}>: image {nf + k + 1}" + (f", described as: {d}" if d else "")
+                 for k, d in enumerate(picture_texts[:npics] + [""] * max(0, npics - len(picture_texts)))]
+        pics = (f" The next {npics} images are the reference pictures, in order:\n" + "\n".join(lines))
+    sel = (seg.get("mask") or {}).get("text") or ""
+    notes = []
+    if seg.get("color_guide"):
+        marks = seg.get("color_guide_marks") or []
+        who = "; ".join(f"the person tinted {_COLOR_GUIDE_NAMES.get(x['color'], x['color'])} becomes the subject from "
+                        f"<Picture {x['picture']}>" for x in marks)
+        notes.append("In the source frames, translucent colored tints are temporary editing marks, not anyone's look: "
+                     f"{who}. In subject_definitions and detailed_description, say which tinted person each subject "
+                     "replaces, and that the marks are removed completely in the target video.")
+    if seg.get("target"):
+        notes.append(f"The subject being replaced in the source: {seg['target']}.")
+    elif sel:
+        notes.append(f"The selected subject in the source: {sel}.")
+    mode = shot_mode(seg)
+    if mode in ("mask", "cropmask"):
+        notes.append("Only the selected subject is generated again; everything else in the frame stays exactly as in "
+                     "the source.")
+    if mode in ("crop", "cropmask"):
+        notes.append("The frames are a crop around the selected subject; describe what this crop shows.")
+    if source == "video":
+        source_line = " Also add the line \"<Video 1> is the source video for the target video edit.\""
+        summary_start = "\"The target video is an edited version of <Video 1>.\""
+        rel = "The source shot is <Video 1>, the video being edited."
+    else:
+        source_line = ""
+        summary_start = "one sentence on what the target video shows and which subjects it uses."
+        rel = ("The source shot is given to the model as a guide video aligned frame by frame (it has no tag): the "
+               "target keeps its timing, camera and motion unless the request changes them.")
+    ask = (f"You write the prompt for MiniMax H3, a video model, in its full-reference format. The target video is an "
+           f"edited version of a source shot{f' of {duration:.2f} s' if duration else ''}: the first {nf} images are "
+           f"frames of that shot in time order{f' (at {tt} on its clock)' if tt else ''}.{pics}\n\n"
+           f"{rel}\n\nThe user's request: {instruction.strip() or '(none: use the reference pictures as they are)'}\n"
+           + ("".join(f"\n{n}" for n in notes)) + "\n\n"
+           + AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start))
+    text = vlm_generate(clip, ask, _letterbox_batch(list(frames) + list(pictures)), max(1536, int(max_tokens)))
+    return tidy_h3_prompt(text, seg)
+
+
+H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
+               "non_diegetic_music")
+
+
+def tidy_h3_prompt(text: str, seg: dict | None = None) -> str:
+    """The VLM's answer as a prompt: from subject_definitions on, no code fences or Markdown bold around the section
+    names, and the Colored Mark mapping added when the writer left a mark color out."""
+    t = str(text or "").replace("```text", "").replace("```", "").strip()
+    for name in H3_SECTIONS:
+        t = re.sub(rf"(?im)^\s*[#*_]*\s*{name}\s*[*_]*\s*:[ \t]*[*_]*", f"{name}:", t)
+    i = t.find("subject_definitions:")
+    if i > 0:
+        t = t[i:]
+    if seg and seg.get("color_guide"):
+        names = [_COLOR_GUIDE_NAMES.get(x["color"], x["color"]) for x in seg.get("color_guide_marks") or []]
+        if any(n not in t for n in names):
+            t = color_guide_prompt(t, seg["color_guide_marks"])
+    return t.strip()
+
+
+def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, names: list, pictures: list,
+                     pic_details: dict, instruction: str, vcfg: dict) -> dict:
+    """Write one shot's prompt: {"text", "for"} (what it was made from, see auto_prompt_for)."""
+    ap = {**AUTO_PROMPT_DEFAULTS, **(plan.get("auto_prompt") or {})}
+    fps = float(analysis["fps"])
+    L = seg["end"] - seg["start"]
+    n = auto_frame_count(L, fps, int(ap.get("frames") or 0))
+    src = _timeline(analysis["n_src"], analysis["fps_src"], fps)
+    picks = np.clip(np.linspace(seg["start"], seg["end"] - 1, n).round().astype(int), 0, analysis["n"] - 1)
+    side = max(224, min(4096, int(vcfg.get("image_max_side") or 1024)))
+    sc = side / max(analysis["width"], analysis["height"])
+    size = (max(32, int(analysis["width"] * sc) // 2 * 2), max(32, int(analysis["height"] * sc) // 2 * 2))
+    frames = [torch.from_numpy(f.astype(np.float32) / 255.0)[None] for f in _read_frames(path, src[picks], size)]
+    # the request may name pictures with {details...}: their saved descriptions
+    request = fill_picture_details(picture_markers(instruction), names, pictures, pic_details)
+    _status("Writing the shot's prompt with the VLM", force=True)
+    text = write_h3_prompt(clip, frames, [(int(x) - seg["start"]) / fps for x in picks], pictures,
+                           [pic_details.get(nm, "") for nm in names], request, seg, ap.get("source") or "guide", L / fps,
+                           int(vcfg.get("max_tokens") or 1024))
+    return {"text": text, "for": auto_prompt_for(instruction, names, seg)}
 
 
 PLACE_Q = ("This picture shows a place; the patch of black-and-white noise only hides a person, ignore it. Describe the "
@@ -2695,6 +2827,9 @@ def shot_signature(plan: dict, seg: dict, head: int, extra: dict) -> str:
     for k in ("picture_details", "picture_cfg"):
         if plan.get(k):
             doc["g"][k] = plan[k]
+    if (plan.get("auto_prompt") or {}).get("enabled"):   # the shot's written prompt is its prompt
+        doc["g"]["auto_prompt"] = plan["auto_prompt"]
+        doc["s"]["written"] = ((plan.get("auto_prompts") or {}).get(f"{seg.get('start')}-{seg.get('end')}") or {}).get("text", "")
     return hashlib.sha1(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -3094,18 +3229,37 @@ class BFSShotPlanner:
 
         # the VLM answers for every shot first: switching between it and SAM 3 mid-generation breaks the VLM
         vlm_out = {i: vlm_shot(vlm, path, a, segs[i]["start"], segs[i]["end"], vcfg) for i in work} if use_vlm else {}
-        written = {}
-        if vlm is not None and vcfg.get("write_prompt"):   # the VLM writes the prompt of every shot without its own
+        # 🤖 Auto prompt: the prompt box is the request, the shot's prompt is the one written for it (in the panel, or
+        # now by the VLM for a shot without one, before any SAM 3 work; the panel stores the new ones)
+        ap = {**AUTO_PROMPT_DEFAULTS, **(p.get("auto_prompt") or {})}
+        written, new_written = {}, {}
+        if ap["enabled"]:
+            stored = p.get("auto_prompts") or {}
             for i in work:
-                if not segs[i]["prompt"]:
-                    written[i] = vlm_write_prompt(vlm, path, a, segs[i]["start"], segs[i]["end"], refs_of(segs[i]),
-                                                  vcfg["write_task"], vcfg["write_change"], int(vcfg["max_tokens"]))
+                key, request = f"{segs[i]['start']}-{segs[i]['end']}", segs[i]["prompt"] or g_prompt or ""
+                got = stored.get(key) or {}
+                if got.get("text"):
+                    written[i] = got["text"]
+                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i]):
+                        print(f"[BFS Shot Planner] shot {i + 1}: its written prompt is older than its request, pictures or "
+                              "marks (🤖 Write in the panel to write it again)", flush=True)
+                elif vlm is not None:
+                    new_written[key] = auto_prompt_shot(vlm, p, a, path, segs[i], names_of(segs[i]), refs_of(segs[i]),
+                                                        pic_details, request, vcfg)
+                    written[i] = new_written[key]["text"]
+                    print(f"[BFS Shot Planner] shot {i + 1}: prompt written by the VLM ({len(written[i].split())} words)",
+                          flush=True)
+                else:
+                    print(f"[BFS Shot Planner] shot {i + 1}: Auto prompt is on, but the shot has no written prompt and the "
+                          "planner has no VLM: its request is used as the prompt", flush=True)
+            if new_written:
+                _notify("bfs-shotloop-autoprompt", {"video": p["video"], "prompts": new_written})
         # descriptions nobody wrote: each picture described now, by itself, before any SAM 3 work (switching between
         # SAM 3 and the VLM mid-generation breaks the VLM: that is why the button worked and the run did not)
         if vlm is not None:
             for i in work:
                 names = names_of(segs[i])
-                text = details_template(segs[i]["prompt"] or written.get(i) or g_prompt or "", names)
+                text = details_template(written.get(i) or segs[i]["prompt"] or g_prompt or "", names)
                 for m in PICTURE_DETAILS.finditer(text):
                     k = int(m.group(1)) - 1
                     if k < len(names) and not pic_details.get(names[k]):
@@ -3118,7 +3272,7 @@ class BFSShotPlanner:
         auto_target = {}
         if vlm is not None:
             need = [i for i in work if not segs[i].get("target")
-                    and "{target}" in (segs[i]["prompt"] or written.get(i) or g_prompt or "")]
+                    and "{target}" in (written.get(i) or segs[i]["prompt"] or g_prompt or "")]
             crops = {}
             for i in need:
                 tspec = plan_spec(p, segs[i].get("mask"), path)
@@ -3127,7 +3281,7 @@ class BFSShotPlanner:
             for i, crop in crops.items():
                 if crop is None:
                     continue
-                text = segs[i]["prompt"] or written.get(i) or g_prompt or ""
+                text = written.get(i) or segs[i]["prompt"] or g_prompt or ""
                 slot = prompt_slot(text, "{target}") if vcfg.get("fit_prompt", True) else ""
                 auto_target[i] = describe_target(vlm, crop, slot=slot, temperature=float(vcfg.get("temperature") or 0),
                                                  seed=int(vcfg.get("seed") or 0),
@@ -3195,13 +3349,13 @@ class BFSShotPlanner:
             hist, hist_src = (history_for(path, a, src, s, i, prev_len, queue, rid, W, H, crop, ft)
                               if s["chain"] == "history" and i > 0 and not assemble_only else (None, None))
             head_px = head_for(i, head, prev_len, queue, rid, W, H, crop, ft) if head and not assemble_only else None
-            template = (s["prompt"] or written.get(i) or g_prompt or "").replace(
+            template = (written.get(i) or s["prompt"] or g_prompt or "").replace(
                 "{shot}", sug["shot"] if (sug and vcfg["auto_shot"]) else "")
             # a description nobody wrote is left for the conditioning node's VLM when the planner has none
             template = fill_picture_details(details_template(template, names), names, refs, pic_details,
                                             tag=f"[BFS Shot Planner] shot {i + 1}", keep_missing=vlm is None)
             shot_prompt = fill_target(template, s.get("target", "") or auto_target.get(i, ""))
-            if s.get("color_guide"):
+            if s.get("color_guide") and i not in written:   # a written prompt already has the mapping
                 shot_prompt = color_guide_prompt(shot_prompt, s["color_guide_marks"])
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
@@ -3827,36 +3981,10 @@ class BFSShotH3Conditioning:
                 "audio_vae": ("VAE",),
                 "with_audio": ("BOOLEAN", {"default": False, "tooltip":
                     "Attach the shot's soundtrack to the guide / reference video (needs audio_vae)."}),
-                "duet": (["off", "canvas", "shifted RoPE"], {"default": "off", "tooltip":
-                    "Pin the shot's own clip in a side panel and generate in sync with it (training-free duet). "
-                    "canvas: panel and video share one wide grid. shifted RoPE: the video keeps its own RoPE "
-                    "positions and the panel sits past its edge (connect the model and use the model output). "
-                    "BFS Shot Join cuts the panel off by itself. In the prompt the panel has no tag: name its region "
-                    "by where it is plus what is seen there ('the left half shows a man dancing in a bedroom'; "
-                    "{panel_region} / {video_region} / {layout} are filled in)."}),
-                "model": ("MODEL", {"tooltip": "Needed for 'shifted RoPE': route the model through this node."}),
-                "panel_position": (["left", "right", "top", "bottom"], {"default": "left"}),
-                "panel_size": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.5, "step": 0.01,
-                                         "tooltip": "Panel size against the video (1.0 = two equal halves)."}),
-                "panel_noise": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                                          "tooltip": "0 pins the panel exactly; 0.05-0.2 loosens it for bigger changes."}),
-                "rope_gap": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 256.0, "step": 1.0,
-                                       "tooltip": "shifted RoPE only: empty RoPE steps (2x2 patches) between video and panel. Keep it small "
-                                                  "against the video width (0-2 at low resolution): a gap close to the "
-                                                  "video's width makes the model draw its own split screen."}),
-                "task": (["planner prompt"] + WRITER_TASKS, {"default": "planner prompt", "tooltip":
-                    "Optional prompt writer for the duet. 'planner prompt' (default) uses the shot's prompt from the "
-                    "planner as it is. A task writes the prompt of every shot in the duet format instead: with a VLM "
-                    "connected it looks at the shot and its references and writes it; without one, a template for the "
-                    "task. Needs duet on (canvas or shifted RoPE). See the written text on the prompt output. For two "
-                    "Colored Mark people with separate references, use 'planner prompt': the automatic character-swap "
-                    "template assumes the pictures show one identity."}),
-                "instruction": ("STRING", {"default": "", "multiline": True, "tooltip":
-                    "What changes, in seen words, for the task: 'a 1990s anime cel style', 'a sunny beach at sunset', "
-                    "'an elderly woman with short grey hair'. Empty is fine for character swap (the person comes from "
-                    "the references)."}),
-                "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder). Fills {details} when the planner left it (no 📝 Describe refs, no VLM on the planner), and with a task it writes the "
-                                            "prompt when a task is chosen. Without it the task's template is used."}),
+                "model": ("MODEL", {"tooltip": "Optional: passed through to the model output unchanged (workflows "
+                                               "that routed the model through this node keep working)."}),
+                "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder). Fills {details} "
+                                            "when the planner left it (no 📝 Describe refs, no VLM on the planner)."}),
                 "setting_ref": (SETTING_MODES, {"default": "off", "tooltip":
                     "TSC's trick: one more reference picture, the shot's middle frame with the person covered in TV "
                     "static, so the model sees the place in full detail (the panel / guide is often small). It is "
@@ -3884,7 +4012,7 @@ class BFSShotH3Conditioning:
                     "subject's look."}),
                 "source_blur": (SOURCE_BLUR, {"default": "off", "tooltip":
                     "Blur the source person in what the model SEES of the source (aligned guide, native reference "
-                    "video, duet panel): '<region> (<what stays sharp>)'. Region: face / head + hands / person (every "
+                    "video): '<region> (<what stays sharp>)'. Region: face / head + hands / person (every "
                     "person the segmenter finds) or masked area (the shot's own mask, the person being replaced, with "
                     "its expand). keep mouth: lips, teeth and tongue stay sharp; keep lips + tongue: the teeth are "
                     "blurred too; mouth too: nothing stays sharp. The model still reads the pose and motion but has "
@@ -3922,15 +4050,9 @@ class BFSShotH3Conditioning:
                    "(prompt, references, length) plus the shot as an aligned guide and/or reference video.")
 
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, first_frame, ref_image_size,
-                  audio_vae=None, with_audio=False, duet="off", model=None, panel_position="left", panel_size=1.0,
-                  panel_noise=0.0, rope_gap=0.0, task="planner prompt", instruction="", vlm=None,
-                  setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
+                  audio_vae=None, with_audio=False, model=None, vlm=None, setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
                   source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
-        try:
-            from .bfs_h3_side_panel import build_prompt, fill_layout, make_info
-        except ImportError:
-            from bfs_h3_side_panel import build_prompt, fill_layout, make_info
         refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS if use_ref_2 else 1])}
         if shot.get("color_guide"):
             marks = shot.get("color_guide_marks") or [{"picture": 1, "color": shot.get("color_guide_color", "#00ff00")}]
@@ -3944,30 +4066,13 @@ class BFSShotH3Conditioning:
                 if owner.setdefault(x["color"], x["picture"]) != x["picture"]:
                     raise ValueError(f"Colored Mark: <Picture {owner[x['color']]}> and <Picture {x['picture']}> have the "
                                      f"same mark color ({x['color']}). Give one of them another color (Prompts & refs tab).")
-            if len({x["picture"] for x in marks}) > 1 and task != "planner prompt":
-                raise ValueError("The automatic duet prompt templates treat multiple pictures as views of one character. "
-                                 "For several Colored Mark people, use task = 'planner prompt'.")
         prev = chain_image(shot)
         if prev is not None and shot.get("chain") == "reference":
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
         audio = shot["audio"] if (with_audio and audio_vae is not None) else None
         native = guide_mode in (self.GUIDE_MODES[1], self.GUIDE_MODES[2])
         aligned = guide_mode in (self.GUIDE_MODES[0], self.GUIDE_MODES[2])
-        on_canvas = duet != "off"
-        rope_mode = "shifted" if duet == "shifted RoPE" else "canvas"
         text = shot["prompt"] or ""
-        if task and task != "planner prompt":
-            if not on_canvas:
-                raise ValueError("the prompt writer (task) writes duet prompts: set duet to canvas or shifted RoPE, "
-                                 "or set task to 'planner prompt'")
-            if vlm is not None:
-                fr = shot["frames"]
-                idx = sorted(set(np.linspace(0, fr.shape[0] - 1, min(6, fr.shape[0])).round().astype(int).tolist()))
-                text = write_duet_prompt(vlm, [fr[i:i + 1] for i in idx], list(refs.values()), task, instruction,
-                                         1024, rope_mode, times=[i / 24.0 for i in idx])
-                _node_boundary()
-            else:
-                text = build_prompt(task if task != "custom" else "appearance", instruction, len(refs), 0, rope_mode)
         setting = setting_picture(shot, setting_ref, setting_mask) if setting_ref and setting_ref != "off" else None
         if setting is not None:
             if ref_image_size == "match":   # keep 'match' for the people, the setting keeps its own size
@@ -3985,14 +4090,12 @@ class BFSShotH3Conditioning:
                             mode="bilinear", align_corners=False).movedim(1, -1)
                 ref_image_size = "max"
             refs[f"ref_image_{len(refs)}"] = setting
-            text = add_setting(text, len(refs), task == "character swap" or "<Subject 1>" in text)
+            text = add_setting(text, len(refs), "<Subject 1>" in text)
         text = fill_details_now(text, vlm, shot_refs(shot), f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}",
                                 shot.get("ref_names"))
         if len(refs) > 9:   # H3's own node stops at 9; OpenJutsu-style LoRAs were trained with up to 9 pictures
             print(f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}: {len(refs)} reference pictures "
                   "(more than the 9 H3 and its LoRAs usually see)", flush=True)
-        text = fill_layout(text, make_info(shot["width"], shot["height"], panel_position, panel_size, 0)
-                           if on_canvas else None, rope_mode)
         kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],
                       length=shot["gen_length"], ref_image_size=ref_image_size, vae=vae,
                       audio_vae=audio_vae, ref_images=refs or None)
@@ -4020,8 +4123,8 @@ class BFSShotH3Conditioning:
             print(f"{gtag}: Colored Mark {shot.get('color_guide_color', '#00ff00')} at "
                   f"{float(shot.get('color_guide_opacity', 0.35)):.2f} opacity, {mask_report(cmask)}", flush=True)
         pg = mask_guide if mask_guide in MASK_GUIDES[1:] else None
-        if pg and (not use_mask or shot.get("crop") or on_canvas):
-            print(f"{gtag}: mask_guide ignored: it is for 'Mask only' shots (mask, no crop, no duet)", flush=True)
+        if pg and (not use_mask or shot.get("crop")):
+            print(f"{gtag}: mask_guide ignored: it is for 'Mask only' shots (mask, no crop)", flush=True)
             pg = None
         guide_px = None
         if pg:
@@ -4054,7 +4157,7 @@ class BFSShotH3Conditioning:
                                                  image=guide_px).args[0]
             if pg == MASK_GUIDES[2]:
                 aligned = False                        # the mask guide replaces the full one
-        if aligned and (not on_canvas or audio is not None):
+        if aligned:
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
                                                  audio_vae=audio_vae if audio is not None else None,
                                                  image=seen, audio=audio).args[0]
@@ -4075,34 +4178,19 @@ class BFSShotH3Conditioning:
             t0 = time.time()
             keep_mask, keep_video = generation_mask(shot, log=tag), shot["frames"]
             print(f"{tag}: generation mask {mask_report(keep_mask)}, ready in {time.time() - t0:.1f}s", flush=True)
-        if keep_mask is not None and not on_canvas:
+        if keep_mask is not None:
             strength = float(shot.get("inpaint_strength") or 1.0)
             positive, latent = inpaint_latent(latent, positive, vae, keep_video, keep_mask, strength)
             nm = latent["noise_mask"].tensors[0]
             print(f"{tag}: {float((nm > 0).float().mean()) * 100:.1f}% of the latent is regenerated"
                   + (f" at mask opacity {strength:.2f} (keeps ~{100 - strength * 100:.0f}% of the original there)" if strength < 1 else "")
                   + f", the rest is kept ({int(nm.shape[2])} latent frames)", flush=True)
-        if on_canvas:
-            try:
-                from .bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
-            except ImportError:
-                from bfs_h3_side_panel import BFSH3SidePanel, patch_model_rope
-            # the guide goes straight onto the canvas (guides added above are moved onto it by the panel step)
-            guide = seen if aligned and audio is None else None
-            positive, latent, info, _, _ = BFSH3SidePanel().apply(
-                positive, latent, vae, seen, panel_position, panel_size, "contain", 0, "all frames",
-                panel_noise, guide, 0, keep_video=keep_video, keep_mask=keep_mask)
-            shot["panel"] = info        # BFS Shot Join crops the decoded canvas back to the video
-            if duet == "shifted RoPE":
-                if model is None:
-                    raise ValueError("duet 'shifted RoPE' needs the model input (and its model output in the sampler)")
-                model = patch_model_rope(model, info, rope_gap)
-        positive = self._history(shot, positive, vae, gtag, on_canvas, duet, panel_position, panel_size)
-        latent = self._head(shot, latent, vae, gtag, on_canvas, duet, panel_position, panel_size)
+        positive = self._history(shot, positive, vae, gtag)
+        latent = self._head(shot, latent, vae, gtag)
         return (positive, latent, model, text)
 
     @staticmethod
-    def _head(shot, latent, vae, tag, on_canvas, duet, panel_position, panel_size):
+    def _head(shot, latent, vae, tag):
         """Continuity 'head': the shot's first frames are the previous result's end, written into the latent and kept
         by the sampler (noise mask 0), so they are not swapped again and the new frames continue from them."""
         n = int(shot.get("head") or 0)
@@ -4113,20 +4201,8 @@ class BFSShotH3Conditioning:
             print(f"{tag}: head: no previous result, its {n} frames are generated from the guide (and cut by the join)",
                   flush=True)
             return latent
-        if duet == "shifted RoPE":
-            print(f"{tag}: head is not used with duet 'shifted RoPE' (use canvas)", flush=True)
-            return latent
         W, H = int(shot["width"]), int(shot["height"])
         hf = _fit_to(hf, W, H) if tuple(hf.shape[1:3]) != (H, W) else hf
-        if on_canvas:   # the canvas holds the panel too: the source frames under the head go in its strip
-            try:
-                from .bfs_h3_side_panel import compose, strip_frames
-            except ImportError:
-                from bfs_h3_side_panel import compose, strip_frames
-            src = shot["frames"][:n]
-            strip = strip_frames(src, list(range(n)), W, H, panel_position, panel_size, 0, "contain")
-            hf = compose(hf.cpu(), strip, panel_position)
-            del strip
         try:
             from .bfs_h3_history import pin_head
         except ImportError:
@@ -4138,28 +4214,14 @@ class BFSShotH3Conditioning:
         return latent
 
     @staticmethod
-    def _history(shot, positive, vae, tag, on_canvas, duet, panel_position, panel_size):
+    def _history(shot, positive, vae, tag):
         """Continuity 'history': the end of the previous result as clean frames just before this shot on H3's
-        timeline (added last, so the duet panel and the other guides leave it alone)."""
-        hist, hsrc = shot_history(shot)
+        timeline (added last, so the other guides leave it alone)."""
+        hist, _ = shot_history(shot)
         if hist is None:
-            return positive
-        if duet == "shifted RoPE":
-            print(f"{tag}: history is not used with duet 'shifted RoPE' (use canvas)", flush=True)
             return positive
         W, H = int(shot["width"]), int(shot["height"])
         hist = _fit_to(hist, W, H) if tuple(hist.shape[1:3]) != (H, W) else hist
-        if on_canvas:   # the canvas holds the panel too: the source frames under the history go in its strip
-            try:
-                from .bfs_h3_side_panel import compose, strip_frames
-            except ImportError:
-                from bfs_h3_side_panel import compose, strip_frames
-            panel = hsrc if hsrc is not None and hsrc.shape[0] >= hist.shape[0] else hist
-            strip = strip_frames(panel[-hist.shape[0]:], list(range(hist.shape[0])), W, H, panel_position, panel_size,
-                                 0, "contain")
-            hist = compose(hist.cpu(), strip, panel_position)
-            del strip, panel
-        hsrc = None
         try:
             from .bfs_h3_history import add_history
         except ImportError:
@@ -4172,7 +4234,7 @@ class BFSShotH3Conditioning:
 
 
 class BFSShotH3ConditioningSimple:
-    """The common H3 shot-conditioning path, without duet, RoPE and prompt-writer controls."""
+    """The common H3 shot-conditioning path, without the mask-guide and setting-picture controls."""
 
     GUIDE_MODES = BFSShotH3Conditioning.GUIDE_MODES
 
@@ -4218,7 +4280,7 @@ class BFSShotH3ConditioningSimple:
     FUNCTION = "condition"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Build the usual MiniMax H3 shot conditioning with references, prompt and an aligned guide "
-                   "and/or native reference video. Use the Advanced node for duet, shifted RoPE and mask-guide tools.")
+                   "and/or native reference video. Use the Advanced node for the mask guide, setting picture and first frame.")
 
     def condition(self, shot, clip, vae, guide_mode, use_ref_2, ref_image_size,
                   audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
@@ -5492,9 +5554,10 @@ try:
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
         return web.json_response({"pictures": texts})
 
-    @PromptServer.instance.routes.post("/bfs/shotloop/write")
-    async def _bfs_shot_write(request):
-        """The VLM writes one shot's duet prompt: body {plan, index} -> {prompt}."""
+    @PromptServer.instance.routes.post("/bfs/shotloop/autoprompt")
+    async def _bfs_shot_autoprompt(request):
+        """🤖 Auto prompt: the VLM writes the H3 prompt of some shots: body {plan, indices} -> {prompts: {"start-end":
+        {text, for}}}."""
         body = await request.json()
         try:
             clip = _VLM.get("clip")
@@ -5504,17 +5567,23 @@ try:
             p = _load_plan(json.dumps(body.get("plan", {})))
             path = _input_path(p["video"])
             cfg = vlm_cfg(p.get("vlm_cfg"))
+            details = saved_picture_details(p)
 
             def work():
                 a = analyze(path, float(p["fps"]))
-                seg = resolve_plan(p, a, path)[int(body.get("index", 0))]
-                refs = [_load_image(n) for n in shot_ref_names(seg["refs"], p["global_refs"])]
-                return vlm_write_prompt(clip, path, a, seg["start"], seg["end"], refs, cfg["write_task"],
-                                        cfg["write_change"], int(cfg["max_tokens"]))
-            text = await _off_loop(work)
+                segs = resolve_plan(p, a, path)
+                out = {}
+                for i in body.get("indices") or range(len(segs)):
+                    seg = segs[int(i)]
+                    names = shot_ref_names(seg["refs"], p["global_refs"])
+                    out[f"{seg['start']}-{seg['end']}"] = auto_prompt_shot(
+                        clip, p, a, path, seg, names, [_load_image(n) for n in names], details,
+                        seg["prompt"] or p.get("global_prompt", ""), cfg)
+                return out
+            prompts = await _off_loop(work)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
-        return web.json_response({"prompt": text})
+        return web.json_response({"prompts": prompts})
 
     @PromptServer.instance.routes.post("/bfs/shotloop/cast")
     async def _bfs_shot_cast(request):

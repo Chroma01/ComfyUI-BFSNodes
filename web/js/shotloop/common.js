@@ -375,7 +375,7 @@ export const DEFAULTS = {
   megapixels: 0.5, multiple: 32, generation_size_mode: "megapixels", custom_width: 1024, custom_height: 1024,
   second_pass: { enabled: false, mode: "scale", scale: 2, width: 1280, height: 704, megapixels: 1, align: 32 },
   detector: "adaptive", run: "recursive", between_shots: "keep", shot_cache: "output", shot_storage: "lossless", unload_before_join: true, auto_continue: true,
-  skip_fill: "original", audio_mode: "auto", ref_details: {}, picture_details: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
+  skip_fill: "original", audio_mode: "auto", ref_details: {}, picture_details: {}, auto_prompt: {}, auto_prompts: {}, mask_cfg: {}, vlm_cfg: {}, cast: {}, cast_split: false, cast_only: false,
   filters: { person: false, min_person_area: 0, max_persons: 0, face: false, skip_dark: false, dark_level: 0.06,
              skip_static: false, static_level: 0.004, min_frames: 0, samples: 6 },
 };
@@ -548,3 +548,6 @@ export const pictureColor = (plan, k) => {
 export const markRegions = m => Array.isArray(m.color_guide_regions) ? m.color_guide_regions
   : (m.color_guide_text2 || (m.color_guide_points2 || []).length)
     ? [{ picture: 2, text: m.color_guide_text2 || "", points: m.color_guide_points2 || [], key: m.color_guide_key2 || 0 }] : [];
+
+// ---- 🤖 Auto prompt: the VLM writes each shot's H3 prompt from the request in the prompt box
+export const AUTO_DEFAULTS = { enabled: false, frames: 0, source: "guide" };

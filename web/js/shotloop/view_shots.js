@@ -100,11 +100,26 @@ function editor(c, cur) {
   const refPrompt = section("Reference & prompt", [
     refBox(c, i, cur.refs, plan.global_refs),
     h("div", { class: "pbox", style: "margin-top:6px" }, [
-      h("textarea", { placeholder: "Prompt for this shot (empty = global prompt). Placeholders: {target} {details} {details@Picture n} {shot} {setting}",
+      h("textarea", { placeholder: plan.auto_prompt?.enabled
+        ? "Request for this shot (empty = the global request); 🤖 Auto prompt writes the H3 prompt below from it"
+        : "Prompt for this shot (empty = global prompt). Placeholders: {target} {details} {details@Picture n} {shot} {setting}",
         value: cur.prompt, onChange: e => c.setMeta(i, "prompt", e.target.value) }),
       promptChips(c, cur.names, v => c.setMeta(i, "prompt", v)),
       !cur.prompt && plan.global_prompt ? rawH("span", { class: "hint" }, `↳ uses the global prompt: ${plan.global_prompt.slice(0, 120)}${plan.global_prompt.length > 120 ? "…" : ""}`) : null,
     ]),
+    plan.auto_prompt?.enabled ? (() => {
+      const w = c.writtenOf(cur), old = w?.text && w.for !== c.autoFor(cur);
+      return h("div", { class: "note", style: "margin-top:6px;padding:6px 8px" }, [
+        h("div", { class: "row", style: "gap:6px;align-items:center;margin-bottom:4px" }, [
+          h("b", "🤖 Written prompt"), old ? pill("older than the request / pictures / marks", "warn") : null, h("span", { class: "grow" }),
+          h("button", { class: w?.text ? "" : "pri", disabled: !!busy.value, onClick: () => c.writePrompts([i]) }, w?.text ? "🤖 Write again" : "🤖 Write"),
+          w?.text ? h("button", { class: "dng", title: "forget it: the next run writes a new one", onClick: () => c.setWritten(cur, "") }, "✕") : null,
+        ]),
+        h("textarea", { style: "min-height:140px;font-size:11px", value: w?.text || "",
+          placeholder: "not written yet: 🤖 Write, or the planner's VLM writes it when the workflow runs",
+          onChange: e => c.setWritten(cur, e.target.value) }),
+      ]);
+    })() : null,
     usedRefs.value.length ? h("div", { class: "recent" }, [hint("recent (click = picture 1, shift+click = add, or drag onto a slot):"),
       ...usedRefs.value.map(n => h("img", { src: c.viewUrl(n), title: n, draggable: true,
         onDragstart: e => e.dataTransfer.setData("text/bfs-ref", n),

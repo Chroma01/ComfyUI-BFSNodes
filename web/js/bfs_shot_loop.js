@@ -14,7 +14,7 @@ import { showGuide } from "./bfs_md_view.js";
 import { wheelToCanvas } from "./bfs_wheel.js";
 import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
 import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill,
-         MAX_REFS, refList, shotRefNames, MARK_PALETTE, pictureColor, markRegions } from "./shotloop/common.js";
+         MAX_REFS, refList, shotRefNames, MARK_PALETTE, pictureColor, markRegions, AUTO_DEFAULTS } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
 // history lengths H3's VAE encodes whole (17k+5); old plans saved 17/34/51, read as the next valid one up
 const historyLen = n => (n = Number(n) || 22) <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
@@ -104,6 +104,8 @@ function Panel(io) {
     plan.ref_details = { ...(p.ref_details || {}) };
     plan.picture_details = { ...pictureDetailsOf(p) };
     plan.picture_cfg = { ...(p.picture_cfg || {}) };
+    plan.auto_prompt = { ...AUTO_DEFAULTS, ...(p.auto_prompt || {}) };
+    plan.auto_prompts = { ...(p.auto_prompts || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
     // plans before 1.113 had two references (ref / ref2): now a list of up to 12 pictures
@@ -517,6 +519,29 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   }
   const setPictureDetail = (name, v) => { plan.picture_details = { ...plan.picture_details, [name]: v }; save(); };
   // a picture's own describe preset ("" = the card's) and custom instruction
+  // 🤖 Auto prompt: what a shot's written prompt was made from (same string as bfs_shot_loop.auto_prompt_for), so the
+  // panel shows when the request, pictures, marks or mode changed after it was written
+  const autoFor = s => {
+    const marks = s.color_guide ? [[s.color_guide_picture, pictureColor(plan, s.color_guide_picture)],
+      ...s.regions.filter(r => String(r.text || "").trim() || (r.points || []).length).map(r => [r.picture, pictureColor(plan, r.picture)])] : [];
+    return JSON.stringify([s.prompt || plan.global_prompt || "", s.names, marks, modeOf(s), s.mask?.text || "", s.target || ""]);
+  };
+  const writtenOf = s => plan.auto_prompts?.[segKey(s)] || null;
+  const setAuto = (k, v) => { plan.auto_prompt = { ...plan.auto_prompt, [k]: v }; save(); };
+  const setWritten = (s, text) => {
+    const k = segKey(s), cur = plan.auto_prompts[k] || {};
+    plan.auto_prompts = { ...plan.auto_prompts, [k]: { ...cur, text, for: cur.for ?? autoFor(s) } }; save();
+  };
+  // the VLM writes the prompts of these shots (all by default)
+  async function writePrompts(indices = segs.value.map((_, i) => i)) {
+    busy.value = `Writing ${indices.length} prompt(s) with the VLM…`; error.value = "";
+    try {
+      const r = await api.fetchApi("/bfs/shotloop/autoprompt", { method: "POST", body: JSON.stringify({ plan: { ...plan }, indices }) });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      plan.auto_prompts = { ...plan.auto_prompts, ...j.prompts }; save();
+    } catch (e) { error.value = String(e.message || e); }
+    busy.value = "";
+  }
   const setPictureCfg = (name, k, v) => {
     plan.picture_cfg = { ...plan.picture_cfg, [name]: { ...(plan.picture_cfg[name] || {}), [k]: v } }; save();
   };
@@ -738,16 +763,19 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const onStatus = e => { if (busy.value || modal.busy) Object.assign(status, e.detail || {}); };
   let clock = 0;
   const onVlm = e => { if (e.detail?.video === plan.video) mergeSug(e.detail.segs); };
+  // prompts the planner's VLM wrote while running (shots that had none): kept in the plan, so they stay the same
+  const onAutoPrompt = e => { if (e.detail?.video === plan.video) { plan.auto_prompts = { ...plan.auto_prompts, ...e.detail.prompts }; save(); } };
   const onNext = e => { onProg(e); if (plan.run === "queue" && plan.auto_continue) setTimeout(() => app.queuePrompt(0, 1), 300); };
   onMounted(() => {
     load(); refreshFiles(); analyze(); progress(); refreshVram(); raf = requestAnimationFrame(loop);
     if (!plan.video) tab.value = "video";
     api.addEventListener("bfs-shotloop-progress", onProg); api.addEventListener("bfs-shotloop-next", onNext);
     api.addEventListener("bfs-shotloop-vlm", onVlm);
+    api.addEventListener("bfs-shotloop-autoprompt", onAutoPrompt);
     api.addEventListener("bfs-shotloop-status", onStatus);
     clock = setInterval(() => { if (busy.value || modal.busy) now.value = Date.now(); }, 500);
   });
-  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); api.removeEventListener("bfs-shotloop-vlm", onVlm); api.removeEventListener("bfs-shotloop-status", onStatus); clearInterval(clock); });
+  onBeforeUnmount(() => { cancelAnimationFrame(raf); api.removeEventListener("bfs-shotloop-progress", onProg); api.removeEventListener("bfs-shotloop-next", onNext); api.removeEventListener("bfs-shotloop-vlm", onVlm); api.removeEventListener("bfs-shotloop-autoprompt", onAutoPrompt); api.removeEventListener("bfs-shotloop-status", onStatus); clearInterval(clock); });
   io.expose({ reload: () => { load(); analyze(); progress(); } });
 
   // 🧠 the memory status at the top: the plan's biggest shot against the biggest one that ran on this GPU
@@ -839,6 +867,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
     frameAt, thumbFor, playShot, playAll, stop, seek, setRef, putRefs, uploadRef, dropRefs, pictures, describePictures, setPictureDetail, setPictureCfg,
     setMarkPicture, addMarkRegion, setMarkRegion, removeMarkRegion, setPictureColor,
+    autoFor, writtenOf, setAuto, setWritten, writePrompts,
   };
 
   return () => {

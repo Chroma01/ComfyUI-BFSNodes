@@ -20,7 +20,7 @@ every shot inside that range.
 | **BFS Shot Unpack** | Opens one shot into plain values: guide frames, reference pictures (a list), prompt, length, first frame, audio, size, index. Use it with any model. |
 | **BFS Shot Repack** | Puts edited pieces back into a shot: Unpack's `shot` output goes to Repack's `shot`, the edited piece (e.g. the reference with its background removed) to its input. Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
 | **BFS Shot H3 Conditioning** | The common MiniMax H3 path with the important controls only: aligned Add Guide and/or native video reference, references, optional audio conditioning, the Planner's inpaint mode and source-subject blur. |
-| **BFS Shot H3 Conditioning (Advanced)** | The full conditioning node, preserving the previous node and old workflows. Adds duet canvas, shifted RoPE, prompt writer, setting reference and experimental mask-guide controls. |
+| **BFS Shot H3 Conditioning (Advanced)** | The full conditioning node. Adds the setting reference, the first-frame anchor and the experimental mask-guide controls; its `model` input passes through to `model` (older workflows routed the model through it). The duet lives in **BFS Shot H3 Duet** (1.113 took it out of this node). |
 | **BFS Shot Join** | Concatenates the decoded shots in order, trims each to its true length, cross-fades soft joins and returns the soundtrack. With *comparison* on it also returns a side-by-side video (original shot \| references \| result) with the shot's info and your *label* on top and its prompt below, ready for Create Video. *save to = mp4 file* writes the video (and the comparison) straight to MP4 files instead, one shot in memory at a time (long videos); `video_path` gives the file. |
 | **BFS Shot H3 Duet** | Renders one shot with H3: the shot's clip pinned beside the video (duet, no LoRA), the shot as an aligned guide (for body-swap LoRAs), or both. |
 
@@ -286,7 +286,7 @@ box (yellow) over the original column (`comparison_mask`, on by default).
 1 regenerates the masked area completely. A grey mask (e.g. 0.85) keeps part of the original there: H3 puts those
 rows at *opacity* × the noise level, so they start from the original partly visible. 0.8-0.9 keeps pose, outline and lighting while still swapping; too low copies the original
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
-the motion either way. (Not applied with the duet panel.)
+the motion either way.
 
 **🎨 Colored Mark** is an optional translucent overlay on the source video: each marked person is tinted with the
 color of the picture they become, and the prompt gets the mapping ("the person marked in red becomes the character
@@ -309,10 +309,8 @@ detailed_description: [Shot 1] Replace the person marked by the translucent gree
 
 The VLM's shot analysis suggests a SAM 3 text selection from the original frames; it does not assign guide colors or
 decide that two detections are the same identity. **Describe target** only describes the first shot selection. For
-two-color swaps, choose both selections and identities yourself, and use the explicit mapping above. The VLM prompt
-writer for *duet* is a separate split-screen task; its generic character-swap draft assumes the supplied pictures
-show one character, so use *planner prompt* for this two-character template. `Describe refs` also treats ref and ref 2
-as views of one identity; write the two subject definitions explicitly when ref 2 is a different person.
+two-color swaps, choose both selections and identities yourself, and use the explicit mapping above (or let
+🤖 Auto prompt write it: it is told which tinted person becomes which picture).
 
 **Mask guide** (experimental, *Mask only* shots, BFS Shot H3 Conditioning → `mask_guide`): the shot with only the
 masked region visible, the rest grey, so the model looks at the subject's pose and outline on its own while the mask
@@ -391,6 +389,30 @@ When a shot has two references, the planner expands a one-reference template at 
 `{details2}` for `<Picture 2>` (not when the prompt already names `<Picture 2>` or uses `{details@Picture n}`). 
 Existing one-reference templates remain unchanged in shots with only one reference. You can also use `{details2}`
 explicitly in any template.
+
+### 🤖 Auto prompt (1.113.0)
+
+In **Prompts & refs → 🤖 Auto prompt**, *Write the prompts with the VLM* turns the prompt boxes (global and per shot)
+into **requests** ("replace the bottle with the red can from Picture 2", "Picture 1 dances in the rain"), and the VLM
+writes each shot's MiniMax H3 prompt in the official full-reference format (MiniMaxAI/MiniMax-H3
+`docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md`): `subject_definitions`, `summary` with its task type, `retention_analysis`,
+`detailed_description` (`[Shot 1]`, the official camera vocabulary, sounds in time), `overall_soundscape` and
+`non_diegetic_music`. It looks at:
+
+- **key frames of the shot** with their times (*Key frames*: auto = about 1.5 per second, 3 to 8);
+- **the shot's pictures** and their descriptions (Describe references);
+- **the request**, the shot's **Colored Marks** (which tinted person becomes which picture; the mapping is added if the
+  writer leaves a color out), its selection / `{target}` and its mode (*Mask only*: only the subject is regenerated;
+  *Crop*: the frames are a crop);
+- **how the source is given**: *guide video* (aligned guide, no tag) or `<Video 1>` (native reference video) — match the
+  conditioning node's `guide_mode`.
+
+**🤖 Write all prompts** (or *only the missing*) writes them now; each shot shows its written prompt in the Shots tab,
+editable, with **🤖 Write / Write again**. A shot without one is written when the workflow runs (with the VLM on the
+planner, before any SAM 3 work) and the panel keeps it, so the next run uses the same text. When the request,
+pictures, marks, selection or mode change after a prompt was written, the shot says it is *older*; it is still used
+until you write it again. A written prompt is part of the stored shot's signature, so editing it re-renders the shot.
+Without a VLM and without a written prompt, the request is used as the prompt.
 
 ### One description per picture (1.113.0)
 

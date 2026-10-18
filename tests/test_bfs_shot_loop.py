@@ -447,19 +447,16 @@ class RepackTest(unittest.TestCase):
         self.assertTrue(torch.equal(s3n["refs"][0], a[2] + 1) and torch.equal(s1n["ref2"], a[1] + 1))
 
 
-class ConditioningWriterTest(unittest.TestCase):
-    """The optional prompt writer of BFS Shot H3 Conditioning (template path, no models)."""
+class ConditioningPromptTest(unittest.TestCase):
+    """BFS Shot H3 Conditioning passes the planner's prompt and adds the setting picture (no models)."""
 
     def setUp(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        import bfs_h3_side_panel as SP
-        self.SP, self.seen = SP, {}
-        seen = self.seen
+        self.seen = seen = {}
 
         class R2V:
             @staticmethod
             def execute(**kw):
-                seen["prompt"] = kw["prompt"]
+                seen.update(kw)
                 return types.SimpleNamespace(args=("pos", "lat"))
 
         mod = types.ModuleType("comfy_extras.nodes_minimax_h3")
@@ -467,13 +464,8 @@ class ConditioningWriterTest(unittest.TestCase):
         self._old = {k: sys.modules.get(k) for k in ("comfy_extras", "comfy_extras.nodes_minimax_h3")}
         sys.modules["comfy_extras"] = types.ModuleType("comfy_extras")
         sys.modules["comfy_extras.nodes_minimax_h3"] = mod
-        self._apply = SP.BFSH3SidePanel.apply
-        SP.BFSH3SidePanel.apply = lambda self, pos, lat, *a, **k: (pos, lat, {"position": "left"}, None, None)
-        self._patch = SP.patch_model_rope
-        SP.patch_model_rope = lambda m, info, gap: "patched"
 
     def tearDown(self):
-        self.SP.BFSH3SidePanel.apply, self.SP.patch_model_rope = self._apply, self._patch
         for k, v in self._old.items():
             if v is None:
                 sys.modules.pop(k, None)
@@ -481,54 +473,29 @@ class ConditioningWriterTest(unittest.TestCase):
                 sys.modules[k] = v
 
     def _shot(self):
-        return dict(prompt="my own {layout} prompt", width=448, height=800, gen_length=22,
-                    frames=torch.zeros(22, 8, 8, 3), ref=torch.zeros(1, 4, 4, 3), ref2=None, audio=None)
+        return dict(prompt="subject_definitions: <Subject 1> is the man in <Picture 1>.", width=448, height=800,
+                    gen_length=22, frames=torch.full((22, 8, 8, 3), 0.5), ref=torch.zeros(1, 4, 4, 3), ref2=None,
+                    audio=None)
 
-    def _run(self, **kw):
-        c = SL.BFSShotH3Conditioning()
-        return c.condition(self._shot(), "clip", "vae", "none", True, "none", "match", **kw)
-
-    def test_planner_prompt_is_default_and_layout_filled(self):
-        out = self._run()
-        self.assertEqual(out[3], "my own prompt")
-        out = self._run(duet="canvas")
-        self.assertIn("the left half shows the original performance", out[3])
+    def test_the_planner_prompt_goes_as_it_is_and_the_model_passes_through(self):
+        out = SL.BFSShotH3Conditioning().condition(self._shot(), "clip", "vae", "none", True, "none", "match", model="m")
+        self.assertEqual(out[3], self._shot()["prompt"])
         self.assertEqual(self.seen["prompt"], out[3])
-
-    def test_task_template_follows_the_duet_mode(self):
-        out = self._run(duet="canvas", task="character swap")
-        self.assertIn("split screen", out[3])
-        self.assertIn("<Picture 1>", out[3])
-        out = self._run(duet="shifted RoPE", model="m", task="character swap")
-        self.assertNotIn("split screen", out[3])
-        self.assertEqual(out[2], "patched")
+        self.assertEqual(out[2], "m")
+        self.assertNotIn("duet", SL.BFSShotH3Conditioning.INPUT_TYPES()["optional"])
 
     def test_setting_picture_is_the_last_reference_with_static(self):
-        seen = {}
-        orig = sys.modules["comfy_extras.nodes_minimax_h3"].MiniMaxH3ReferenceToVideo.execute
-
-        def capture(**kw):
-            seen.update(kw)
-            return orig(**kw)
-        sys.modules["comfy_extras.nodes_minimax_h3"].MiniMaxH3ReferenceToVideo.execute = staticmethod(capture)
-        shot = self._shot()
-        shot["frames"] = torch.full((22, 8, 8, 3), 0.5)
         mask = torch.zeros(22, 8, 8)
         mask[:, 2:4, 2:4] = 1
-        out = SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", "none", True, "none", "match", duet="canvas",
-                                                    task="character swap", setting_ref="on (generation size)",
-                                                    setting_mask=mask)
-        refs = list(seen["ref_images"].values())
+        out = SL.BFSShotH3Conditioning().condition(self._shot(), "clip", "vae", "none", True, "none", "match",
+                                                    setting_ref="on (generation size)", setting_mask=mask)
+        refs = list(self.seen["ref_images"].values())
         self.assertEqual(len(refs), 2)
         pic = refs[-1][0]
         self.assertTrue(((pic[3, 3] == 0) | (pic[3, 3] == 1)).all())      # static inside the (grown) mask
         self.assertTrue(torch.allclose(pic[7, 7], torch.tensor(0.5)))   # the place outside it
         self.assertIn("<Picture 2> shows the setting", out[3])
         self.assertEqual(SL.add_setting("a {setting} b", 3, True), "a <Picture 3> b")
-
-    def test_task_needs_duet(self):
-        with self.assertRaises(ValueError):
-            self._run(task="style", instruction="anime")
 
 
 class SimpleConditioningTest(unittest.TestCase):
@@ -987,6 +954,43 @@ class MultiRefTest(unittest.TestCase):
         self.assertIn("marked in yellow becomes the character from <Picture 5>", text)
         one = SL.color_guide_prompt("", marks[:1])
         self.assertIn("Replace only the person marked in purple with the character from <Picture 2>", one)
+
+    def test_auto_prompt_asks_with_the_official_format(self):
+        seen = {}
+
+        def fake(clip, prompt, images, max_tokens, *a):
+            seen.update(prompt=prompt, n=images.shape[0], tokens=max_tokens)
+            return "```\n**subject_definitions:**\n<Subject 1> is the robot in <Picture 2>.\nsummary:\n[video editing] x```"
+        old, SL.vlm_generate = SL.vlm_generate, fake
+        try:
+            seg = {"color_guide": True, "color_guide_marks": [{"picture": 2, "color": "#9b30ff"}], "mask": {"text": "the man"},
+                   "inpaint": True}
+            frame, pic = torch.zeros(1, 8, 8, 3), torch.zeros(1, 4, 4, 3)
+            out = SL.write_h3_prompt(None, [frame] * 3, [0, 0.5, 1.0], [pic, pic], ["", "a silver robot"],
+                                     "swap the man for the robot", seg, "video", 1.5)
+        finally:
+            SL.vlm_generate = old
+        self.assertEqual(seen["n"], 5)                       # 3 frames + 2 pictures
+        for want in ("swap the man for the robot", "<Picture 2>: image 5, described as: a silver robot",
+                     "tinted purple becomes the subject from <Picture 2>", "Only the selected subject is generated again",
+                     "edited version of <Video 1>", "retention_analysis:", "non_diegetic_music:", "00:00.500"):
+            self.assertIn(want, seen["prompt"])
+        self.assertTrue(out.startswith("subject_definitions:\n<Subject 1>"))   # fences and bold removed
+        self.assertIn("marked in purple", out)                # the mapping the writer left out is added
+        seg2 = dict(seg, prompt="")
+        self.assertEqual(SL.auto_prompt_for("x", ["a.png"], seg2), SL.auto_prompt_for("x", ["a.png"], dict(seg2)))
+        self.assertNotEqual(SL.auto_prompt_for("x", ["a.png"], seg2), SL.auto_prompt_for("y", ["a.png"], seg2))
+        self.assertEqual(SL.auto_frame_count(24, 24.0), 3)
+        self.assertEqual(SL.auto_frame_count(240, 24.0), 8)
+
+    def test_a_written_prompt_is_part_of_the_shot_signature_only_with_auto_prompt_on(self):
+        seg = {"start": 0, "end": 10, "ref": "", "ref2": "", "prompt": "make it rain"}
+        plan = dict(SL.DEFAULT_PLAN, auto_prompts={"0-10": {"text": "A"}})
+        base = SL.shot_signature(plan, seg, 0, {})
+        self.assertEqual(base, SL.shot_signature(dict(SL.DEFAULT_PLAN), seg, 0, {}))
+        on = dict(plan, auto_prompt={"enabled": True})
+        self.assertNotEqual(SL.shot_signature(on, seg, 0, {}),
+                            SL.shot_signature(dict(on, auto_prompts={"0-10": {"text": "B"}}), seg, 0, {}))
 
     def test_repack_replaces_the_first_two_and_keeps_the_rest(self):
         refs = [torch.zeros(1, 4, 4, 3) for _ in range(3)]
