@@ -17,7 +17,7 @@ every shot inside that range.
 | node | what it does |
 |---|---|
 | **BFS Shot Planner** | Pick a video, split it on a timeline, set a reference and prompt per shot. Outputs the shots as a ComfyUI **list**. |
-| **BFS Shot Unpack** | Opens one shot into plain values: guide frames, reference, second reference, prompt, length, first frame, audio, size, index. Use it with any model. |
+| **BFS Shot Unpack** | Opens one shot into plain values: guide frames, reference pictures (a list), prompt, length, first frame, audio, size, index. Use it with any model. |
 | **BFS Shot Repack** | Puts edited pieces back into a shot: Unpack's `shot` output goes to Repack's `shot`, the edited piece (e.g. the reference with its background removed) to its input. Unconnected inputs keep their values; timing, cuts and audio are unchanged. |
 | **BFS Shot H3 Conditioning** | The common MiniMax H3 path with the important controls only: aligned Add Guide and/or native video reference, references, optional audio conditioning, the Planner's inpaint mode and source-subject blur. |
 | **BFS Shot H3 Conditioning (Advanced)** | The full conditioning node, preserving the previous node and old workflows. Adds duet canvas, shifted RoPE, prompt writer, setting reference and experimental mask-guide controls. |
@@ -248,13 +248,15 @@ Every shot can have its own pictures and prompt. A shot's empty slot uses the gl
 pictures to every shot. The last ten pictures you picked are shown under the shot editor: click = picture 1,
 shift+click = add it as the next picture, or drag it onto any slot.
 
-Under every prompt (global and per shot) there is a chip per picture: **@PictureN** inserts `<Picture N>` at the
+Under every prompt (global and per shot) there is a chip per picture: **PictureN** inserts `<Picture N>` at the
 cursor, **📝** inserts `{details@Picture N}` (that picture's description, below).
 
 The node no longer has `ref_image` / `ref_image_2` inputs (the pictures live in the panel); a workflow saved with
 them connected still runs, and the log says the images are ignored. A connected `prompt` input still overrides the
 global prompt. The planner still outputs `ref_image` and `ref_image_2`: pictures 1 and 2 the shots use, without
-repeats. **BFS Shot H3 Conditioning** passes every picture of the shot (*use_ref_2* off: only the first); H3's own
+repeats. **BFS Shot Unpack** outputs `refs`, every picture of the shot as a list (the next node runs once per picture,
+e.g. a background remover), and `ref_count`; **BFS Shot Repack**'s `refs` input takes that list back and gives each
+shot its own pictures (a workflow from before 1.113 that wired `ref_image` still works). **BFS Shot H3 Conditioning** passes every picture of the shot (*use_ref_2* off: only the first); H3's own
 node stops at 9 and LoRAs trained like OpenJutsu saw up to 9, so the log notes a shot with more.
 
 ## Mask & crop (SAM 3)
@@ -370,26 +372,28 @@ an animal or a cartoon character (it says what the subject is first). In the **P
 preset: *short* (the default: one noun phrase of at most ~20 words that fits inside a sentence, e.g. `green goblin with
 long pointed ears in a torn brown leather vest`, for `<Subject 1> is the {details} shown in <Picture 1>`), *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
 short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
-description per reference set: the global references and every shot's. They are saved in
-the plan and editable. Write **`{details}`** anywhere in a prompt and every shot gets the description of its own
-references; a set without a description is described by the VLM at run time (no click needed).
+description per picture (see below), saved in the plan and editable. Write **`{details}`** anywhere in a prompt and
+every shot gets the description of its own first picture; a picture without a description is described by the VLM
+at run time (no click needed).
 
 **Image max side (VLM)** controls the longest side of reference and shot images prepared for VLM analysis (1024 px by
 default). Aspect ratio is preserved; the model's own image processor may resize them further. Increase it when fine
 reference details matter, or lower it to reduce analysis cost. This does not change the generated video size.
 
 When a shot has two references, the planner expands a one-reference template at run time to include `<Subject 2>` and
-`{details2}` for `<Picture 2>` (not when the prompt already names `<Picture 2>` or uses `{details@Picture n}`). The Describe refs panel provides a separate description field for each reference.
+`{details2}` for `<Picture 2>` (not when the prompt already names `<Picture 2>` or uses `{details@Picture n}`). 
 Existing one-reference templates remain unchanged in shots with only one reference. You can also use `{details2}`
 explicitly in any template.
 
-### One description per picture ({details@Picture n})
+### One description per picture (1.113.0)
 
-**📝 Describe each picture** (same tab) describes every picture the plan uses by itself, once per image, with the same
-preset, temperature and seed as Describe refs; each description is editable. Write **`{details@Picture 3}`** (or
-`{details@Picture3}`) in a prompt and each shot gets the description of *its* third picture. A picture without a
-description is described at run time by the planner's VLM, else by the conditioning node's VLM, else it becomes
-"character". `{details}` and `{details2}` work as before.
+Descriptions are per picture: **📝 Describe refs** describes every picture the plan uses by itself, once per image.
+`{details}` is picture 1's description, `{details2}` picture 2's and **`{details@Picture n}`** (or
+`{details@Picture3}`) picture n's, so each shot gets the descriptions of *its* pictures. The dropdown next to the button
+sets what is described for every picture; a picture can have its own (e.g. *full body* for a character sheet, *head /
+face* for a close-up, *outfit*, or *custom* with its own instruction), and **🔄** describes only that picture again. A
+picture without a description is described at run time by the planner's VLM, else by the conditioning node's VLM, else
+it becomes "character". Descriptions saved by older plans (per reference set) are read as those pictures'.
 
 **Fit the prompt** (on by default, next to 📝 Describe refs): the VLM gets the sentence of the prompt that holds the
 marker, with a blank in its place (e.g. `<Subject 1> is the ___ shown in <Picture 1>`), and writes the description for

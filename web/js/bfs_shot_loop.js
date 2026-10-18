@@ -81,6 +81,18 @@ function Panel(io) {
                                                               target: false, chain: false, color_guide: false, scope: "all" }));
   watch(copyOpts, v => store.set("bfs.shotloop.copy", { ...v }), { deep: true });
 
+  // one description per picture: picture_details, plus the ones plans before 1.113 saved per reference set in
+  // ref_details ("a|b" -> {details, details2}, or one text for a); same rule as bfs_shot_loop.saved_picture_details
+  const pictureDetailsOf = p => {
+    const out = {};
+    Object.entries(p.ref_details || {}).forEach(([key, v]) => {
+      const [a, b] = key.split("|");
+      const pairs = v && typeof v === "object" ? [[a, v.details || v.legacy], [b, v.details2]] : [[a, v]];
+      pairs.forEach(([name, text]) => { if (name && text && !(name in out)) out[name] = String(text); });
+    });
+    Object.entries(p.picture_details || {}).forEach(([name, text]) => { if (text) out[name] = text; });
+    return out;
+  };
   const load = () => {
     let p = {};
     try { p = JSON.parse(io.getPlan() || "{}"); } catch { p = {}; }
@@ -90,7 +102,8 @@ function Panel(io) {
     plan.mask_cfg = { ...MASK_DEFAULTS, ...(p.mask_cfg || {}) };
     plan.vlm_cfg = { ...VLM_DEFAULTS, ...(p.vlm_cfg || {}) };
     plan.ref_details = { ...(p.ref_details || {}) };
-    plan.picture_details = { ...(p.picture_details || {}) };
+    plan.picture_details = { ...pictureDetailsOf(p) };
+    plan.picture_cfg = { ...(p.picture_cfg || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
     // plans before 1.113 had two references (ref / ref2): now a list of up to 12 pictures
@@ -187,9 +200,13 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   // the pictures a shot uses: "ref" = <Picture 1>, "ref2" = <Picture 2> (its own or the global ones)
   const refOf = (s, k) => s.names[k === "ref2" ? 1 : 0] || "";
   const promptOf = s => s.prompt || plan.global_prompt || "";
-  const detailsOf = s => {
-    const value = plan.ref_details?.[`${refOf(s, "ref")}|${refOf(s, "ref2")}`] || "";
-    return typeof value === "object" ? Object.values(value).some(Boolean) : !!value;
+  // the pictures a prompt describes ({details} = 1, {details2} = 2, {details@Picture n}) all have a description
+  const detailsOf = (s, prompt) => {
+    const want = new Set();
+    if (prompt.includes("{details}")) want.add(1);
+    if (prompt.includes("{details2}")) want.add(2);
+    for (const m of prompt.matchAll(/\{details@Picture\s*(\d+)\}/g)) want.add(+m[1]);
+    return [...want].every(k => !s.names[k - 1] || plan.picture_details?.[s.names[k - 1]]);
   };
 
   // things worth fixing before a run, per shot (only shots that run)
@@ -233,7 +250,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if ((s.crop || s.inpaint || s.paste) && !hasMask(s)) add("warn", `${modeName(s)} needs a mask (text, points or a mask video; or the planner's mask input)`);
       if (hasMask(s) && maskPrev.value[segKey(s)]?.empty) add("warn", "the mask preview found nothing");
       if (/\{target\}/.test(p) && !s.target) add("warn", "the prompt uses {target} but the shot has no target description");
-      if (/\{details2?\}/.test(p) && !detailsOf(s) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its references have no description yet");
+      if (/\{details/.test(p) && !detailsOf(s, p) && !plan.vlm_cfg?.enabled) add("info", "the prompt uses {details} but its pictures have no description yet");
       if (/\{details2?\}/.test(p) && (plan.vlm_cfg?.describe_preset || "short") !== "short")
         add("warn", "{details} sits inside a sentence of the prompt: use the 'short' describe preset (Prompts & refs), the other presets write a paragraph");
       if (!p) add("info", "no prompt (fine when the node's prompt input is connected)");
@@ -451,13 +468,6 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     busy.value = "";
   }
   // reference sets used by the plan (global and per shot): one description each
-  const refSets = computed(() => {
-    const out = new Map();
-    const add = (a, b, where) => { if (!a && !b) return; const k = `${a || ""}|${b || ""}`; if (!out.has(k)) out.set(k, { a, b, where: [] }); out.get(k).where.push(where); };
-    add(plan.global_refs[0], plan.global_refs[1], "global");
-    segs.value.forEach((x, i) => add(x.names[0], x.names[1], `#${i + 1}`));
-    return [...out.entries()].map(([key, v]) => ({ key, ...v }));
-  });
   // every picture the plan uses, once, with where it is <Picture n>: one description each ({details@Picture n})
   const pictures = computed(() => {
     const out = new Map();
@@ -466,28 +476,22 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     segs.value.forEach((x, i) => x.names.forEach((name, k) => { if (x.refs[k] === name) add(name, `#${i + 1}: ${k + 1}`); }));
     return [...out.entries()].map(([name, where]) => ({ name, where }));
   });
-  async function describePictures() {
-    busy.value = "Describing each picture with the VLM…"; error.value = "";
+  // names: the pictures to describe (all of them by default)
+  async function describePictures(names = pictures.value.map(x => x.name)) {
+    busy.value = "Describing the pictures with the VLM…"; error.value = "";
     try {
       const r = await api.fetchApi("/bfs/shotloop/describe", { method: "POST",
-        body: JSON.stringify({ plan: { ...plan }, pictures: pictures.value.map(x => x.name) }) });
+        body: JSON.stringify({ plan: { ...plan }, pictures: names }) });
       const j = await r.json(); if (j.error) throw new Error(j.error);
       plan.picture_details = { ...plan.picture_details, ...j.pictures }; save();
     } catch (e) { error.value = String(e.message || e); }
     busy.value = "";
   }
   const setPictureDetail = (name, v) => { plan.picture_details = { ...plan.picture_details, [name]: v }; save(); };
-  async function describeRefs() {
-    busy.value = "Describing the references with the VLM…"; error.value = "";
-    try {
-      const sets = refSets.value.map(x => [x.a || "", x.b || ""]);
-      const r = await api.fetchApi("/bfs/shotloop/describe", { method: "POST", body: JSON.stringify({ plan: { ...plan }, sets }) });
-      const j = await r.json(); if (j.error) throw new Error(j.error);
-      plan.ref_details = { ...plan.ref_details, ...j.texts }; save();
-    } catch (e) { error.value = String(e.message || e); }
-    busy.value = "";
-  }
-  const setDetail = (k, v) => { plan.ref_details = { ...plan.ref_details, [k]: v }; save(); };
+  // a picture's own describe preset ("" = the card's) and custom instruction
+  const setPictureCfg = (name, k, v) => {
+    plan.picture_cfg = { ...plan.picture_cfg, [name]: { ...(plan.picture_cfg[name] || {}), [k]: v } }; save();
+  };
   const setVlmCfg = (k, v) => { plan.vlm_cfg = { ...plan.vlm_cfg, [k]: v }; save(); };
   const applySug = (i, what) => {
     const s = segs.value[i], g = s && vlmSug.value[segKey(s)]; if (!g) return;
@@ -800,12 +804,12 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const c = {
     api, plan, files, an, cuts, detectorUsed, size, busy, error, status, busySince, now, upPct, sel, zoom, hover, prog, tlEl,
     stats, people, maskPrev, showMasks, vlmSug, modal, segPeople, targetCrop, tab, copyOpts, COPY_FIELDS, vid, play, recent, clearRecent, clearAllRefs,
-    n, range, setRange, maxLen, segs, allSegCount, active, pxPerFrame, tlWidth, filtersOn, refSets, usedRefs, checks, tour, memory, vram, refreshVram, cache, cacheOf, redo, combine,
+    n, range, setRange, maxLen, segs, allSegCount, active, pxPerFrame, tlWidth, filtersOn, usedRefs, checks, tour, memory, vram, refreshVram, cache, cacheOf, redo, combine,
     MODES, modeOf, modeName, viewUrl, save, meta, setMeta, setMode, setPlan, whoIn, castOf, included, personOf, statFor, skipWhy, refOf, promptOf, checksFor,
     refreshFiles, analyze, autoSplit, analyzeContent, findPeople, setCast, describeTarget, previewMask, setMask, setMaskCfg,
-    openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, describeRefs, setDetail, setVlmCfg,
+    openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, setVlmCfg,
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
-    frameAt, thumbFor, playShot, playAll, stop, seek, setRef, putRefs, uploadRef, dropRefs, pictures, describePictures, setPictureDetail,
+    frameAt, thumbFor, playShot, playAll, stop, seek, setRef, putRefs, uploadRef, dropRefs, pictures, describePictures, setPictureDetail, setPictureCfg,
   };
 
   return () => {

@@ -1,6 +1,7 @@
 // 📝 Prompts & refs tab: the global reference / prompt, the VLM (shot suggestions) and the reference descriptions ({details}).
 import { h, fld, check, section, pill, hint, select, refBox, promptChips, MAX_REFS } from "./common.js";
 
+const PRESETS = ["short", "full body", "head / face", "face attributes", "outfit", "custom"];
 const GUIDE_COLORS = [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
   ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
 
@@ -31,27 +32,8 @@ function globalSection(c) {
   ], { sub: "defaults for every shot" });
 }
 
-function pictureSection(c) {
-  const { plan, busy, pictures } = c;
-  return section("Describe each picture ({details@Picture n})", [
-    h("div", { class: "row", style: "gap:8px" }, [
-      h("button", { class: "pri", disabled: !!busy.value || !pictures.value.length, onClick: c.describePictures }, "📝 Describe each picture"),
-      hint(`${pictures.value.length} picture(s) · same preset, temperature and seed as Describe refs · editable below`),
-    ]),
-    pictures.value.length ? h("div", { class: "dlist" }, pictures.value.map(x => h("div", { class: "drow" }, [
-      h("div", { class: "dthumbs" }, [h("img", { src: c.viewUrl(x.name) })]),
-      h("div", { style: "flex:1" }, [
-        hint(`<Picture n> in ${x.where.length > 4 ? `${x.where.slice(0, 4).join(", ")} +${x.where.length - 4}` : x.where.join(", ")}`),
-        h("textarea", { style: "min-height:44px", value: plan.picture_details?.[x.name] || "",
-          placeholder: "no description yet: Describe each picture, write your own, or leave it to the VLM at run time",
-          onChange: e => c.setPictureDetail(x.name, e.target.value) }),
-      ]),
-    ]))) : hint("Add a reference (global or per shot) first."),
-  ], { sub: "write {details@Picture 2} in a prompt: the description of the shot's second picture" });
-}
-
 function vlmSection(c) {
-  const { plan, vlmSug, busy, refSets } = c;
+  const { plan, vlmSug, busy, pictures } = c;
   const VC = plan.vlm_cfg || {};
   const opt = (k, label, title) => check(VC[k], v => c.setVlmCfg(k, v), label, title);
   const sugN = Object.keys(vlmSug.value).length;
@@ -80,42 +62,51 @@ function vlmSection(c) {
          right: h("span", { class: "row" }, [VC.enabled ? pill("on", "ok") : pill("off"), sugN ? pill(`${sugN} suggestions`) : null]) }),
     section("Describe references ({details})", [
       h("div", { class: "row", style: "gap:8px" }, [
-        select(VC.describe_preset, ["short", "full body", "head / face", "face attributes", "outfit", "custom"], v => c.setVlmCfg("describe_preset", v), { style: "width:auto" }),
-        h("button", { class: "pri", disabled: !!busy.value || !refSets.value.length, onClick: c.describeRefs }, "📝 Describe refs"),
-        h("button", { disabled: !!busy.value || !refSets.value.length,
-          title: "Try another description: a new seed (and some temperature if it is 0), then describe again",
-          onClick: () => { if (!(+VC.temperature > 0)) c.setVlmCfg("temperature", 0.7); c.setVlmCfg("seed", (+VC.seed || 0) + 1); c.describeRefs(); } }, "🎲"),
+        fld("Describe", select(VC.describe_preset, PRESETS, v => c.setVlmCfg("describe_preset", v), { style: "width:auto" }),
+          "what every picture gets, unless it has its own below"),
+        h("button", { class: "pri", disabled: !!busy.value || !pictures.value.length, onClick: () => c.describePictures() }, "📝 Describe refs"),
+        h("button", { disabled: !!busy.value || !pictures.value.length,
+          title: "Try other descriptions: a new seed (and some temperature if it is 0), then describe again",
+          onClick: () => { if (!(+VC.temperature > 0)) c.setVlmCfg("temperature", 0.7); c.setVlmCfg("seed", (+VC.seed || 0) + 1); c.describePictures(); } }, "🎲"),
         fld("Temperature", h("input", { type: "number", min: 0, max: 1.5, step: 0.1, value: VC.temperature ?? 0, style: "width:70px",
           title: "0 = always the same answer (greedy); 0.5-1 = varied answers, picked by the seed",
           onChange: e => c.setVlmCfg("temperature", Math.max(0, parseFloat(e.target.value) || 0)) })),
         fld("Seed", h("input", { type: "number", min: 0, step: 1, value: VC.seed ?? 0, style: "width:80px",
           title: "Used when the temperature is above 0: another seed, another description",
           onChange: e => c.setVlmCfg("seed", Math.max(0, parseInt(e.target.value) || 0)) })),
-        hint(`${refSets.value.length} reference set(s) · editable below`),
+        hint(`${pictures.value.length} picture(s) · editable below`),
         check(VC.fit_prompt !== false, v => c.setVlmCfg("fit_prompt", v), "fit the prompt",
-          "The VLM gets the global prompt's sentence that holds {details} (and the shot prompt's {target} sentence for 🧑 Describe target) with a blank in its place, and writes the description to fit it: the description adapts to the prompt, not the other way round."),
+          "The VLM gets the global prompt's sentence about that picture ({details}, {details2} or {details@Picture n}; and the shot prompt's {target} sentence for 🧑 Describe target) with a blank in its place, and writes the description to fit it: the description adapts to the prompt, not the other way round."),
       ]),
       VC.describe_preset === "custom" ? h("textarea", { style: "margin-top:6px;min-height:52px", value: VC.describe_custom || "",
         placeholder: "Your instruction for the VLM, e.g. 'Describe the character's costume and props piece by piece…'",
         onChange: e => c.setVlmCfg("describe_custom", e.target.value) }) : null,
-      refSets.value.length ? h("div", { class: "dlist" }, refSets.value.map(x => {
-        const saved = plan.ref_details?.[x.key] || "";
-        const input = (field, placeholder) => h("textarea", { style: "min-height:44px", value:
-          typeof saved === "object" ? (saved[field] || "") : field === "details" ? saved : "",
-          placeholder, onChange: e => c.setDetail(x.key, { ...(typeof saved === "object" ? saved : { details: saved }), [field]: e.target.value }) });
+      pictures.value.length ? h("div", { class: "dlist" }, pictures.value.map(x => {
+        const own = plan.picture_cfg?.[x.name] || {};
         return h("div", { class: "drow" }, [
-          h("div", { class: "dthumbs" }, [x.a ? h("img", { src: c.viewUrl(x.a) }) : null, x.b ? h("img", { src: c.viewUrl(x.b) }) : null]),
+          h("div", { class: "dthumbs" }, [h("img", { src: c.viewUrl(x.name) })]),
           h("div", { style: "flex:1" }, [
-            hint(x.where.length > 4 ? `${x.where.slice(0, 4).join(", ")} +${x.where.length - 4}` : x.where.join(", ")),
-            x.b ? h("div", { class: "grid" }, [input("details", "Ref 1 description ({details})"), input("details2", "Ref 2 description ({details2})")])
-              : input("details", "no description yet: Describe refs, write your own, or leave it to the VLM at run time"),
+            h("div", { class: "row", style: "gap:6px;margin-bottom:3px" }, [
+              hint(`Picture n in ${x.where.length > 4 ? `${x.where.slice(0, 4).join(", ")} +${x.where.length - 4}` : x.where.join(", ")}`),
+              h("span", { class: "grow" }),
+              select(own.preset || "", [["", `default (${VC.describe_preset || "short"})`], ...PRESETS],
+                v => c.setPictureCfg(x.name, "preset", v), { style: "width:auto", title: "What to describe in this picture" }),
+              h("button", { class: "sm", disabled: !!busy.value, title: "Describe only this picture again",
+                onClick: () => c.describePictures([x.name]) }, "🔄"),
+            ]),
+            own.preset === "custom" ? h("textarea", { style: "min-height:36px;margin-bottom:3px", value: own.custom || "",
+              placeholder: "Instruction for this picture, e.g. 'Describe only the outfit, piece by piece'",
+              onChange: e => c.setPictureCfg(x.name, "custom", e.target.value) }) : null,
+            h("textarea", { style: "min-height:44px", value: plan.picture_details?.[x.name] || "",
+              placeholder: "no description yet: 📝 Describe refs, 🔄, write your own, or leave it to the VLM at run time",
+              onChange: e => c.setPictureDetail(x.name, e.target.value) }),
           ]),
         ]);
-      })) : hint("Add a reference (global, per shot or per shot) first."),
-    ], { sub: "write {details} in any prompt: each shot gets the description of its own references" }),
+      })) : hint("Add a reference (global or per shot) first."),
+    ], { sub: "{details} = picture 1, {details2} = picture 2, {details@Picture n} = picture n: each shot gets the descriptions of its own pictures" }),
   ];
 }
 
 export function promptsTab(c) {
-  return h("div", { class: "card" }, [globalSection(c), ...vlmSection(c), pictureSection(c)]);
+  return h("div", { class: "card" }, [globalSection(c), ...vlmSection(c)]);
 }

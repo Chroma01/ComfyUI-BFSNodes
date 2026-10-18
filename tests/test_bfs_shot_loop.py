@@ -422,14 +422,29 @@ class RepackTest(unittest.TestCase):
         shot = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3),
                     ref=torch.zeros(1, 4, 4, 3), ref2=None, prompt="old", audio=None)
         ref = torch.ones(1, 6, 6, 3)
-        out = SL.BFSShotRepack().repack(shot, ref_image=ref)[0]
+        out = SL.BFSShotRepack().repack([shot], refs=[ref])[0][0]
         self.assertTrue(torch.equal(out["ref"], ref))
         self.assertEqual(out["prompt"], "old")
         self.assertIs(out["frames"], shot["frames"])
-        out = SL.BFSShotRepack().repack(shot, guide_frames=torch.ones(30, 16, 16, 3), prompt="new")[0]
+        out = SL.BFSShotRepack().repack([shot], guide_frames=[torch.ones(30, 16, 16, 3)], prompt=["new"])[0][0]
         self.assertEqual(tuple(out["frames"].shape), (22, 8, 8, 3))
         self.assertEqual(out["prompt"], "new")
         self.assertEqual(out["length"], 20)
+
+    def test_unpack_lists_the_pictures_and_repack_puts_them_back_per_shot(self):
+        a = [torch.full((1, 4, 4, 3), k / 10) for k in range(3)]
+        base = dict(_shot(0, 0, 20, gen=22), width=8, height=8, frames=torch.zeros(22, 8, 8, 3), prompt="",
+                    audio=None)
+        s1, s2, s3 = dict(base, refs=a[:2]), dict(base, index=1, refs=[]), dict(base, index=2, refs=a[2:])
+        flat = []
+        for s in (s1, s2, s3):   # what ComfyUI hands the next node: the lists of every Unpack call, in order
+            out = SL.BFSShotUnpack().unpack(s)
+            flat += out[1]
+            self.assertEqual(out[2], len(s["refs"]))
+        edited = [x + 1 for x in flat]   # e.g. a background remover, once per picture
+        s1n, s2n, s3n = SL.BFSShotRepack().repack([s1, s2, s3], refs=edited)[0]
+        self.assertEqual([len(s1n["refs"]), len(s2n["refs"]), len(s3n["refs"])], [2, 0, 1])
+        self.assertTrue(torch.equal(s3n["refs"][0], a[2] + 1) and torch.equal(s1n["ref2"], a[1] + 1))
 
 
 class ConditioningWriterTest(unittest.TestCase):
@@ -925,11 +940,24 @@ class MultiRefTest(unittest.TestCase):
         self.assertEqual(SL.picture_marker(text, 1), "{details@Picture1}")
         self.assertEqual(SL.expand_two_ref_prompt(text), text)   # the prompt already says what <Picture 2> is
 
+    def test_details_and_details2_are_pictures_1_and_2(self):
+        self.assertEqual(SL.picture_markers("{details} and {details2}"), "{details@Picture 1} and {details@Picture 2}")
+        old = {"ref_details": {"a.png|b.png": {"details": "goblin", "details2": "robot"}, "c.png|": "cat"},
+               "picture_details": {"b.png": "tall robot"}}
+        self.assertEqual(SL.saved_picture_details(old), {"a.png": "goblin", "b.png": "tall robot", "c.png": "cat"})
+
+    def test_a_picture_can_have_its_own_preset(self):
+        cfg = SL.vlm_cfg({"describe_preset": "short"})
+        plan = {"picture_cfg": {"a.png": {"preset": "custom", "custom": "Describe the outfit only."}}}
+        self.assertEqual(SL.picture_cfg(cfg, plan, "a.png")["describe_preset"], "custom")
+        self.assertIn("outfit only", SL.describe_instruction(SL.picture_cfg(cfg, plan, "a.png")))
+        self.assertIs(SL.picture_cfg(cfg, plan, "b.png"), cfg)
+
     def test_repack_replaces_the_first_two_and_keeps_the_rest(self):
         refs = [torch.zeros(1, 4, 4, 3) for _ in range(3)]
         new = torch.ones(1, 4, 4, 3)
-        out = SL.BFSShotRepack().repack(dict(_shot(0, 0, 20), refs=list(refs), ref=refs[0], ref2=refs[1]),
-                                        ref_image_2=new)[0]
+        out = SL.BFSShotRepack().repack([dict(_shot(0, 0, 20), refs=list(refs), ref=refs[0], ref2=refs[1])],
+                                        ref_image_2=[new])[0][0]
         self.assertTrue(torch.equal(out["refs"][1], new) and torch.equal(out["ref2"], new))
         self.assertIs(out["refs"][2], refs[2])
 

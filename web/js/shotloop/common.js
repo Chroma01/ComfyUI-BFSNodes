@@ -514,7 +514,7 @@ export function refBox(c, target, own, fallback = [], extra = () => null) {
   ]));
   return h("div", { class: "refbox", ...drop(null) }, slots);
 }
-// chips under a prompt, one per picture: @PictureN inserts <Picture N> at the cursor, 📝 inserts {details@Picture N}
+// chips under a prompt, one per picture: PictureN inserts <Picture N> at the cursor, 📝 inserts {details@Picture N}
 // (the description of that picture alone). The prompt box and its chips sit in one .pbox.
 export function promptChips(c, names, onSet) {
   if (!names.length) return null;
@@ -528,8 +528,8 @@ export function promptChips(c, names, onSet) {
   };
   return h("div", { class: "pchips" }, names.map((name, k) => h("span", { class: "pchip" }, [
     h("button", { class: "sm", title: `insert <Picture ${k + 1}> (${name})`, onMousedown: e => insert(e, `<Picture ${k + 1}>`) },
-      [h("img", { src: c.viewUrl(name) }), `@Picture${k + 1}`]),
-    h("button", { class: "sm", title: `insert {details@Picture ${k + 1}}: the description of this picture (📝 Describe each picture, or the VLM at run time)`,
+      [h("img", { src: c.viewUrl(name) }), `Picture${k + 1}`]),
+    h("button", { class: "sm", title: `insert {details@Picture ${k + 1}}: the description of this picture (📝 Describe refs, or the VLM at run time)`,
       onMousedown: e => insert(e, `{details@Picture ${k + 1}}`) }, "📝"),
   ])));
 }
