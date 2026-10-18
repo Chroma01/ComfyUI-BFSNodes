@@ -2103,6 +2103,8 @@ def _clean_written(text: str) -> str:
 # user's request (the prompt box) and the shot's marks and mode.
 
 AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide"}   # frames 0 = from the shot's length
+H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
+               "non_diegetic_music")
 
 AUTO_PROMPT_RULES = """Write exactly these six sections, in English, in this order, with nothing before or after them:
 
@@ -2116,7 +2118,7 @@ retention_analysis:
 One line per <Subject N>: "<Subject 1> (appears in [Shot 1]): fully_preserved - <what of it is kept>." The marker is one of fully_preserved, partially_preserved, attribute_transfer, weak_reference.
 
 detailed_description:
-Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then [Shot 1] with no timestamp; only when the frames show a real camera cut, a later shot starts with "[Shot 2] At MM:SS.mmm, the shot cuts to ...". Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
+Open with one or two sentences on the visual style and medium (e.g. live-action handheld smartphone footage, cinematic, 3D CG, 2D-animated) and the light. Then "[Shot 1]" with no timestamp. Timestamps exist only to start a new shot at a real camera cut (the view jumps to another angle or place between two frames): "[Shot 2] At MM:SS.mmm, the shot cuts to ...", using the time of the first frame after the cut. Never write a timestamp inside a shot: describe what happens within a shot in order with words like then, as, while. The frame times only tell you where cuts are. Describe the target video in playback order and in detail, 250 to 450 words: the composition, where each subject is and what it does, beat by beat, with the change the request asks for, the place and the light, the camera movement as natural English with these terms (static shot, push in, pull out, zoom in, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, arc shot, shake slightly; "with small amplitude" / "with large amplitude", "at slow speed" / "at fast speed" only when they matter), and each sound when it happens. Insert <Subject N> at the first appearance of each subject with its key visible features, and keep using the same label later. Say plainly what changes: when a subject replaces someone of the source, write that the person of the {source_name} is replaced by <Subject N>, who takes their exact place, timing, pose, gestures, head motion, gaze and expressions. Whatever the request does not change stays as it is in the source frames: describe it concretely (the same room, the same camera move, the same actions and timing). Speech: give a speaking person a speaker ID such as (S1); write words inside <d>[Language] ...</d> only when the request gives them, otherwise describe the mouth moving as they talk. Visible on-screen text goes in double quotes as it reads.
 
 overall_soundscape:
 One to four sentences of ambience and physical sounds across the video.
@@ -2124,7 +2126,16 @@ One to four sentences of ambience and physical sounds across the video.
 non_diegetic_music:
 N/A, or one to three sentences (instruments, tempo, dynamics) when the request asks for music only the audience hears.
 
-Write only what is seen or heard. No negations (not, no, never, without), no quality words (realistic, high quality, masterpiece, 4k), no names of real people, no explanations of the rules."""
+Always write the labels with angle brackets: <Subject 1>, <Picture 1>{video_label}. Write only what is seen or heard. No negations (not, no, never, without), no quality words (realistic, high quality, masterpiece, 4k), no names of real people, no explanations of the rules."""
+
+# a request that is already a prompt template (e.g. the one a LoRA was trained with): kept as it is, made specific
+AUTO_TEMPLATE_RULES = """The user's request is a prompt TEMPLATE (for example the one their LoRA was trained with). Return the same template, made specific to this shot:
+- Keep every sentence of the template, in the same order, with the same section names; add no section and remove none.
+- Keep its first word{trigger} exactly as the very first text of your answer.
+- Where the template describes a subject in general words, add the visible features from the reference pictures and their descriptions.
+- In detailed_description, right after "[Shot 1]" (add "[Shot 1]" if the template has none), add three to six sentences on this shot: the camera distance, angle and movement (static shot, push in, pull out, pan left, pan right, tilt up, tilt down, tracking shot...), the place and the light, and what the person does in order. Timestamps only for a real camera cut: "[Shot 2] At MM:SS.mmm, the shot cuts to ..."; never inside a shot.
+- Keep every label as written, with angle brackets: <Subject 1>, <Picture 1>.
+Return only the finished prompt, with nothing before or after it."""
 
 
 def auto_frame_count(length: int, fps: float, frames: int = 0) -> int:
@@ -2183,34 +2194,55 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
         source_line = " Also add the line \"<Video 1> is the source video for the target video edit.\""
         summary_start = "\"The target video is an edited version of <Video 1>.\""
         rel = "The source shot is <Video 1>, the video being edited."
+        source_name, video_label = "<Video 1>", ", <Video 1>"
     else:
         source_line = ""
-        summary_start = "one sentence on what the target video shows and which subjects it uses."
-        rel = ("The source shot is given to the model as a guide video aligned frame by frame (it has no tag): the "
-               "target keeps its timing, camera and motion unless the request changes them.")
+        summary_start = ("\"The target video is an edited version of the guide video.\" and what it shows with which "
+                         "subjects.")
+        rel = ("The source shot is given to the model as the guide video, aligned frame by frame (it has no tag; call it "
+               "\"the guide video\"): the target keeps its timing, camera and motion unless the request changes them.")
+        source_name, video_label = "guide video", ""
+    trigger = request_trigger(instruction)
+    rules = (AUTO_TEMPLATE_RULES.format(trigger=f" '{trigger}'" if trigger else "") if is_template(instruction) else
+             AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start, source_name=source_name,
+                                      video_label=video_label))
     ask = (f"You write the prompt for MiniMax H3, a video model, in its full-reference format. The target video is an "
            f"edited version of a source shot{f' of {duration:.2f} s' if duration else ''}: the first {nf} images are "
            f"frames of that shot in time order{f' (at {tt} on its clock)' if tt else ''}.{pics}\n\n"
            f"{rel}\n\nThe user's request: {instruction.strip() or '(none: use the reference pictures as they are)'}\n"
+           + ("A {details@Picture n} in the request stands for the description of <Picture n>: write the visible "
+              "features of that picture in its place.\n" if "{details@" in instruction else "")
            + ("".join(f"\n{n}" for n in notes)) + "\n\n"
-           + AUTO_PROMPT_RULES.format(source_line=source_line, summary_start=summary_start))
+           + rules)
     text = vlm_generate(clip, ask, _letterbox_batch(list(frames) + list(pictures)), max(1536, int(max_tokens)))
-    return tidy_h3_prompt(text, seg)
+    return tidy_h3_prompt(text, seg, trigger)
 
 
-H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
-               "non_diegetic_music")
+def request_trigger(text: str) -> str:
+    """'body_swap' for a request that starts 'body_swap: ...' (a LoRA's trigger word), '' otherwise."""
+    m = re.match(r"\s*([A-Za-z][\w-]*)\s*:", str(text or ""))
+    return m.group(1) if m and m.group(1).lower() not in H3_SECTIONS + ("retention", "subject") else ""
 
 
-def tidy_h3_prompt(text: str, seg: dict | None = None) -> str:
-    """The VLM's answer as a prompt: from subject_definitions on, no code fences or Markdown bold around the section
-    names, and the Colored Mark mapping added when the writer left a mark color out."""
+def is_template(text: str) -> bool:
+    """A request that is a whole prompt (it has H3's sections), not a short instruction."""
+    return len(re.findall(r"(?i)\b(subject_definitions|summary|detailed_description)\s*:", str(text or ""))) >= 2
+
+
+def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "") -> str:
+    """The VLM's answer as a prompt: from subject_definitions on (after the request's trigger word, kept first), no
+    code fences or Markdown bold around the section names, labels with their angle brackets, and the Colored Mark
+    mapping added when the writer left a mark color out."""
     t = str(text or "").replace("```text", "").replace("```", "").strip()
     for name in H3_SECTIONS:
         t = re.sub(rf"(?im)^\s*[#*_]*\s*{name}\s*[*_]*\s*:[ \t]*[*_]*", f"{name}:", t)
     i = t.find("subject_definitions:")
     if i > 0:
         t = t[i:]
+    if trigger and not t.lower().startswith(trigger.lower() + ":"):
+        t = f"{trigger}: {t}"
+    # 'Picture 1' / 'Subject 2' / 'Video 1' written without their brackets
+    t = re.sub(r"(?<![<\w])(Picture|Subject|Video|Audio) (\d+)(?![\w>])", r"<\1 \2>", t)
     if seg and seg.get("color_guide"):
         names = [_COLOR_GUIDE_NAMES.get(x["color"], x["color"]) for x in seg.get("color_guide_marks") or []]
         if any(n not in t for n in names):
@@ -2231,8 +2263,8 @@ def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, nam
     sc = side / max(analysis["width"], analysis["height"])
     size = (max(32, int(analysis["width"] * sc) // 2 * 2), max(32, int(analysis["height"] * sc) // 2 * 2))
     frames = [torch.from_numpy(f.astype(np.float32) / 255.0)[None] for f in _read_frames(path, src[picks], size)]
-    # the request may name pictures with {details...}: their saved descriptions
-    request = fill_picture_details(picture_markers(instruction), names, pictures, pic_details)
+    # the request may name pictures with {details...}: their saved descriptions; the writer fills the others
+    request = fill_picture_details(picture_markers(instruction), names, pictures, pic_details, keep_missing=True)
     _status("Writing the shot's prompt with the VLM", force=True)
     text = write_h3_prompt(clip, frames, [(int(x) - seg["start"]) / fps for x in picks], pictures,
                            [pic_details.get(nm, "") for nm in names], request, seg, ap.get("source") or "guide", L / fps,

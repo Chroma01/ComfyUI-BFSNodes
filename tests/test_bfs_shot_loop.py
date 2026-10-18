@@ -973,7 +973,8 @@ class MultiRefTest(unittest.TestCase):
         self.assertEqual(seen["n"], 5)                       # 3 frames + 2 pictures
         for want in ("swap the man for the robot", "<Picture 2>: image 5, described as: a silver robot",
                      "tinted purple becomes the subject from <Picture 2>", "Only the selected subject is generated again",
-                     "edited version of <Video 1>", "retention_analysis:", "non_diegetic_music:", "00:00.500"):
+                     "edited version of <Video 1>", "retention_analysis:", "non_diegetic_music:", "00:00.500",
+                     "Never write a timestamp inside a shot", "is replaced by <Subject N>"):
             self.assertIn(want, seen["prompt"])
         self.assertTrue(out.startswith("subject_definitions:\n<Subject 1>"))   # fences and bold removed
         self.assertIn("marked in purple", out)                # the mapping the writer left out is added
@@ -982,6 +983,29 @@ class MultiRefTest(unittest.TestCase):
         self.assertNotEqual(SL.auto_prompt_for("x", ["a.png"], seg2), SL.auto_prompt_for("y", ["a.png"], seg2))
         self.assertEqual(SL.auto_frame_count(24, 24.0), 3)
         self.assertEqual(SL.auto_frame_count(240, 24.0), 8)
+
+    def test_a_template_request_keeps_its_trigger_and_wording(self):
+        seen = {}
+
+        def fake(clip, prompt, images, max_tokens, *a):
+            seen["prompt"] = prompt
+            return "subject_definitions: <Subject 1> is the woman in Picture 1. detailed_description: [Shot 1] She walks."
+        old, SL.vlm_generate = SL.vlm_generate, fake
+        template = ("body_swap: subject_definitions: <Subject 1> is the {details@Picture 1} shown in <Picture 1>. "
+                    "summary: [video generation + reference] Replace the guide subject. detailed_description: [Shot 1] x")
+        try:
+            out = SL.write_h3_prompt(None, [torch.zeros(1, 8, 8, 3)], [0.0], [torch.zeros(1, 4, 4, 3)], [""], template,
+                                     {}, "guide")
+        finally:
+            SL.vlm_generate = old
+        self.assertIn("prompt TEMPLATE", seen["prompt"])
+        self.assertIn("'body_swap'", seen["prompt"])
+        self.assertIn("stands for the description of <Picture n>", seen["prompt"])
+        self.assertTrue(out.startswith("body_swap: subject_definitions:"))        # the trigger the writer dropped
+        self.assertIn("the woman in <Picture 1>", out)                            # brackets put back
+        self.assertEqual(SL.request_trigger("make it rain: now"), "")
+        self.assertEqual(SL.request_trigger("head_swap: subject_definitions: x"), "head_swap")
+        self.assertFalse(SL.is_template("replace the bottle with the can"))
 
     def test_a_written_prompt_is_part_of_the_shot_signature_only_with_auto_prompt_on(self):
         seg = {"start": 0, "end": 10, "ref": "", "ref2": "", "prompt": "make it rain"}
