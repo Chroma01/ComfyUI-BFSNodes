@@ -1,6 +1,6 @@
 // The busy bar and the points window (🎯 Points…: click on a frame to pick the subject for SAM 3).
 import { Teleport } from "../vendor/vue.esm-browser.prod.mjs";
-import { h, hint, t } from "./common.js";
+import { h, hint, t, pictureColor, markName } from "./common.js";
 
 export function busyBar(c, msg) {
   const { busySince, now, upPct, status } = c;
@@ -18,30 +18,34 @@ export function pointsModal(c) {
   const { modal, segs, plan, api, setMeta } = c;
   const ms = segs.value[modal.idx];
   if (!modal.open || !ms) return null;
+  // Colored Mark: region 1 = the shot's own selection, 2.. = its extra regions; each one is a picture, in its color
+  const regionPicture = r => (r === 1 ? ms.color_guide_picture : ms.regions[r - 2]?.picture) || 1;
+  const regionColor = r => pictureColor(plan, regionPicture(r));
+  const regionsN = ms.color_guide ? 1 + ms.regions.length : 1;
   const pointOverlays = ms.color_guide
-    ? [1, 2].flatMap(region => (region === modal.region ? modal.points : modal.groups[region]?.points || []).map((p, k) => h("div", {
-      class: ["pt", "cg", region === 2 && "r2", p.label ? "pos" : "neg"],
-      style: `left:${p.x * 100}%;top:${p.y * 100}%;--point-color:${region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00")}`,
-      title: `Region ${region}${region === modal.region ? " · click to remove" : ""}`,
+    ? Array.from({ length: regionsN }, (_, q) => q + 1).flatMap(region => (region === modal.region ? modal.points : modal.groups[region]?.points || []).map((p, k) => h("div", {
+      class: ["pt", "cg", region !== modal.region && "other", p.label ? "pos" : "neg"],
+      style: `left:${p.x * 100}%;top:${p.y * 100}%;--point-color:${regionColor(region)}`,
+      title: `Region ${region} · Picture ${regionPicture(region)}${region === modal.region ? " · click to remove" : ""}`,
       onPointerdown: e => { if (region !== modal.region) return; e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; },
     })))
     : modal.points.map((p, k) => h("div", { class: ["pt", p.label ? "pos" : "neg"], style: `left:${p.x * 100}%;top:${p.y * 100}%`,
       title: "click to remove", onPointerdown: e => { e.stopPropagation(); modal.points = modal.points.filter((_, j) => j !== k); modal.prev = null; } }));
+  const regionButton = r => {
+    const k = regionPicture(r), name = ms.names[k - 1];
+    return h("button", { class: modal.region === r ? "pri" : "", onClick: () => c.switchPointRegion(r),
+      title: `Region ${r}: becomes <Picture ${k}> (${markName(regionColor(r))})` }, [
+      name ? h("img", { class: "mthumb", src: c.viewUrl(name), style: `--mark:${regionColor(r)}` }) : null,
+      ` Picture ${k} · ${markName(regionColor(r))} (${(r === modal.region ? modal.points : modal.groups[r]?.points || []).length})`]);
+  };
   return h(Teleport, { to: "body" }, h("div", { class: "bsl", style: "background:none;padding:0" }, h("div", { class: "mmodal",
     onKeydown: e => e.stopPropagation(), onPointerdown: e => { if (e.target === e.currentTarget) modal.open = false; } }, [
     h("div", { class: "mbox" }, [
       h("div", { class: "row", style: "margin-bottom:6px" }, [h("span", { class: "sect" }, `Shot #${modal.idx + 1} · points`),
-        ms.color_guide ? h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, `Region ${modal.region} · color`),
-          h("select", { value: modal.region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00"), style: "width:auto", onChange: e => {
-            setMeta(modal.idx, modal.region === 2 ? "color_guide_color2" : "color_guide_color", e.target.value);
-            if (modal.prev) c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text,
-              preview_color: e.target.value }, true);
-          } },
-            [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"], ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]].map(([v, n]) => h("option", { value: v, disabled: ms.color_guide && v === (modal.region === 2 ? (ms.color_guide_color || "#00ff00") : (ms.color_guide_color2 || "#9b30ff")) }, n)))]) : null,
-        ms.color_guide ? h("div", { class: "row" }, [hint("Colored Mark keeps two independent point sets; switch regions to edit each person. Both use the frame selected below."),
-          h("button", { class: modal.region === 1 ? "pri" : "", onClick: () => c.switchPointRegion(1) }, `Region 1 (${modal.groups[1]?.points?.length || 0})`),
-          h("button", { class: modal.region === 2 ? "pri" : "", onClick: () => c.switchPointRegion(2) }, `Region 2 (${modal.groups[2]?.points?.length || 0})`)]) : null,
-        hint("click = keep (green) · right-click or shift+click = exclude (red) · click a point to remove it")]),
+        ms.color_guide ? h("div", { class: "row" }, [hint("One point set per marked person; switch to edit each. All use the frame selected below."),
+          ...Array.from({ length: regionsN }, (_, q) => regionButton(q + 1))]) : null,
+        hint("click = keep · right-click or shift+click = exclude · click a point to remove it")]),
+      h("div", { class: "mstage" }, [
       h("div", { class: "mimg", onContextmenu: e => e.preventDefault(), onPointerdown: e => {
         const box = e.currentTarget.getBoundingClientRect();
         const x = (e.clientX - box.left) / box.width, y = (e.clientY - box.top) / box.height;
@@ -50,7 +54,7 @@ export function pointsModal(c) {
       } }, [
         h("img", { draggable: false, src: api.apiURL(`/bfs/shotloop/frame?video=${encodeURIComponent(plan.video)}&fps=${plan.fps}&f=${ms.start + modal.key}&w=900`) }),
         ...pointOverlays,
-      ]),
+      ])]),
       h("div", { class: "row", style: "margin-top:6px" }, [
         hint(`frame ${ms.start + modal.key} (${modal.key + 1}/${ms.len})`),
         h("input", { type: "range", min: 0, max: ms.len - 1, step: 1, value: modal.key, style: "flex:1",
@@ -62,8 +66,7 @@ export function pointsModal(c) {
         h("button", { onClick: () => { modal.points = []; modal.prev = null; } }, "Clear points"),
         h("button", { class: "pri", disabled: !!modal.busy || !(modal.points.length || modal.text),
           onClick: () => c.previewMask(modal.idx, { points: modal.points, key: modal.key, text: modal.text,
-            preview_color: modal.region === 2 ? (ms.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff")
-              : (ms.color_guide_color || plan.global_color_guide_ref1 || "#00ff00") }, true) }, "👁 Segment"),
+            preview_color: ms.color_guide ? regionColor(modal.region) : undefined }, true) }, "👁 Segment"),
       ]),
       modal.busy ? busyBar(c, modal.busy) : null,
       modal.prev ? h("div", { class: "mstrip" }, [...modal.prev.frames.map(f => h("img", { src: f.src, title: `frame ${f.f}` })),

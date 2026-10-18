@@ -199,13 +199,17 @@ const CSS = `
 
 /* points window (teleported to <body>) */
 .bsl .mmodal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10000;display:flex;align-items:center;justify-content:center}
-.bsl .mbox{background:#1d1d23;border:1px solid #3a3a45;border-radius:10px;padding:12px;width:min(960px,94vw);max-height:94vh;overflow:auto}
-.bsl .mimg{position:relative;cursor:crosshair;user-select:none;line-height:0}
-.bsl .mimg img{width:100%;border-radius:6px}
+.bsl .mbox{background:#1d1d23;border:1px solid #3a3a45;border-radius:10px;padding:12px;width:min(960px,94vw);height:min(900px,94vh);overflow:auto;box-sizing:border-box}
+/* the frame fits a fixed stage whatever the video's size or orientation; points are stored relative to the frame */
+.bsl .mstage{display:flex;justify-content:center;align-items:center;height:min(540px,56vh);background:#0d0d10;border-radius:6px}
+.bsl .mimg{position:relative;cursor:crosshair;user-select:none;line-height:0;display:inline-block}
+.bsl .mimg img{display:block;max-width:100%;max-height:min(540px,56vh);border-radius:6px}
+.bsl .mthumb{width:22px;height:22px;border-radius:4px;object-fit:cover;vertical-align:middle;border:2px solid var(--mark,#555)}
 .bsl .pt{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #fff;cursor:pointer}
 .bsl .pt.pos{background:#3ccf6b}.bsl .pt.neg{background:#e8455a}
 .bsl .pt.cg.pos{background:var(--point-color,#00ff00)}
-.bsl .pt.r2{box-shadow:0 0 0 2px #9b30ff}
+.bsl .pt.other{opacity:.5}
+.bsl .mreg{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
 `;
 
 export function styles() {

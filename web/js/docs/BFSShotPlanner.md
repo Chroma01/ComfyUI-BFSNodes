@@ -253,8 +253,8 @@ cursor, **📝** inserts `{details@Picture N}` (that picture's description, belo
 
 The node no longer has `ref_image` / `ref_image_2` inputs (the pictures live in the panel); a workflow saved with
 them connected still runs, and the log says the images are ignored. A connected `prompt` input still overrides the
-global prompt. The planner still outputs `ref_image` and `ref_image_2`: pictures 1 and 2 the shots use, without
-repeats. **BFS Shot Unpack** outputs `refs`, every picture of the shot as a list (the next node runs once per picture,
+global prompt. The planner outputs `refs` (every picture the shots use, without repeats, as a list) and `ref_count`
+where `ref_image` / `ref_image_2` were. **BFS Shot Unpack** outputs `refs`, every picture of the shot as a list (the next node runs once per picture,
 e.g. a background remover), and `ref_count`; **BFS Shot Repack**'s `refs` input takes that list back and gives each
 shot its own pictures (a workflow from before 1.113 that wired `ref_image` still works). **BFS Shot H3 Conditioning** passes every picture of the shot (*use_ref_2* off: only the first); H3's own
 node stops at 9 and LoRAs trained like OpenJutsu saw up to 9, so the log notes a shot with more.
@@ -288,9 +288,16 @@ rows at *opacity* × the noise level, so they start from the original partly vis
 person. With `guide_mode = aligned guide` the model also sees the whole original shot as its guide, so it follows
 the motion either way. (Not applied with the duet panel.)
 
-**🎨 Colored Mark** is an optional translucent overlay on the source video. Enable it before entering a SAM 3 description or opening **🎯 Points**; the selected color applies to that shot's marked region. This is only a visual marker: it does not create an inpainting mask or change **Full frame**, **Mask only** or crop behavior. The default colors are set under each global reference in **Prompts & refs**; choose a per-shot color when needed. The overlay keeps movement and facial expression visible.
-
-To mark two regions in one shot, use the main description or points for **Ref 1**, then open **Mark a second region** and describe the second region for **Ref 2**. Give the two references different marker colors and enable *use_ref_2* on BFS Shot H3 Conditioning. The second region currently uses a text description.
+**🎨 Colored Mark** is an optional translucent overlay on the source video: each marked person is tinted with the
+color of the picture they become, and the prompt gets the mapping ("the person marked in red becomes the character
+from `<Picture 3>`"), for any model or LoRA. Every picture has its **Mark color** (under it in **Prompts & refs**:
+green, purple, red, blue, yellow, magenta, cyan, orange, white, brown, pink, olive by default); change it when it is
+too close to a color in the video. In a shot, turn on Colored Mark and pick which picture the shot's selection (its
+SAM 3 text or points) becomes; **+ Mark another person** adds a person with their own picture and text or 🎯 points
+(the points window has one point set per person). This is only a visual marker: it does not create an inpainting mask
+or change **Full frame**, **Mask only** or crop behavior. More than one marked person needs Crop off, and the
+conditioning node must pass every picture the marks use (*use_ref_2* on). The overlay keeps movement and facial
+expression visible. Plans before 1.113 (a second region for ref 2) open with that region as `<Picture 2>`.
 
 ```text
 body_swap: subject_definitions: <Subject 1> is the character shown in <Picture 1>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the green-marked replacement. <Subject 2> is the character shown in <Picture 2>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the purple-marked replacement. In the guide video, the translucent green and purple tints are temporary editing markers, not character appearance. Replace the green-tinted person only with <Subject 1> and the purple-tinted person only with <Subject 2>. The guide video provides the scene and the complete performance of both people, including their body poses, gestures, head motion, gaze, speech and facial expressions.
@@ -369,7 +376,7 @@ editor shows its suggestion with buttons to apply it. The summary output lists t
 
 The VLM can describe the references, for any task (not tied to swaps), and any subject: a person, a creature, a robot,
 an animal or a cartoon character (it says what the subject is first). In the **Prompts & refs** tab pick an instruction
-preset: *short* (the default: one noun phrase of at most ~20 words that fits inside a sentence, e.g. `green goblin with
+preset: *object* (a noun phrase for a prop, product, vehicle...: what it is, shape, materials, colors, text), *short* (the default: one noun phrase of at most ~20 words that fits inside a sentence, e.g. `green goblin with
 long pointed ears in a torn brown leather vest`, for `<Subject 1> is the {details} shown in <Picture 1>`), *full body* (face, hair, skin, age, build, clothing piece by piece), *head / face*, *face attributes* (a
 short comma-separated list), *outfit*, or *custom* (your own instruction). **📝 Describe refs** writes one
 description per picture (see below), saved in the plan and editable. Write **`{details}`** anywhere in a prompt and
@@ -573,7 +580,7 @@ BFS Shot Join ◄── images ────────────────�
       └─► Create Video (fps, audio) ─► Save Video
 ```
 
-For other models, use **BFS Shot Unpack** and wire `guide_frames`, `ref_image`, `prompt` and
+For other models, use **BFS Shot Unpack** and wire `guide_frames`, `refs`, `prompt` and
 `length` into that model's own guide and reference nodes; the list mapping works the same way.
 
 ## Choosing who is replaced (`{target}`), step by step

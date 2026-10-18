@@ -1,20 +1,16 @@
 // 📝 Prompts & refs tab: the global reference / prompt, the VLM (shot suggestions) and the reference descriptions ({details}).
-import { h, fld, check, section, pill, hint, select, refBox, promptChips, MAX_REFS } from "./common.js";
+import { h, fld, check, section, pill, hint, select, refBox, promptChips, MAX_REFS, MARK_PALETTE, pictureColor } from "./common.js";
 
-const PRESETS = ["short", "full body", "head / face", "face attributes", "outfit", "custom"];
-const GUIDE_COLORS = [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
-  ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
+const PRESETS = ["short", "object", "full body", "head / face", "face attributes", "outfit", "custom"];
 
 function globalSection(c) {
   const { plan } = c;
-  // Colored Mark colors belong to pictures 1 and 2 (the two people a shot can mark)
-  const marker = (k, name) => k > 1 ? null : h("label", { class: "guidecolor" }, [
-    h("span", { class: "hint" }, `Marker color · Ref ${k + 1}`),
-    h("select", { value: k === 0 ? (plan.global_color_guide_ref1 || "#00ff00") : (plan.global_color_guide_ref2 || "#9b30ff"),
-      disabled: !name,
-      title: "Default Colored Mark for this global reference",
-      onChange: e => c.setPlan(k === 0 ? "global_color_guide_ref1" : "global_color_guide_ref2", e.target.value) },
-      GUIDE_COLORS.map(([v, text]) => h("option", { value: v }, text))),
+  // Colored Mark: every picture has its mark color (a person marked in it becomes that picture)
+  const marker = k => h("label", { class: "guidecolor" }, [
+    h("span", { class: "hint" }, "Mark color"),
+    h("select", { value: pictureColor(plan, k + 1), title: `Colored Mark color of <Picture ${k + 1}>`,
+      onChange: e => c.setPictureColor(k + 1, e.target.value) },
+      MARK_PALETTE.map(([v, name]) => h("option", { value: v }, name))),
   ]);
   return section("Global reference & prompt", [
     refBox(c, "global", plan.global_refs, [], marker),
@@ -28,7 +24,7 @@ function globalSection(c) {
       h("b", "{target}"), " who is replaced (per shot) · ", h("b", "{details}"), " description of the shot's references · ",
       h("b", "{details@Picture n}"), " description of picture n alone · ",
       h("b", "{shot}"), " the VLM's description of the shot · ", h("b", "{setting}"), " the setting picture (H3 Conditioning)."]),
-    h("div", { class: "hint", style: "margin-top:4px" }, "These are the default marker colors for the global references. Turn on Colored Mark on a shot to apply them; shot-level colors can override them."),
+    h("div", { class: "hint", style: "margin-top:4px" }, "Mark color: the Colored Mark color of each picture. A person marked for <Picture n> in a shot is drawn in that color, and the prompt says which picture the color becomes. Change it when it is too close to a color in the video."),
   ], { sub: "defaults for every shot" });
 }
 

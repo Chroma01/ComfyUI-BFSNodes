@@ -1,10 +1,8 @@
 // 🎬 Shots tab: one card per shot, then the selected shot's editor (preview, reference & prompt, who is replaced,
 // continuity, copy to other shots).
-import { h, hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section, refBox, promptChips } from "./common.js";
+import { h, hue, fmtT, segKey, hasMask, maskSource, pill, hint, check, section, refBox, promptChips, pictureColor, markName,
+         MAX_REFS } from "./common.js";
 import { h as rawH } from "../vendor/vue.esm-browser.prod.mjs";
-
-const GUIDE_COLORS = [["#00ff00", "Green"], ["#9b30ff", "Purple"], ["#ff2020", "Red"], ["#168cff", "Blue"],
-  ["#ffe600", "Yellow"], ["#ff00d4", "Magenta"], ["#00e5c0", "Cyan"]];
 
 const bdg = (text, kind = "", title = "") => h("span", { class: ["bdg", kind], title }, text);
 
@@ -23,7 +21,8 @@ function shotCard(c, s, i) {
         track: bdg("🎯 track", "", "its part of the whole-video SAM 3 track"),
         sam: bdg("🎯 " + (s.mask.text ? s.mask.text.slice(0, 14) : `${(s.mask.points || []).length} pts`), "", s.mask.text || `${(s.mask.points || []).length} points`) }[maskSource(s)] || null,
       s.crop || s.inpaint || s.paste ? bdg({ paste: "🧩 frame+paste", mask: "🎭 mask only", crop: "✂ crop", cropmask: "✂🎭 crop+mask" }[c.modeOf(s)] + (s.inpaint && s.strength < 1 ? ` ${Number(s.strength).toFixed(2)}` : ""), "on", c.modeName(s)) : null,
-      s.color_guide ? bdg("🎨 Colored Mark", "on", `${s.color_guide_color || "green"} · opacity ${s.color_guide_opacity ?? 0.35}`) : null,
+      s.color_guide ? bdg(`🎨 ${1 + s.regions.length}`, "on", [s.color_guide_picture, ...s.regions.map(r => r.picture)]
+        .map(k => `Picture ${k} · ${markName(pictureColor(c.plan, k))}`).join("\n") + ` · opacity ${s.color_guide_opacity ?? 0.35}`) : null,
       s.target ? bdg("🧑 target", "on", s.target) : null,
       i > 0 && s.chain !== "off" ? bdg("⛓", "on", s.chain === "history" ? `continues the previous shot's last ${s.chainHistory} frames (history)` : s.chain === "head" ? `starts with the previous shot's last ${Math.min(s.chainHistory, 39)} frames, kept as they are (head)` : `continues from the previous shot's ${s.chainFrame} frame as ${s.chain}`) : null,
       { ok: bdg("💾", "on", "stored and up to date: the next Queue does not generate it again (Run tab → Stored shots to redo it)"),
@@ -78,7 +77,6 @@ function player(c, cur) {
 function editor(c, cur) {
   const { plan, sel, segs, maskPrev, targetCrop, vlmSug, busy, usedRefs, copyOpts, COPY_FIELDS } = c;
   const i = sel.value, S = segs.value, k = segKey(cur), mp = maskPrev.value[k], g = vlmSug.value[k];
-  const hasRef2 = cur.names.length > 1;
   const issues = c.checksFor(i);
 
   const head = h("div", { class: "edhd" }, [
@@ -121,30 +119,41 @@ function editor(c, cur) {
   ], { sub: "who the shot becomes" });
 
   const mode = (on, title, text, onClick) => h("div", { class: ["mode", on && "on"], onClick }, [h("b", title), h("span", text)]);
+  // which picture a marked person becomes: "Picture 3 · red" with its thumbnail (the color is the picture's)
+  const picturePick = (k, onPick) => {
+    const n = Math.max(cur.names.length, k), color = pictureColor(plan, k);
+    return h("span", { class: "row", style: "gap:4px;align-items:center" }, [
+      cur.names[k - 1] ? h("img", { class: "mthumb", src: c.viewUrl(cur.names[k - 1]), style: `--mark:${color}`, title: cur.names[k - 1] })
+        : h("span", { class: "mthumb", style: `--mark:${color};display:inline-block;background:${color}` }),
+      h("select", { value: String(k), style: "width:auto", title: "The picture this person becomes; the mark is drawn in its color",
+        onChange: e => onPick(+e.target.value) },
+        Array.from({ length: Math.min(MAX_REFS, n) }, (_, q) => h("option", { value: String(q + 1) },
+          `Picture ${q + 1} · ${markName(pictureColor(plan, q + 1))}${cur.names[q] ? "" : " (no picture)"}`))),
+    ]);
+  };
   const who = section("Select region", [
     h("div", { class: "row", style: "margin-top:4px;align-items:center;gap:8px" }, [
       check(!!cur.color_guide, v => c.setMeta(i, "color_guide", v), "🎨 Colored Mark",
-        "Color the selected region in the source video as a translucent visual marker. It does not create or enable an inpainting mask."),
-      h("label", { class: "row", style: "gap:6px;align-items:center" }, [h("span", { class: "hint" }, "Region color · Ref 1"),
-        h("select", { value: cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00", style: "width:auto", onChange: e => {
-          c.setMeta(i, "color_guide_color", e.target.value);
-          if (maskPrev.value[segKey(cur)]) c.previewMask(i);
-        } },
-          GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === (cur.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff") }, label)))]),
+        "Color each selected person in the source video with the color of the picture they become, as a translucent marker; the prompt gets 'the person marked in <color> becomes the character from <Picture n>'. It does not create or enable an inpainting mask."),
+      cur.color_guide ? h("span", { class: "hint" }, "this selection becomes") : null,
+      cur.color_guide ? picturePick(cur.color_guide_picture, k => { c.setMarkPicture(i, 1, k); if (maskPrev.value[segKey(cur)]) c.previewMask(i); }) : null,
     ]),
-    cur.color_guide ? h("details", { class: "note", style: "margin:4px 0;padding:6px 8px", open: !!cur.color_guide_text2 || hasRef2 }, [
-      h("summary", { style: "cursor:pointer" }, cur.color_guide_text2 || (cur.color_guide_points2 || []).length ? "Mark a second region · Ref 2" : "+ Mark a second region (optional)"),
-      h("div", { class: "row", style: "margin-top:8px;align-items:center;gap:8px" }, [
-        h("span", { class: "hint", style: "white-space:nowrap" }, "Describe second region"),
-        h("input", { type: "text", value: cur.color_guide_text2 || "", style: "flex:1;min-width:160px", placeholder: "e.g. the person on the left", onChange: e => c.setMeta(i, "color_guide_text2", e.target.value) }),
-        h("button", { disabled: !!busy.value || !cur.color_guide_text2, onClick: () => c.previewMask(i, { text: cur.color_guide_text2, max_objects: 1 }) }, "👁 Preview"),
-        h("button", { onClick: () => c.openPoints(i, 2) }, (cur.color_guide_points2 || []).length ? `🎯 Points 2 (${cur.color_guide_points2.length})` : "🎯 Mark with points"),
-        h("select", { value: cur.color_guide_color2 || plan.global_color_guide_ref2 || "#9b30ff", onChange: e => {
-          c.setMeta(i, "color_guide_color2", e.target.value);
-          if ((cur.color_guide_points2 || []).length) c.previewMask(i, { points: cur.color_guide_points2, key: cur.color_guide_key2 || 0,
-            text: cur.color_guide_text2 || "", preview_color: e.target.value });
-        } },
-          GUIDE_COLORS.map(([v, label]) => h("option", { value: v, disabled: v === (cur.color_guide_color || plan.global_color_guide_ref1 || "#00ff00") }, label))),
+    cur.color_guide ? h("div", { class: "note", style: "margin:4px 0;padding:6px 8px" }, [
+      ...cur.regions.map((r, j) => h("div", { class: "mreg" }, [
+        h("span", { class: "hint", style: "white-space:nowrap" }, `Person ${j + 2}`),
+        picturePick(r.picture, k => c.setMarkRegion(i, j, "picture", k)),
+        h("input", { type: "text", value: r.text || "", style: "flex:1;min-width:160px", placeholder: "who, in English: e.g. the man on the left",
+          onChange: e => c.setMarkRegion(i, j, "text", e.target.value) }),
+        h("button", { disabled: !!busy.value || !(r.text || (r.points || []).length),
+          onClick: () => c.previewMask(i, { text: r.text || "", points: r.points || [], key: r.key || 0, max_objects: 1,
+            preview_color: pictureColor(plan, r.picture) }) }, "👁 Preview"),
+        h("button", { onClick: () => c.openPoints(i, j + 2) }, (r.points || []).length ? `🎯 Points (${r.points.length})` : "🎯 Points…"),
+        h("button", { class: "dng", title: "remove this person's mark", onClick: () => c.removeMarkRegion(i)(j) }, "✕"),
+      ])),
+      h("div", { class: "row", style: "margin-top:6px;align-items:center;gap:8px" }, [
+        h("button", { disabled: 1 + cur.regions.length >= MAX_REFS, onClick: () => c.addMarkRegion(i) }, "+ Mark another person"),
+        hint(cur.names.length > 1 + cur.regions.length ? "each person: a picture (its color) and a text or points"
+          : "add more pictures (Reference & prompt) to give each person their own"),
       ]),
     ]) : null,
     cur.color_guide ? h("details", { style: "margin:4px 0" }, [h("summary", { class: "hint", style: "cursor:pointer" }, `Opacity · ${Number(cur.color_guide_opacity ?? 0.35).toFixed(2)}`),

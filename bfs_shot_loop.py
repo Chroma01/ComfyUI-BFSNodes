@@ -453,7 +453,7 @@ DEFAULT_PLAN = {
     "video": "", "fps": 24.0, "grid": DEFAULT_GRID, "mode": "shots", "max_s": 4.5, "min_s": 1.0,
     "sensitivity": 0.5, "max_parts": 0, "max_total_s": 0.0, "start_s": 0.0, "end_s": 0.0, "bounds": [], "segs": [],
     "global_refs": [], "global_ref": "", "global_ref2": "", "global_prompt": "", "global_color_guide_ref1": "#00ff00",
-    "global_color_guide_ref2": "#9b30ff", "megapixels": 0.5, "multiple": 32,
+    "global_color_guide_ref2": "#9b30ff", "picture_colors": [], "megapixels": 0.5, "multiple": 32,
     "generation_size_mode": "megapixels", "custom_width": 1024, "custom_height": 1024,
     "detector": "adaptive", "run": "recursive", "filters": {}, "skip_fill": "original",
     "cast": {}, "cast_split": False, "cast_only": False, "mask_cfg": {}, "vlm_cfg": {}, "audio_mode": "auto", "ref_details": {},
@@ -584,6 +584,8 @@ def resolve_plan(plan: dict, analysis: dict, path: str | None = None) -> list[di
         s["people"], s["main"] = [], -1
         s["color_guide_color"] = s["color_guide_color"] or str(plan.get("global_color_guide_ref1") or "#00ff00")
         s["color_guide_color2"] = s["color_guide_color2"] or str(plan.get("global_color_guide_ref2") or "#9b30ff")
+        s["color_guide_marks"] = color_marks(plan, m)
+        s["color_guide_color"] = s["color_guide_marks"][0]["color"]
         if cast is not None:
             sp = shot_people(cast, s["start"], s["end"])
             s["people"], s["main"] = sp["people"], sp["main"]
@@ -1412,10 +1414,7 @@ def paste_back(result: torch.Tensor, shot: dict, new_outline: bool = True, **fin
     sm = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])["masks"]
     n = min(result.shape[0], base.shape[0], sm.shape[0])
     m = torch.nn.functional.interpolate(sm[:n, None].float(), size=(H, W), mode="nearest")[:, 0]
-    second_text = str(shot.get("color_guide_text2") or "").strip()
-    if second_text:
-        sm2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"],
-                        dict(DEFAULT_MASK, text=second_text, max_objects=1))["masks"]
+    for sm2, _ in extra_mark_masks(shot, tag) if shot.get("color_guide") else []:   # every marked person is pasted
         sm2 = torch.nn.functional.interpolate(sm2[:n, None].float(), size=(H, W), mode="nearest")[:, 0]
         m = torch.maximum(m, sm2)
     if new_outline and bool(m.any()):
@@ -1841,12 +1840,24 @@ DESCRIBE_PRESETS = {
                         "shoulders), skin, fur or surface colour, eye color, hair or fur color and style, and any distinctive "
                         "features (ears, horns, facial hair, jewelry, makeup, glasses, etc.). Physical traits only, never the "
                         "pose, expression or background. " + _DESCRIBE_ONLY),
+    # an object (prop, product, vehicle, piece of furniture...): a noun phrase that fits inside the prompt like "short"
+    "object": ("Describe the object in these reference pictures for a video-generation prompt. Write one English noun "
+               "phrase of at most 25 words: first say what the object is (such as a leather handbag, red sports car, "
+               "wooden chair, ceramic mug or sword), then its most distinctive visible features: shape, materials, colors, "
+               "finish, patterns, printed text or logos, and notable parts. The phrase must fit after 'the' and before "
+               "'shown in <Picture 1>', so do not start with an article. Never describe the background, a person holding "
+               "it, the camera or the lighting. Treat all pictures as views of the same object and use only clearly "
+               "visible details. Return only the requested English description, with no heading, label, preamble, "
+               "bullet list or Markdown."),
     "outfit": ("Describe only what the subject of these reference pictures wears, piece by piece, for a video-generation "
                "prompt: garments, armour or accessories, colours, materials, fit and shoes, in 2 or 3 sentences in "
                "English. Start with what the subject is in two or three words (e.g. 'The goblin wears...'). Never the "
                "pose, action or background. No negations, no names. " + _DESCRIBE_ONLY),
 }
-_DESCRIBE_WORD_LIMITS = {"short": 20, "full body": 150, "head / face": 110, "face attributes": 65, "outfit": 90}
+_DESCRIBE_WORD_LIMITS = {"short": 20, "object": 25, "full body": 150, "head / face": 110, "face attributes": 65,
+                         "outfit": 90}
+# presets that write a noun phrase for a blank inside a prompt sentence (the others write paragraphs)
+PHRASE_PRESETS = ("short", "object")
 _DESCRIBE_CACHE: dict[tuple, str] = {}
 
 
@@ -1875,10 +1886,10 @@ def tidy_details(text: str, cfg: dict) -> str:
     preset = cfg.get("describe_preset") or "short"
     t = str(text or "").replace("```", " ").strip()
     t = strip_answer_label(t)
-    if preset == "short":
+    if preset in PHRASE_PRESETS:
         t = t.splitlines()[0] if t.splitlines() else ""
     t = " ".join(t.split()).strip().strip('"\'').strip()
-    if preset == "short":
+    if preset in PHRASE_PRESETS:
         # the VLM sometimes repeats the prompt sentence around its answer ("is the ... shown in <Picture 1>", "... is
         # the shown in"): those words are already in the prompt, so they would come out twice
         for _ in range(3):
@@ -1890,7 +1901,7 @@ def tidy_details(text: str, cfg: dict) -> str:
     words = t.split()
     if len(words) > limit:
         t = " ".join(words[:limit]).rstrip(" ,;:")
-        if preset != "short":
+        if preset not in PHRASE_PRESETS:
             t = t.rstrip(".") + "."
     return t
 
@@ -1903,7 +1914,7 @@ def describe_instruction(cfg: dict, slot: str = "") -> str:
     else:
         base = DESCRIBE_PRESETS.get(preset, DESCRIBE_PRESETS["short"])
     # only a short phrase fits a blank inside a sentence; the paragraph presets are written on their own
-    fits = cfg.get("fit_prompt", True) and preset == "short"
+    fits = cfg.get("fit_prompt", True) and preset in PHRASE_PRESETS
     return base + (fit_note(slot) if fits else "")
 
 
@@ -1943,7 +1954,7 @@ def describe_picture(clip, image, prompt: str, marker: str, cfg: dict) -> str:
     d = tidy_details(vlm_describe(clip, [image], describe_instruction(cfg, slot), int(cfg["max_tokens"]),
                                   float(cfg.get("temperature") or 0), int(cfg.get("seed") or 0),
                                   int(cfg.get("image_max_side") or 1024)), cfg)
-    return tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") == "short" else d
+    return tidy_slot(d, slot) if slot and (cfg.get("describe_preset") or "short") in PHRASE_PRESETS else d
 
 
 def picture_markers(text: str) -> str:
@@ -2653,7 +2664,8 @@ def run_dir(run_id: str, create: bool = True) -> str:
 
 
 # ---------------------------------------------------------------------------- shot cache (signatures, redo)
-_SIG_SKIP = ("stats", "people", "main", "cast_skip", "skip_reason", "run", "enabled", "force", "refs")
+_SIG_SKIP = ("stats", "people", "main", "cast_skip", "skip_reason", "run", "enabled", "force", "refs",
+             "color_guide_marks")
 _SIG_PLAN = ("grid", "fps", "megapixels", "generation_size_mode", "custom_width", "custom_height", "multiple",
              "global_prompt", "global_ref", "global_ref2", "global_color_guide_ref1", "global_color_guide_ref2",
              "mask_cfg", "vlm_cfg", "ref_details", "audio_mode", "mask_video")
@@ -2676,6 +2688,8 @@ def shot_signature(plan: dict, seg: dict, head: int, extra: dict) -> str:
     # pictures 3+ and per-picture descriptions only count when used: shots stored before them keep their signature
     if len(seg.get("refs") or []) > 2:
         doc["s"]["refs_more"] = seg["refs"][2:]
+    if seg.get("color_guide"):
+        doc["s"]["color_guide_marks"] = seg.get("color_guide_marks")
     if len(plan.get("global_refs") or []) > 2:
         doc["g"]["global_refs_more"] = plan["global_refs"][2:]
     for k in ("picture_details", "picture_cfg"):
@@ -2961,11 +2975,12 @@ class BFSShotPlanner:
             "hidden": {"graph": "PROMPT", "node_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE", "IMAGE", "IMAGE",
+    RETURN_TYPES = ("BFS_SHOT", "INT", "FLOAT", "INT", "INT", "AUDIO", "STRING", "BFS_SHOT_TIMELINE", "IMAGE", "INT",
                     "BOOLEAN", "INT", "INT")
-    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline", "ref_image", "ref_image_2",
+    # refs and ref_count sit where ref_image and ref_image_2 were (1.113), so the outputs after them keep their slots
+    RETURN_NAMES = ("shots", "count", "fps", "width", "height", "audio", "summary", "timeline", "refs", "ref_count",
                     "second_pass", "upscale_width", "upscale_height")
-    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False, True, True, False, False, False)
+    OUTPUT_IS_LIST = (True, False, False, False, False, False, False, False, True, False, False, False, False)
     OUTPUT_TOOLTIPS = (
         "One item per shot. Every node that receives this list runs once per shot; connect it to "
         "BFS Shot Unpack or BFS Shot H3 Conditioning, sample, decode, then BFS Shot Join.",
@@ -2974,8 +2989,8 @@ class BFSShotPlanner:
         "Human-readable plan.",
         "Every shot in order, including the ones that do not run (disabled or filtered out). Connect it "
         "to BFS Shot Join so skipped shots are filled with the original video (or dropped).",
-        "The references the shots use, without repeats: one image when every shot shares the same reference.",
-        "The second references the shots use, without repeats.",
+        "Every reference picture the shots use, without repeats, <Picture 1> first (a grey image when there is none).",
+        "How many different reference pictures the shots use.",
         "Run tab > Second pass: on or off. Use it to switch the upscale branch (latent upscale + second sampler).",
         "Second pass width (the generation width upscaled as set in the Run tab, on the latent grid).",
         "Second pass height.")
@@ -3068,19 +3083,8 @@ class BFSShotPlanner:
         def refs_of(s):
             return [ref_for(n) for n in names_of(s)]
 
-        def unique(k):
-            seen, out = set(), []
-            for s in segs:
-                names = names_of(s)
-                if len(names) <= k or names[k] in seen:
-                    continue
-                img = ref_for(names[k])
-                if img is not None:
-                    seen.add(names[k])
-                    out.append(img)
-            return out or [_grey()]
-
-        used_refs, used_refs2 = unique(0), unique(1)
+        used_names = list(dict.fromkeys(n for s in segs for n in names_of(s)))
+        used_refs = [img for img in (ref_for(n) for n in used_names) if img is not None]
         pic_details = saved_picture_details(p)
 
         def details_template(text, names):
@@ -3198,9 +3202,7 @@ class BFSShotPlanner:
                                             tag=f"[BFS Shot Planner] shot {i + 1}", keep_missing=vlm is None)
             shot_prompt = fill_target(template, s.get("target", "") or auto_target.get(i, ""))
             if s.get("color_guide"):
-                shot_prompt = color_guide_prompt(shot_prompt, s.get("color_guide_color") or "#00ff00",
-                                                 (s.get("color_guide_color2") or "#9b30ff")
-                                                 if s.get("color_guide_text2") or s.get("color_guide_points2") else "")
+                shot_prompt = color_guide_prompt(shot_prompt, s["color_guide_marks"])
             shots.append({
                 "index": i, "count": len(segs), "start": s["start"], "end": s["end"],
                 "length": s["end"] - s["start"], "gen_length": glen, "head": head, "fps": fps,
@@ -3215,6 +3217,7 @@ class BFSShotPlanner:
                 "color_guide_color2": str(s.get("color_guide_color2") or "#9b30ff"),
                 "color_guide_points2": list(s.get("color_guide_points2") or []),
                 "color_guide_key2": int(s.get("color_guide_key2") or 0),
+                "color_guide_marks": s["color_guide_marks"],
                 "ref": ref, "ref2": ref2, "refs": refs, "ref_names": names,
                 "prompt": shot_prompt,
                 "audio": _slice_audio(audio, g0 / fps, glen / fps),
@@ -3262,7 +3265,7 @@ class BFSShotPlanner:
         UW, UH = second_pass_size(W, H, sp)
         if sp["enabled"]:
             lines.insert(1, f"second pass: {W}x{H} -> {UW}x{UH}")
-        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline, used_refs, used_refs2,
+        return (shots, len(segs), fps, W, H, full_audio, "\n".join(lines), timeline, used_refs or [_grey()], len(used_refs),
                 bool(sp["enabled"]), UW, UH)
 
 
@@ -3581,27 +3584,83 @@ def color_guide(frames: torch.Tensor, mask: torch.Tensor, color: str = "#00ff00"
     return (frames[..., :3].float() * (1 - alpha) + tint * alpha).clamp(0, 1)
 
 
-_COLOR_GUIDE_NAMES = {"#00ff00": "green", "#ff2020": "red", "#168cff": "blue", "#ffe600": "yellow",
-                      "#ff00d4": "magenta", "#00e5c0": "cyan", "#9b30ff": "purple"}
+# one mark color per picture, <Picture 1> first: the first seven are the colors the first Colored Mark sets used
+MARK_PALETTE = ["#00ff00", "#9b30ff", "#ff2020", "#168cff", "#ffe600", "#ff00d4", "#00e5c0", "#ff8000", "#ffffff",
+                "#8b4513", "#ff9ec4", "#808000"]
+_COLOR_GUIDE_NAMES = {"#00ff00": "green", "#9b30ff": "purple", "#ff2020": "red", "#168cff": "blue", "#ffe600": "yellow",
+                      "#ff00d4": "magenta", "#00e5c0": "cyan", "#ff8000": "orange", "#ffffff": "white",
+                      "#8b4513": "brown", "#ff9ec4": "pink", "#808000": "olive"}
 
 
-def color_guide_prompt(prompt: str, color1: str, color2: str = "") -> str:
-    """Add the same color-mark instructions used by the training captions."""
-    name1 = _COLOR_GUIDE_NAMES.get(str(color1).lower(), "green")
-    if not color2:
-        mapping = (f"The {name1} mark identifies the only person to replace. Keep every other visible person unchanged. "
-                   f"Replace only the person marked in {name1} with <Subject 1> from <Picture 1>, preserving the movement, "
-                   "pose, gestures, head motion, gaze, and expression visible through the mark. Preserve all unmarked "
-                   "content and remove the mark completely from the result.")
+def picture_color(plan: dict, k: int) -> str:
+    """The mark color of <Picture k>: the plan's picture_colors, else (plans before 1.113) the marker colors of the
+    two global references, else the palette."""
+    colors = plan.get("picture_colors")
+    if isinstance(colors, list):
+        c = colors[k - 1] if 0 < k <= len(colors) else ""
     else:
-        name2 = _COLOR_GUIDE_NAMES.get(str(color2).lower(), "purple")
-        mapping = (f"The {name1} mark identifies the first person to replace. Replace only the person marked in {name1} "
-                   f"with <Subject 1> from <Picture 1>, preserving the movement, pose, gestures, head motion, gaze, and "
-                   f"expression visible through the mark. The {name2} mark identifies the second person to replace. "
-                   f"Replace only the person marked in {name2} with <Subject 2> from <Picture 2>, preserving that person's "
-                   "movement, pose, gestures, head motion, gaze, and expression visible through the mark. Keep every "
-                   "other visible person unchanged, preserve all unmarked content, and remove both marks completely from "
-                   "the result.")
+        c = {1: plan.get("global_color_guide_ref1"), 2: plan.get("global_color_guide_ref2")}.get(k, "")
+    if isinstance(c, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", c):
+        return c.lower()
+    return MARK_PALETTE[(k - 1) % len(MARK_PALETTE)]
+
+
+def color_marks(plan: dict, m: dict) -> list[dict]:
+    """A shot's Colored Mark regions: its own selection (the shot's mask) first, then the extra regions (SAM 3 text or
+    points), each with the picture the person becomes and that picture's color. Plans before 1.113 had one extra
+    region (color_guide_text2 / points2), which becomes <Picture 2>."""
+    extra = m.get("color_guide_regions")
+    if not isinstance(extra, list):
+        extra = ([{"picture": 2, "text": m.get("color_guide_text2"), "points": m.get("color_guide_points2"),
+                   "key": m.get("color_guide_key2")}] if m.get("color_guide_text2") or m.get("color_guide_points2") else [])
+    marks = [{"picture": max(1, int(m.get("color_guide_picture") or 1))}]
+    marks += [{"picture": max(1, int(r.get("picture") or 2)), "text": str(r.get("text") or "").strip(),
+               "points": list(r.get("points") or []), "key": int(r.get("key") or 0)}
+              for r in extra if isinstance(r, dict) and (str(r.get("text") or "").strip() or r.get("points"))]
+    for x in marks:
+        x["color"] = picture_color(plan, x["picture"])
+    return marks
+
+
+def extra_mark_masks(shot: dict, log: str = "") -> list[tuple]:
+    """The extra Colored Mark regions of a shot (the second one on): (masks over the guide frames, mark), each one
+    person (SAM 3, one object). They need the full frame: a cropped shot only has its own selection."""
+    extra = (shot.get("color_guide_marks") or [])[1:]
+    if not extra:
+        return []
+    ms = shot.get("mask_src")
+    if not ms:
+        raise ValueError(f"{log or 'Colored Mark'}: more than one marked person needs Crop turned off, so every person "
+                         "can be marked on the full frame")
+    out = []
+    for x in extra:
+        spec = dict(DEFAULT_MASK, text=x.get("text") or "", points=x.get("points") or [], key=x.get("key") or 0,
+                    max_objects=1)
+        out.append((shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec)["masks"], x))
+    return out
+
+
+def color_guide_prompt(prompt: str, marks: list[dict]) -> str:
+    """Say which picture each mark color becomes, inside the prompt's subject_definitions / detailed_description when
+    it has them (else at the end). Written for any model and LoRA: the person marked in a color becomes the character
+    of that color's picture."""
+    seen, pairs = set(), []
+    for x in marks:
+        name = _COLOR_GUIDE_NAMES.get(str(x["color"]).lower(), str(x["color"]))
+        if (name, x["picture"]) not in seen:
+            seen.add((name, x["picture"]))
+            pairs.append((name, x["picture"]))
+    keep = ("the movement, pose, gestures, head motion, gaze and expression seen through the mark")
+    if len(pairs) == 1:
+        name, k = pairs[0]
+        mapping = (f"The {name} mark shows the only person to replace. Replace only the person marked in {name} with "
+                   f"the character from <Picture {k}>, keeping {keep}. Keep every other visible person and all unmarked "
+                   "content unchanged, and remove the mark completely from the result.")
+    else:
+        who = "; ".join(f"the person marked in {name} becomes the character from <Picture {k}>" for name, k in pairs)
+        mapping = (f"The colored marks show the people to replace: {who}. Each one keeps {keep.replace('the mark', 'their mark')}. "
+                   "Keep every unmarked person and all unmarked content unchanged, and remove every mark completely "
+                   "from the result.")
     # Keep the color contract inside the matching sections of the user's existing structured prompt.
     text, n = re.subn(r"(?is)(\bsubject_definitions\s*:.*?)(\s+summary\s*:)",
                       lambda m: m.group(1) + " " + mapping + m.group(2), str(prompt or ""), count=1)
@@ -3670,14 +3729,8 @@ def overlay_of(shot: dict) -> dict | None:
                     r1 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
                     regions.append({"mask": _skip_head(r1["masks"], shot),
                                     "color": shot.get("color_guide_color") or "#00ff00", "opacity": opacity})
-                    text2 = str(shot.get("color_guide_text2") or "").strip()
-                    points2 = shot.get("color_guide_points2") or []
-                    if text2 or points2:
-                        spec2 = dict(DEFAULT_MASK, text=text2, points=points2,
-                                     key=shot.get("color_guide_key2", 0), max_objects=1)
-                        r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
-                        regions.append({"mask": _skip_head(r2["masks"], shot),
-                                        "color": shot.get("color_guide_color2") or "#9b30ff", "opacity": opacity})
+                    regions += [{"mask": _skip_head(mk, shot), "color": x["color"], "opacity": opacity}
+                                for mk, x in extra_mark_masks(shot)]
                 except Exception as e:  # the comparison picture is optional
                     print(f"[BFS Shot Join] no Colored Mark overlay for shot {shot.get('index', 0) + 1}: {e}")
         return {"regions": regions, "box": crop.get("box") if crop else None}
@@ -3710,13 +3763,7 @@ def _comparison_mark_regions(shot: dict, source: torch.Tensor, height: int) -> l
         r1 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], ms["spec"])
         masks.append((_skip_head(r1["masks"], shot), shot.get("color_guide_color") or "#00ff00"))
     if not crop and ms:
-        text2 = str(shot.get("color_guide_text2") or "").strip()
-        points2 = shot.get("color_guide_points2") or []
-        if text2 or points2:
-            spec2 = dict(DEFAULT_MASK, text=text2, points=points2,
-                         key=shot.get("color_guide_key2", 0), max_objects=1)
-            r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
-            masks.append((_skip_head(r2["masks"], shot), shot.get("color_guide_color2") or "#9b30ff"))
+        masks += [(_skip_head(mk, shot), x["color"]) for mk, x in extra_mark_masks(shot)]
     packed = []
     for mask, color in masks:
         if mask.ndim == 2:
@@ -3885,15 +3932,21 @@ class BFSShotH3Conditioning:
         except ImportError:
             from bfs_h3_side_panel import build_prompt, fill_layout, make_info
         refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS if use_ref_2 else 1])}
-        if shot.get("color_guide") and (shot.get("color_guide_text2") or shot.get("color_guide_points2")):
-            if not use_ref_2 or shot.get("ref2") is None:
-                raise ValueError("Colored Mark's second person is marked, but no second reference is being passed. Set the shot's ref 2 and enable use_ref_2.")
-            if str(shot.get("color_guide_color", "#00ff00")).lower() == str(shot.get("color_guide_color2", "#9b30ff")).lower():
-                raise ValueError("Colored Mark needs a different color for each reference in the same shot. Change the color assigned to ref 2 or the global reference.")
-            if task != "planner prompt":
-                raise ValueError("The automatic duet prompt templates treat multiple pictures as views of one character. For two Colored Mark people, use task = 'planner prompt' and the color-mapping template in the Shot Planner guide.")
-        if shot.get("color_guide") and shot.get("ref") is None:
-            raise ValueError("Colored Mark needs ref 1 for the selected person. Add a reference to this shot or the global reference.")
+        if shot.get("color_guide"):
+            marks = shot.get("color_guide_marks") or [{"picture": 1, "color": shot.get("color_guide_color", "#00ff00")}]
+            for x in marks:
+                if x["picture"] > len(refs):
+                    raise ValueError(f"Colored Mark: a person is marked as <Picture {x['picture']}>, but the shot passes "
+                                     f"{len(refs)} picture(s)" + (" (use_ref_2 is off: only the first)" if not use_ref_2
+                                                                  else ". Add the picture to the shot or the global list."))
+            owner = {}
+            for x in marks:
+                if owner.setdefault(x["color"], x["picture"]) != x["picture"]:
+                    raise ValueError(f"Colored Mark: <Picture {owner[x['color']]}> and <Picture {x['picture']}> have the "
+                                     f"same mark color ({x['color']}). Give one of them another color (Prompts & refs tab).")
+            if len({x["picture"] for x in marks}) > 1 and task != "planner prompt":
+                raise ValueError("The automatic duet prompt templates treat multiple pictures as views of one character. "
+                                 "For several Colored Mark people, use task = 'planner prompt'.")
         prev = chain_image(shot)
         if prev is not None and shot.get("chain") == "reference":
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
@@ -3957,21 +4010,13 @@ class BFSShotH3Conditioning:
             cmask = generation_mask(shot, log=gtag)
             seen = color_guide(seen, cmask, shot.get("color_guide_color", "#00ff00"),
                                shot.get("color_guide_opacity", 0.35))
-            text2 = str(shot.get("color_guide_text2") or "").strip()
-            points2 = shot.get("color_guide_points2") or []
-            if text2 or points2:
-                ms = shot.get("mask_src")
-                if not ms:
-                    raise ValueError(f"{gtag}: the second Colored Mark selection needs Crop turned off so both people can be marked on the full frame")
-                spec2 = dict(DEFAULT_MASK, text=text2, points=points2, key=shot.get("color_guide_key2", 0), max_objects=1)
-                r2 = shot_mask(ms["path"], ms["analysis"], ms["start"], ms["length"], spec2)
-                cmask2 = torch.nn.functional.interpolate(r2["masks"][:, None].float(),
-                                                         size=shot["frames"].shape[1:3], mode="nearest")[:, 0]
-                seen = color_guide(seen, cmask2, shot.get("color_guide_color2", "#9b30ff"),
-                                   shot.get("color_guide_opacity", 0.35))
-                print(f"{gtag}: second Colored Mark selection ({len(points2)} points{', ' + repr(text2) if text2 else ''}), "
-                      f"{shot.get('color_guide_color2', '#9b30ff')} at {float(shot.get('color_guide_opacity', 0.35)):.2f}, "
-                      f"{mask_report(cmask2)}", flush=True)
+            for mk, x in extra_mark_masks(shot, gtag):
+                cmask2 = torch.nn.functional.interpolate(mk[:, None].float(), size=shot["frames"].shape[1:3],
+                                                         mode="nearest")[:, 0]
+                seen = color_guide(seen, cmask2, x["color"], shot.get("color_guide_opacity", 0.35))
+                print(f"{gtag}: Colored Mark <Picture {x['picture']}> ({len(x.get('points') or [])} points"
+                      f"{', ' + repr(x['text']) if x.get('text') else ''}), {x['color']} at "
+                      f"{float(shot.get('color_guide_opacity', 0.35)):.2f}, {mask_report(cmask2)}", flush=True)
             print(f"{gtag}: Colored Mark {shot.get('color_guide_color', '#00ff00')} at "
                   f"{float(shot.get('color_guide_opacity', 0.35)):.2f} opacity, {mask_report(cmask)}", flush=True)
         pg = mask_guide if mask_guide in MASK_GUIDES[1:] else None

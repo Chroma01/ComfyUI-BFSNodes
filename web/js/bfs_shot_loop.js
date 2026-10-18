@@ -14,7 +14,7 @@ import { showGuide } from "./bfs_md_view.js";
 import { wheelToCanvas } from "./bfs_wheel.js";
 import { createApp, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "./vendor/vue.esm-browser.prod.mjs";
 import { h, rawH, t, uiLanguage, setUiLanguage, DEFAULTS, MASK_DEFAULTS, VLM_DEFAULTS, snapUp, snapDown, segKey, hasMask, pill,
-         MAX_REFS, refList, shotRefNames } from "./shotloop/common.js";
+         MAX_REFS, refList, shotRefNames, MARK_PALETTE, pictureColor, markRegions } from "./shotloop/common.js";
 import { styles } from "./shotloop/styles.js";
 // history lengths H3's VAE encodes whole (17k+5); old plans saved 17/34/51, read as the next valid one up
 const historyLen = n => (n = Number(n) || 22) <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
@@ -109,6 +109,13 @@ function Panel(io) {
     // plans before 1.113 had two references (ref / ref2): now a list of up to 12 pictures
     plan.global_refs = refList(p.global_refs, p.global_ref, p.global_ref2);
     plan.segs.forEach(m => { if (m) m.refs = refList(m.refs, m.ref, m.ref2); });
+    // Colored Mark: a color per picture (was: two marker colors), regions tied to a picture (was: region 2)
+    if (!Array.isArray(p.picture_colors)) plan.picture_colors = [p.global_color_guide_ref1 || MARK_PALETTE[0][0], p.global_color_guide_ref2 || MARK_PALETTE[1][0]];
+    plan.segs.forEach(m => {
+      if (!m) return;
+      m.color_guide_regions = markRegions(m);
+      ["color_guide_text2", "color_guide_points2", "color_guide_key2", "color_guide_color", "color_guide_color2"].forEach(k => delete m[k]);
+    });
     Object.values(plan.cast).forEach(person => { if (person && typeof person === "object") { delete person.ref; delete person.ref2; delete person.guide_color; } });
     plan.segs.forEach(meta => { if (meta) { delete meta.color_guide_person; delete meta.color_guide_person2; } });
   };
@@ -117,6 +124,7 @@ function Panel(io) {
   // ref / ref2 (and global_ref / global_ref2) keep pictures 1 and 2 for older readers of the plan
   const syncRefs = () => {
     plan.global_refs = refList(plan.global_refs); [plan.global_ref = "", plan.global_ref2 = ""] = plan.global_refs;
+    plan.global_color_guide_ref1 = pictureColor(plan, 1); plan.global_color_guide_ref2 = pictureColor(plan, 2);
     plan.segs.forEach(m => { if (m) { m.refs = refList(m.refs); [m.ref = "", m.ref2 = ""] = m.refs; } });
   };
   const save = () => { syncRefs(); io.setPlan(JSON.stringify(plan)); clearTimeout(progTimer); progTimer = setTimeout(() => progress(), 400); };
@@ -146,10 +154,8 @@ function Panel(io) {
       out.push({ start: b[i], end: b[i + 1], len: b[i + 1] - b[i], gen: snapUp(b[i + 1] - b[i], plan.grid),
                  cut: cs.has(b[i]), enabled: m.enabled !== false, refs: refList(m.refs, m.ref, m.ref2), prompt: m.prompt || "",
                  force: m.force || "auto", chain: m.chain || "head", chainFrame: m.chain_frame || "first", chainHistory: historyLen(m.chain_history),
-                 color_guide: !!m.color_guide, color_guide_color: m.color_guide_color || "",
-                 color_guide_opacity: m.color_guide_opacity ?? 0.35,
-                 color_guide_text2: m.color_guide_text2 || "", color_guide_color2: m.color_guide_color2 || "",
-                 color_guide_points2: m.color_guide_points2 || [], color_guide_key2: m.color_guide_key2,
+                 color_guide: !!m.color_guide, color_guide_picture: +m.color_guide_picture || 1,
+                 color_guide_opacity: m.color_guide_opacity ?? 0.35, regions: markRegions(m),
                  crop: !!m.crop, inpaint: !!m.inpaint, paste: !!m.paste, pasteText: m.paste_text || "", strength: m.strength ?? 1, mask: m.mask || {}, target: m.target || "",
                  extMask: !!plan.mask_video || !!(plan.track?.points?.length), trackMask: !!(plan.track?.points?.length) });
     }
@@ -298,9 +304,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
         const keep = plan.segs; plan.segs = j.segs.map((_, i) => ({ enabled: true, refs: refList(keep[i]?.refs), prompt: keep[i]?.prompt || "",
           chain: keep[i]?.chain || "head", chain_frame: keep[i]?.chain_frame || "first", chain_history: historyLen(keep[i]?.chain_history),
           crop: !!keep[i]?.crop, inpaint: !!keep[i]?.inpaint, paste: !!keep[i]?.paste, paste_text: keep[i]?.paste_text || "", strength: keep[i]?.strength ?? 1, mask: keep[i]?.mask || {}, target: keep[i]?.target || "",
-          color_guide: !!keep[i]?.color_guide, color_guide_color: keep[i]?.color_guide_color || "", color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
-          color_guide_text2: keep[i]?.color_guide_text2 || "", color_guide_color2: keep[i]?.color_guide_color2 || "",
-          color_guide_points2: keep[i]?.color_guide_points2 || [], color_guide_key2: keep[i]?.color_guide_key2 ?? 0 }));
+          color_guide: !!keep[i]?.color_guide, color_guide_picture: keep[i]?.color_guide_picture || 1, color_guide_opacity: keep[i]?.color_guide_opacity ?? 0.35,
+          color_guide_regions: (keep[i]?.color_guide_regions || []).map(r => ({ ...r })) }));
         sel.value = 0; save();
       }
     } catch (e) { error.value = String(e.message || e); }
@@ -362,29 +367,53 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     if (s && maskPrev.value[segKey(s)]) { const mp = { ...maskPrev.value }; delete mp[segKey(s)]; maskPrev.value = mp; }
   };
   const setMaskCfg = (k, v) => { plan.mask_cfg = { ...plan.mask_cfg, [k]: v }; save(); maskPrev.value = {}; };
+  // Colored Mark regions in the points window: 1 = the shot's own selection (its mask), 2.. = its extra regions
   const openPoints = (i, region = 1) => {
     const s = segs.value[i]; if (!s) return;
     const g1 = { key: s.mask.key ?? Math.floor(s.len / 2), points: [...(s.mask.points || [])], text: s.mask.text || "" };
-    const g2 = { key: g1.key, points: [...(s.color_guide_points2 || [])], text: s.color_guide_text2 || "" };
-    Object.assign(modal, { open: true, idx: i, region: s.color_guide ? region : 1, groups: { 1: g1, 2: g2 },
-      key: (region === 2 && s.color_guide ? g2 : g1).key, points: [...((region === 2 && s.color_guide ? g2 : g1).points)],
-      text: (region === 2 && s.color_guide ? g2 : g1).text, prev: null, busy: "" });
+    const groups = { 1: g1 };
+    if (s.color_guide) s.regions.forEach((r, j) => { groups[j + 2] = { key: r.key ?? g1.key, points: [...(r.points || [])], text: r.text || "" }; });
+    const g = groups[region] || g1;
+    Object.assign(modal, { open: true, idx: i, region: groups[region] ? region : 1, groups, key: g.key, points: [...g.points],
+      text: g.text, prev: null, busy: "" });
   };
   const switchPointRegion = region => {
-    const old = modal.groups[modal.region] || {};
     modal.groups[modal.region] = { key: modal.key, points: [...modal.points], text: modal.text };
     const next = modal.groups[region] || { key: modal.key, points: [], text: "" };
     modal.region = region; modal.points = [...next.points]; modal.text = next.text; modal.prev = null;
   };
   const commitPointGroups = i => {
-    const m = meta(i), g1 = modal.groups[1] || {}, g2 = modal.groups[2] || {};
-    m.mask = { ...(m.mask || {}), points: [...(modal.region === 1 ? modal.points : g1.points || [])],
-      key: modal.region === 1 ? modal.key : g1.key, text: modal.region === 1 ? modal.text : g1.text };
+    modal.groups[modal.region] = { key: modal.key, points: [...modal.points], text: modal.text };
+    const m = meta(i), g1 = modal.groups[1];
+    m.mask = { ...(m.mask || {}), points: [...g1.points], key: g1.key, text: g1.text };
     if (segs.value[i]?.color_guide) {
-      m.color_guide_points2 = [...(modal.region === 2 ? modal.points : g2.points || [])];
-      m.color_guide_key2 = modal.region === 2 ? modal.key : (g1.key ?? modal.key);
-      m.color_guide_text2 = modal.region === 2 ? modal.text : g2.text || "";
+      m.color_guide_regions = markRegions(m).map((r, j) => {
+        const g = modal.groups[j + 2];
+        return g ? { ...r, points: [...g.points], key: g.key, text: g.text } : r;
+      });
     }
+  };
+  // the picture a region becomes (region 1 = the shot's own selection) and the extra regions
+  const setMarkPicture = (i, region, k) => {
+    const m = meta(i);
+    if (region === 1) m.color_guide_picture = k;
+    else m.color_guide_regions = markRegions(m).map((r, j) => (j === region - 2 ? { ...r, picture: k } : r));
+    save();
+  };
+  const addMarkRegion = i => {
+    const m = meta(i), used = new Set([+m.color_guide_picture || 1, ...markRegions(m).map(r => r.picture)]);
+    const n = Math.max(2, segs.value[i]?.names.length || 0);
+    let k = 1; while (used.has(k) && k < n) k++;
+    m.color_guide_regions = [...markRegions(m), { picture: k, text: "", points: [], key: 0 }]; save();
+  };
+  const setMarkRegion = (i, j, field, v) => {
+    const m = meta(i); m.color_guide_regions = markRegions(m).map((r, q) => (q === j ? { ...r, [field]: v } : r)); save();
+  };
+  const removeMarkRegion = i => j => { const m = meta(i); m.color_guide_regions = markRegions(m).filter((_, q) => q !== j); save(); };
+  const setPictureColor = (k, color) => {
+    const list = [...(plan.picture_colors || [])];
+    while (list.length < k) list.push(pictureColor(plan, list.length + 1));
+    list[k - 1] = color; plan.picture_colors = list; save();
   };
   const savePoints = () => {
     const i = modal.idx; commitPointGroups(i); save();
@@ -424,7 +453,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
   const clearTrack = () => { plan.track = null; maskPrev.value = {}; save(); };
   const clearMask = i => {
-    const m = meta(i); m.mask = {}; m.color_guide_points2 = []; m.color_guide_key2 = 0; m.color_guide_text2 = "";
+    const m = meta(i); m.mask = {}; m.color_guide_regions = [];
     m.crop = false; m.inpaint = false; m.paste = false;
     const k = segs.value[i] ? segKey(segs.value[i]) : null;
     if (k) { const mp = { ...maskPrev.value }; delete mp[k]; maskPrev.value = mp; }
@@ -445,10 +474,9 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       if (fields.crop && (hasMask(x) || src.mask.text || fields.mask_text)) { m.crop = src.crop; m.inpaint = src.inpaint; m.paste = src.paste; m.paste_text = src.pasteText; m.strength = src.strength; }
       if (fields.target) m.target = src.target;
       if (fields.color_guide) {
-        m.color_guide = src.color_guide; m.color_guide_color = src.color_guide_color;
+        m.color_guide = src.color_guide; m.color_guide_picture = src.color_guide_picture;
         m.color_guide_opacity = src.color_guide_opacity;
-        m.color_guide_text2 = src.color_guide_text2; m.color_guide_color2 = src.color_guide_color2;
-        m.color_guide_points2 = [...(src.color_guide_points2 || [])]; m.color_guide_key2 = src.color_guide_key2;
+        m.color_guide_regions = src.regions.map(r => ({ ...r, points: [...(r.points || [])] }));
       }
       if (fields.chain && i > 0) { m.chain = src.chain; m.chain_frame = src.chainFrame; m.chain_history = src.chainHistory; }
     });
@@ -810,6 +838,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     openPoints, switchPointRegion, savePoints, savePointsAll, saveTrack, clearTrack, pointsTo, clearMask, copyFrom, analyseVLM, setVlmCfg,
     applySug, applyAllSug, setCastOpt, setGlobalMaskVideo, setFilter, pickFile, progress, setVideo, splitAt, mergeNext, removeCut, select, drag,
     frameAt, thumbFor, playShot, playAll, stop, seek, setRef, putRefs, uploadRef, dropRefs, pictures, describePictures, setPictureDetail, setPictureCfg,
+    setMarkPicture, addMarkRegion, setMarkRegion, removeMarkRegion, setPictureColor,
   };
 
   return () => {
@@ -853,8 +882,51 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   };
 }
 
+// A workflow saved before 1.113 keeps the old slots of these nodes (ComfyUI restores a node's saved slots): the
+// planner's ref_image / ref_image_2 inputs are gone, the planner's and Unpack's ref_image / ref_image_2 outputs are now
+// refs / ref_count, and what fed Repack's ref_image now feeds its refs input.
+function upgradeLegacySlots(node) {
+  const cls = node.comfyClass;
+  // ref_image / ref_image_2 outputs at slots `at`, at+1 -> refs (list) / ref_count
+  const listOutputs = at => {
+    const a = node.outputs?.[at], b = node.outputs?.[at + 1];
+    if (a?.name === "ref_image") Object.assign(a, { name: "refs", label: undefined, localized_name: "refs", shape: 6 });
+    if (b?.name === "ref_image_2") { node.disconnectOutput(at + 1); Object.assign(b, { name: "ref_count", label: undefined, localized_name: "ref_count", type: "INT", shape: undefined }); }
+  };
+  if (cls === "BFSShotPlanner") {
+    for (const name of ["ref_image", "ref_image_2"]) {
+      const k = node.inputs?.findIndex(x => x.name === name) ?? -1;
+      if (k >= 0) node.removeInput(k);
+    }
+    listOutputs(8);
+  } else if (cls === "BFSShotUnpack") {
+    listOutputs(1);
+  } else if (cls === "BFSShotRepack") {
+    // what fed ref_image now feeds refs; ref_image / ref_image_2 go away
+    const at = name => node.inputs?.findIndex(x => x.name === name) ?? -1;
+    for (const name of ["ref_image", "ref_image_2"]) {
+      const k = at(name); if (k < 0) continue;
+      const lid = node.inputs[k].link, l = lid == null ? null : (node.graph?.links?.get?.(lid) ?? node.graph?.links?.[lid]);
+      const origin = l ? node.graph.getNodeById(l.origin_id) : null;
+      node.removeInput(k);
+      const to = at("refs");
+      if (name === "ref_image" && origin && to >= 0 && node.inputs[to].link == null) origin.connect(l.origin_slot, node, to);
+    }
+  } else return;
+  node.setDirtyCanvas?.(true, true);
+}
+
 app.registerExtension({
   name: "BFSNodes.ShotPlanner",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (!["BFSShotPlanner", "BFSShotUnpack", "BFSShotRepack"].includes(nodeData.name)) return;
+    const prev = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+      const r = prev?.apply(this, arguments);
+      upgradeLegacySlots(this);
+      return r;
+    };
+  },
   async nodeCreated(node) {
     if (node.comfyClass !== "BFSShotPlanner") return;
     styles();

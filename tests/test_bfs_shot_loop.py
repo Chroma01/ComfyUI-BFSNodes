@@ -893,6 +893,26 @@ class ConditionFlowTest(unittest.TestCase):
                                              "none", "match", inpaint="off")
         self.assertEqual(list(self.calls["r2v"][0]["ref_images"]), ["ref_image_0"])
 
+    def test_every_marked_person_in_their_picture_color(self):
+        refs = [torch.zeros(1, 32, 32, 3) for _ in range(3)]
+        shot, m = self._shot(inpaint=False)
+        marks = [{"picture": 1, "color": "#00ff00"}, {"picture": 3, "color": "#ff2020", "text": "the man", "points": [], "key": 0}]
+        shot.update(refs=refs, color_guide=True, color_guide_marks=marks, color_guide_color="#00ff00", color_guide_opacity=0.5)
+        second = torch.zeros(22, 64, 64); second[:, 0:10, 0:10] = 1
+        orig = SL.shot_mask
+        SL.shot_mask = lambda path, a, start, length, spec: {"masks": second if spec.get("text") == "the man" else m.to(torch.uint8)}
+        try:
+            SL.BFSShotH3Conditioning().condition(shot, None, None, SL.BFSShotH3Conditioning.GUIDE_MODES[0], True,
+                                                 "none", "match", inpaint="off")
+            guide = self.calls["guides"][0]
+            self.assertGreater(float(guide[0, 5, 5, 0]), 0.75)    # the second person, in red
+            self.assertGreater(float(guide[0, 30, 30, 1]), 0.75)  # the selection, in green
+            with self.assertRaisesRegex(ValueError, "Picture 3"):
+                SL.BFSShotH3Conditioning().condition(dict(shot, refs=refs[:2]), None, None,
+                                                     SL.BFSShotH3Conditioning.GUIDE_MODES[0], True, "none", "match", inpaint="off")
+        finally:
+            SL.shot_mask = orig
+
     def test_ignored_outside_mask_only(self):
         shot, m = self._shot(inpaint=False)
         self.run_cond(shot, m, inpaint=SL.INPAINT_MODES[0], mask_guide=SL.MASK_GUIDES[3])
@@ -952,6 +972,21 @@ class MultiRefTest(unittest.TestCase):
         self.assertEqual(SL.picture_cfg(cfg, plan, "a.png")["describe_preset"], "custom")
         self.assertIn("outfit only", SL.describe_instruction(SL.picture_cfg(cfg, plan, "a.png")))
         self.assertIs(SL.picture_cfg(cfg, plan, "b.png"), cfg)
+
+    def test_colored_mark_regions_follow_the_pictures(self):
+        legacy = {"global_color_guide_ref1": "#168cff", "global_color_guide_ref2": "#9b30ff"}
+        marks = SL.color_marks(legacy, {"color_guide_text2": "the man", "color_guide_key2": 4})
+        self.assertEqual([(x["picture"], x["color"]) for x in marks], [(1, "#168cff"), (2, "#9b30ff")])
+        self.assertEqual(marks[1]["text"], "the man")
+        plan = {"picture_colors": ["#00ff00"]}
+        marks = SL.color_marks(plan, {"color_guide_picture": 2, "color_guide_regions": [
+            {"picture": 5, "text": "the dog"}, {"picture": 3}]})   # a region with neither text nor points is ignored
+        self.assertEqual([(x["picture"], x["color"]) for x in marks], [(2, "#9b30ff"), (5, "#ffe600")])
+        text = SL.color_guide_prompt("A scene.", marks)
+        self.assertIn("marked in purple becomes the character from <Picture 2>", text)
+        self.assertIn("marked in yellow becomes the character from <Picture 5>", text)
+        one = SL.color_guide_prompt("", marks[:1])
+        self.assertIn("Replace only the person marked in purple with the character from <Picture 2>", one)
 
     def test_repack_replaces_the_first_two_and_keeps_the_rest(self):
         refs = [torch.zeros(1, 4, 4, 3) for _ in range(3)]

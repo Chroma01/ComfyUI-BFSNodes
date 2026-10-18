@@ -533,3 +533,18 @@ export function promptChips(c, names, onSet) {
       onMousedown: e => insert(e, `{details@Picture ${k + 1}}`) }, "📝"),
   ])));
 }
+
+// ---- Colored Mark: one color per picture (<Picture 1> first; the first seven are the colors of the first mark sets)
+export const MARK_PALETTE = [["#00ff00", "green"], ["#9b30ff", "purple"], ["#ff2020", "red"], ["#168cff", "blue"],
+  ["#ffe600", "yellow"], ["#ff00d4", "magenta"], ["#00e5c0", "cyan"], ["#ff8000", "orange"], ["#ffffff", "white"],
+  ["#8b4513", "brown"], ["#ff9ec4", "pink"], ["#808000", "olive"]];
+export const markName = color => (MARK_PALETTE.find(([v]) => v === String(color).toLowerCase()) || [0, color])[1];
+// the mark color of <Picture k> (same rule as bfs_shot_loop.picture_color)
+export const pictureColor = (plan, k) => {
+  const c = Array.isArray(plan.picture_colors) ? plan.picture_colors[k - 1] : "";
+  return /^#[0-9a-f]{6}$/i.test(c || "") ? c.toLowerCase() : MARK_PALETTE[(k - 1) % MARK_PALETTE.length][0];
+};
+// a shot's extra Colored Mark regions (the second person on): plans before 1.113 had one (text2 / points2 = picture 2)
+export const markRegions = m => Array.isArray(m.color_guide_regions) ? m.color_guide_regions
+  : (m.color_guide_text2 || (m.color_guide_points2 || []).length)
+    ? [{ picture: 2, text: m.color_guide_text2 || "", points: m.color_guide_points2 || [], key: m.color_guide_key2 || 0 }] : [];
