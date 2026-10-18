@@ -68,11 +68,17 @@ class CompareNodeTest(unittest.TestCase):
     def test_reference_pictures_go_to_the_player_no_taller_than_it(self):
         from PIL import Image
         guide, target = torch.rand(4, 32, 48, 3), torch.rand(4, 32, 48, 3)
-        ref = torch.rand(6, 80, 40, 3)                 # taller than the preview, more than the 4 shown
+        ref = torch.rand(6, 80, 40, 3)                 # taller than the preview
         ui = VC.BFSVideoCompare().compare(guide, target, preview_height=32, reference=ref)["ui"]["bfs_compare"][0]
-        self.assertEqual([r["filename"] for r in ui["refs"]], ["ref_0.png", "ref_1.png", "ref_2.png", "ref_3.png"])
+        self.assertEqual([r["filename"] for r in ui["refs"]], [f"ref_{k}.png" for k in range(6)])
         im = Image.open(os.path.join(_TMP, ui["refs"][0]["subfolder"], "ref_0.png"))
         self.assertEqual(im.size, (16, 32))
+        # a refs list as the planner / Unpack give it: pictures of different sizes, as ComfyUI hands a list input
+        refs = [torch.rand(1, 64, 32, 3), torch.rand(1, 20, 60, 3)] + [torch.rand(1, 8, 8, 3)] * 12
+        ui = VC.BFSVideoCompare().compare([guide], [target], preview_height=[32], reference=refs)["ui"]["bfs_compare"][0]
+        self.assertEqual(len(ui["refs"]), 12)                  # at most 12
+        sizes = [Image.open(os.path.join(_TMP, r["subfolder"], r["filename"])).size for r in ui["refs"][:2]]
+        self.assertEqual(sizes, [(16, 32), (60, 20)])
         none = VC.BFSVideoCompare().compare(guide, target, preview_height=32)["ui"]["bfs_compare"][0]
         self.assertEqual(none["refs"], [])
 

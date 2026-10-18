@@ -54,14 +54,25 @@ def psnr(mse: float) -> float:
     return float("inf") if mse <= 0 else 10 * math.log10(1.0 / mse)
 
 
-def save_refs(reference, out_dir: str, height: int, limit: int = 4) -> list:
-    """Up to `limit` pictures of an IMAGE batch as PNGs no taller than the player (no upscale) -> file names."""
-    if reference is None:
-        return []
+MAX_REFS = 12
+
+
+def ref_pictures(reference) -> list:
+    """The reference pictures, one [H,W,3] each: from a list of IMAGEs of any sizes (e.g. the planner's or BFS Shot
+    Unpack's refs) and / or IMAGE batches."""
+    out = []
+    for item in reference if isinstance(reference, list) else [reference]:
+        if item is not None:
+            out += [item[i] for i in range(int(item.shape[0]))]
+    return out[:MAX_REFS]
+
+
+def save_refs(reference, out_dir: str, height: int) -> list:
+    """The reference pictures as PNGs no taller than the player (no upscale) -> file names."""
     from PIL import Image
     names = []
-    for i in range(min(limit, int(reference.shape[0]))):
-        im = Image.fromarray((reference[i, ..., :3].float().clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8))
+    for i, pic in enumerate(ref_pictures(reference)):
+        im = Image.fromarray((pic[..., :3].float().clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8))
         if im.height > height:
             im = im.resize((max(1, round(im.width * height / im.height)), height), Image.LANCZOS)
         names.append(f"ref_{i}.png")
@@ -90,13 +101,18 @@ class BFSVideoCompare:
                 "preview_height": ("INT", {"default": 720, "min": 0, "max": 4096, "step": 16, "tooltip":
                                            "Height of the player's videos (0 = the compared size). Only the preview: "
                                            "the difference is measured before it."}),
-                "reference": ("IMAGE", {"tooltip": "Optional reference picture(s) (e.g. the person swapped in), shown in a "
-                                        "corner of the player and in what ⬇ save / ● rec download. Up to 4 are shown."}),
+                "reference": ("IMAGE", {"tooltip": "Optional reference pictures (e.g. the people swapped in), shown in a "
+                                        "strip below the videos, numbered as <Picture n>, and in what ⬇ save / ● rec "
+                                        "download. Takes the refs list of BFS Shot Planner / Unpack (pictures of any "
+                                        "size) or a batch; up to 12."}),
                 "label_guide": ("STRING", {"default": "guide"}),
                 "label_target": ("STRING", {"default": "target"}),
             },
         }
 
+    # lists in: the reference can be the refs list of the planner / Unpack (pictures of different sizes); the other
+    # inputs take their first item
+    INPUT_IS_LIST = True
     RETURN_TYPES = ("IMAGE", "STRING", "FLOAT")
     RETURN_NAMES = ("difference", "report", "mean_difference")
     OUTPUT_TOOLTIPS = ("The difference map, one frame per compared frame (black = equal, white = very different).",
@@ -110,6 +126,9 @@ class BFSVideoCompare:
 
     def compare(self, guide, target, fps=24.0, audio=None, gain=2.0, size="guide", preview_height=720,
                 label_guide="guide", label_target="target", reference=None):
+        one = lambda v: v[0] if isinstance(v, list) and v else v
+        guide, target, fps, audio, gain, size, preview_height, label_guide, label_target = map(
+            one, (guide, target, fps, audio, gain, size, preview_height, label_guide, label_target))
         notes = []
         n = min(guide.shape[0], target.shape[0])
         if guide.shape[0] != target.shape[0]:

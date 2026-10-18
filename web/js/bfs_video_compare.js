@@ -33,8 +33,11 @@ function styles() {
 .bfsvc .stage.v{cursor:ns-resize}.bfsvc .stage.o{cursor:col-resize}.bfsvc .stage.s{cursor:default}
 .bfsvc video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
 .bfsvc .stage.s video{width:calc(50% - 2px)}.bfsvc .stage.s video.r{left:auto;right:0}
-.bfsvc .refs{position:absolute;right:6px;bottom:6px;height:24%;display:flex;gap:4px;pointer-events:none}
-.bfsvc .refs img{height:100%;border-radius:4px;box-shadow:0 0 0 1px #000a;background:#000}
+.bfsvc .refs{flex:0 0 auto;height:84px;display:flex;gap:6px;justify-content:center;overflow-x:auto;padding:4px;
+  background:#0e0e11;border-radius:6px}
+.bfsvc .refs figure{margin:0;height:100%;position:relative;flex:none}
+.bfsvc .refs img{height:100%;border-radius:4px;box-shadow:0 0 0 1px #000a;background:#000;display:block}
+.bfsvc .refs figcaption{position:absolute;left:3px;top:2px;font-size:10px;padding:0 4px;border-radius:3px;background:#000a;color:#fff}
 .bfsvc .line{position:absolute;background:#fff;box-shadow:0 0 0 1px #0008;pointer-events:none}
 .bfsvc .tag{position:absolute;top:6px;padding:1px 7px;border-radius:4px;background:#000a;color:#fff;font-size:11px;
   pointer-events:none}
@@ -76,8 +79,8 @@ function buildPlayer(host) {
   const line = el("div", { class: "line" });
   const tagTop = el("div", { class: "tag" }), tagBot = el("div", { class: "tag" });
   const empty = el("div", { class: "empty" }, "Run the node to load the guide and the target.");
-  const refBox = el("div", { class: "refs" });
-  const stage = el("div", { class: "stage", tabindex: "0" }, [vBot, vTop, line, tagTop, tagBot, refBox, empty]);
+  const refBox = el("div", { class: "refs", style: "display:none" });
+  const stage = el("div", { class: "stage", tabindex: "0" }, [vBot, vTop, line, tagTop, tagBot, empty]);
   const sel = (opts, val, on) => {
     const s = el("select", {}, opts.map(([v, l]) => { const o = el("option", { value: v }, l); if (v === val) o.selected = true; return o; }));
     s.addEventListener("change", () => on(s.value));
@@ -111,8 +114,9 @@ function buildPlayer(host) {
   chkLabels.addEventListener("change", () => { st.labels = chkLabels.checked; });
   const chkRefs = el("input", { type: "checkbox" });
   chkRefs.checked = true;
-  chkRefs.addEventListener("change", () => { st.refs = chkRefs.checked; refBox.style.display = st.refs ? "flex" : "none"; });
-  const lblRefs = el("label", { title: "Show the reference picture(s) in the corner (also in what save / rec download)", style: "display:none" }, [chkRefs, "ref"]);
+  const showRefs = () => { refBox.style.display = st.refs && refBox.childElementCount ? "flex" : "none"; };
+  chkRefs.addEventListener("change", () => { st.refs = chkRefs.checked; showRefs(); });
+  const lblRefs = el("label", { title: "Show the reference pictures in a strip below the videos (also in what save / rec download)", style: "display:none" }, [chkRefs, "refs"]);
   const scrub = el("input", { type: "range", min: "0", max: "0", value: "0", step: "1" });
   scrub.addEventListener("input", () => seek(+scrub.value));
   const info = el("span", { class: "info" }, "");
@@ -124,6 +128,7 @@ function buildPlayer(host) {
   host.append(el("div", { class: "bfsvc" }, [
     el("div", { class: "row" }, [el("span", {}, "top"), selTop, btnSwap, el("span", {}, "bottom"), selBot, selMode, btnFull]),
     stage,
+    refBox,
     el("div", { class: "row" }, [btnPrev, btnPlay, btnNext, scrub, btnMute, info]),
     el("div", { class: "row" }, [btnSave, btnRec, selFormat, el("label", { title: "Draw the names on the saved / recorded video" }, [chkLabels, "labels"]), lblRefs]),
     strip,
@@ -269,26 +274,36 @@ function buildPlayer(host) {
     return c;
   }
 
-  function drawRefs(ctx) {   // bottom right, 24% of the height, as on the stage
-    const ims = st.refs ? [...refBox.querySelectorAll("img")].filter(i => i.complete && i.naturalWidth) : [];
-    const cw = ctx.canvas.width, ch = ctx.canvas.height, h = Math.round(ch * 0.24), gap = Math.max(2, Math.round(ch * 0.006));
-    let x = cw - gap;
-    for (const im of ims.reverse()) {
+  const refImages = () => (st.refs ? [...refBox.querySelectorAll("img")].filter(i => i.complete && i.naturalWidth) : []);
+  // save / rec: the pictures in a strip below the videos, as in the player (22% of the video's height)
+  const stripHeight = h => (refImages().length ? Math.round(h * 0.22) & ~1 : 0);
+  function drawRefs(ctx, top) {
+    const ims = refImages();
+    if (!ims.length) return;
+    const cw = ctx.canvas.width, sh = ctx.canvas.height - top, gap = Math.max(2, Math.round(sh * 0.05));
+    let h = sh - 2 * gap;
+    const widths = () => ims.map(im => Math.round(im.naturalWidth * h / im.naturalHeight));
+    let total = widths().reduce((a, b) => a + b, 0) + gap * (ims.length - 1);
+    if (total > cw - 2 * gap) { h = Math.floor(h * (cw - 2 * gap) / total); total = widths().reduce((a, b) => a + b, 0) + gap * (ims.length - 1); }
+    ctx.fillStyle = "#0e0e11"; ctx.fillRect(0, top, cw, sh);
+    let x = Math.round((cw - total) / 2);
+    const y = top + Math.round((sh - h) / 2), fs = Math.max(10, Math.round(h * 0.12));
+    ims.forEach((im, k) => {
       const w = Math.round(im.naturalWidth * h / im.naturalHeight);
-      x -= w;
-      ctx.fillStyle = "#000"; ctx.fillRect(x - 1, ch - gap - h - 1, w + 2, h + 2);
-      ctx.drawImage(im, x, ch - gap - h, w, h);
-      x -= gap;
-    }
+      ctx.drawImage(im, x, y, w, h);
+      if (st.labels) label(ctx, `Picture ${k + 1}`, x + 3, y + 3, fs);
+      x += w + gap;
+    });
   }
 
   function compose(ctx) {
-    drawVideos(ctx);
-    drawRefs(ctx);
+    const sh = ctx.canvas.height - (ctx.canvas.videoHeight || ctx.canvas.height);
+    drawVideos(ctx, ctx.canvas.height - sh);
+    drawRefs(ctx, ctx.canvas.height - sh);
   }
 
-  function drawVideos(ctx) {
-    const cw = ctx.canvas.width, ch = ctx.canvas.height, m = st.mode, p = st.pos;
+  function drawVideos(ctx, area) {
+    const cw = ctx.canvas.width, ch = area ?? ctx.canvas.height, m = st.mode, p = st.pos;
     const B = pic(vBot), T = pic(vTop);
     const aw = vBot.videoWidth || st.data.width, ah = vBot.videoHeight || st.data.height;
     const name = s => s === "guide" ? (st.data?.labels?.[0] || "guide") : s === "target" ? (st.data?.labels?.[1] || "target") : "difference";
@@ -383,7 +398,9 @@ function buildPlayer(host) {
     const aw = vBot.videoWidth || st.data.width, ah = vBot.videoHeight || st.data.height;
     const side = st.mode === "side", canvas = el("canvas");
     // the size of the layout it starts in (side by side is twice as wide); a later mode change is fitted into it
-    canvas.width = (side ? 2 * aw + Math.round(2 * aw * 0.004) : aw) & ~1; canvas.height = ah & ~1;
+    canvas.width = (side ? 2 * aw + Math.round(2 * aw * 0.004) : aw) & ~1;
+    canvas.videoHeight = ah & ~1;                       // the videos; the reference strip goes below them
+    canvas.height = canvas.videoHeight + stripHeight(canvas.videoHeight);
     const ctx = canvas.getContext("2d");
     compose(ctx);
     const stream = canvas.captureStream(Math.max(30, Math.round(fps())));
@@ -434,9 +451,10 @@ function buildPlayer(host) {
     setData(d) {
       stopRec();
       last.clear();
-      refBox.replaceChildren(...(d.refs || []).map(f => el("img", { src: url(f), crossorigin: "anonymous" })));
+      refBox.replaceChildren(...(d.refs || []).map((f, k) => el("figure", { title: `Picture ${k + 1}` },
+        [el("img", { src: url(f), crossorigin: "anonymous" }), el("figcaption", {}, `Picture ${k + 1}`)])));
       lblRefs.style.display = d.refs?.length ? "flex" : "none";
-      refBox.style.display = st.refs ? "flex" : "none";
+      showRefs();
       st.data = d;
       empty.style.display = "none";
       scrub.max = String(Math.max(0, d.frames - 1));
