@@ -40,7 +40,7 @@ function loopSection(c) {
       h("div", { class: "prog" }, [h("div", { style: `width:${(100 * prog.done / Math.max(1, prog.count || active.value.length)).toFixed(1)}%` })]),
       h("div", { class: "row", style: "margin-top:6px" }, [
         plan.run === "queue" ? check(plan.auto_continue, v => c.setPlan("auto_continue", v), "Auto-queue the next shot") : null,
-        h("button", { onClick: () => c.progress(false) }, "↻ Status"), h("button", { class: "dng", onClick: () => c.progress(true) }, "⟲ Reset loop"),
+        h("button", { onClick: () => c.progress(false) }, "↻ Refresh status"), h("button", { title: "Cancel pending redo selections. Stored shots and loop progress are preserved.", onClick: () => c.progress(true) }, "Clear redo selection"),
       ]),
       hint(plan.run === "queue"
         ? "Each run generates one shot and stores it. Nodes after BFS Shot Join only run on the last shot, with the full video."
@@ -91,7 +91,8 @@ function cacheSection(c) {
       const i = c.segs.value.indexOf(active.value[k]);
       return h("span", { class: ["pill", g ? "ok" : ""], title: g ? "stored and up to date" : "runs on the next Queue" }, [
         `#${(i >= 0 ? i : k) + 1} ${g ? "💾" : "⏳"}`,
-        g ? h("button", { class: "chip", style: "margin-left:4px", title: "generate this shot again on the next Queue"
+        (cache.redo || []).includes(k) ? h("button", { class: "chip", title: "Cancel redo and keep the stored take",
+          onClick: () => c.redo([k], true, true) }, "Undo redo") : g ? h("button", { class: "chip", style: "margin-left:4px", title: "generate this shot again on the next Queue"
           + (plan.redo_only ? " (only this shot)" : " (and the shots that continue from it)"),
           onClick: () => c.redo([k], !plan.redo_only) }, "↻") : null]);
     }) : [hint(n ? "Nothing stored yet for this video: Queue the workflow." : "")]),

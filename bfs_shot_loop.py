@@ -4702,6 +4702,7 @@ class BFSShotJoin:
                    shot.get("shot_storage") or "lossless")
         st = run_state(rid)
         i = int(shot["index"])
+        st.get("redo", {}).pop(str(i), None)
         if i not in st["done"]:
             st["done"].append(i)
         st["count"] = shot["count"]
@@ -5002,15 +5003,16 @@ class BFSShotJoin:
 
 
 def cache_status(plan: dict, reset: bool = False) -> dict:
-    """The panel's view of the shot cache of a plan's video (as of the last time the planner ran)."""
+    """Read stored-shot status. Legacy reset requests only cancel pending redos; never delete files."""
     path = _input_path(plan["video"])
     rid = run_key(plan, path)
     d = run_dir(rid, create=False)
-    if reset:
-        import shutil
-        shutil.rmtree(d, ignore_errors=True)
+    if reset and os.path.isdir(d):
+        st = run_state(rid)
+        _cancel_redo(st, list(st.get("redo", {})))
+        save_state(rid, st)
     if not os.path.isdir(d):   # nothing stored for this video (no folder is made just to look)
-        return {"run_id": rid, "folder": d, "count": 0, "done": 0, "ok": [], "stored": [], "mb": 0.0,
+        return {"run_id": rid, "folder": d, "count": 0, "done": 0, "ok": [], "stored": [], "redo": [], "mb": 0.0,
                 "temp": rid.startswith("tmp_")}
     st = run_state(rid)
     ok = shot_status(st, d) if st.get("cur") else []
@@ -5018,15 +5020,41 @@ def cache_status(plan: dict, reset: bool = False) -> dict:
     stored = sorted(int(f[5:9]) for f in files if f.startswith("shot_") and f.endswith(".pt"))
     size = sum(os.path.getsize(os.path.join(d, f)) for f in files if f.startswith("shot_"))
     return {"run_id": rid, "folder": d, "count": len(ok) or st.get("count", 0), "done": sum(ok),
-            "ok": ok, "stored": stored, "mb": round(size / 1e6, 1), "temp": rid.startswith("tmp_")}
+            "ok": ok, "stored": stored, "redo": sorted(int(i) for i in st.get("redo", {})),
+            "mb": round(size / 1e6, 1), "temp": rid.startswith("tmp_")}
 
 
-def redo_shots(plan: dict, shots: list[int], cascade: bool = True) -> dict:
+def _cancel_redo(st: dict, shots: list) -> None:
+    for i in shots:
+        key = str(int(i))
+        saved = st.get("redo", {}).pop(key, None)
+        if saved is None or saved.get("gen") != st.get("gen", {}).get(key):
+            continue  # a new take has already replaced this selection
+        if saved["done"] and int(i) not in st.setdefault("done", []):
+            st["done"].append(int(i))
+        if saved.get("keep_next"):
+            st.setdefault("keep_next", {})[key] = True
+        else:
+            st.get("keep_next", {}).pop(key, None)
+
+
+def redo_shots(plan: dict, shots: list[int], cascade: bool = True, cancel: bool = False) -> dict:
     """Mark stored shots to run again on the next Queue. cascade: the shots that continue from them are redone too
-    (automatically, once the new take exists); off: they keep their take (the join may show a seam there)."""
+    (automatically, once the new take exists); off: they keep their take (the join may show a seam there).
+    cancel restores the selection's previous state only while its stored take has not been replaced."""
     rid = run_key(plan, _input_path(plan["video"]))
     st = run_state(rid)
+    if cancel:
+        _cancel_redo(st, shots)
+        save_state(rid, st)
+        return cache_status(plan)
     for i in shots:
+        key = str(int(i))
+        st.setdefault("redo", {}).setdefault(key, {
+            "done": int(i) in st.get("done", []),
+            "gen": st.get("gen", {}).get(key),
+            "keep_next": bool(st.get("keep_next", {}).get(key)),
+        })
         if int(i) in st.get("done", []):
             st["done"].remove(int(i))
         if cascade:
@@ -5808,7 +5836,8 @@ try:
         body = await request.json()
         try:
             return web.json_response(redo_shots(_load_plan(json.dumps(body.get("plan", {}))),
-                                                [int(x) for x in body.get("shots", [])], bool(body.get("cascade", True))))
+                                                [int(x) for x in body.get("shots", [])], bool(body.get("cascade", True)),
+                                                bool(body.get("cancel", False))))
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
 

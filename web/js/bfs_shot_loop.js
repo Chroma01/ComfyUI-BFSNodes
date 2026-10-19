@@ -639,9 +639,9 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     } catch { /* ignore */ }
   }
   // ---- stored shots: redo some, or combine what is stored into an MP4 (low memory, on the server)
-  async function redo(shots, cascade = true) {
+  async function redo(shots, cascade = true, cancel = false) {
     try {
-      const r = await api.fetchApi("/bfs/shotloop/redo", { method: "POST", body: JSON.stringify({ plan: { ...plan }, shots, cascade }) });
+      const r = await api.fetchApi("/bfs/shotloop/redo", { method: "POST", body: JSON.stringify({ plan: { ...plan }, shots, cascade, cancel }) });
       const j = await r.json(); if (j.error) error.value = j.error; else { Object.assign(cache, j); prog.done = j.done; }
     } catch (e) { error.value = `${e}`; }
   }

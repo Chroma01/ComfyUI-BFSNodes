@@ -61,14 +61,14 @@ Three run modes:
   stored on disk; then BFS Shot Join expands the part of the graph between the planner and itself (ComfyUI node
   expansion) for the next shot, so that shot is conditioned *after* the previous one exists and continuity
   (*head* / *history*) works. No browser re-queue (the tab can be closed), Save Video fires once with the full video,
-  and after a failure a new Queue resumes from the stored shots (*Reset loop* starts over). Previews connected inside
+  and after a failure a new Queue resumes from the stored shots (*Redo all* regenerates every shot). Previews connected inside
   the shot's part of the graph show every shot. Needs exactly one BFS Shot Planner before the join. Same idea as the
   recursive loop of Ethanfel's MiniMax H3 Context Loop.
 - **Queue loop (one shot per run)**: each run generates the next pending shot and stores it on
   disk. The join blocks every node after it until the last shot, then outputs the full video,
   so a Save Video node only fires once. With *Auto-queue the next shot* on (default), the panel re-queues
   the workflow after each shot, so one click still renders the whole video (keep the ComfyUI tab open: the panel
-  does the re-queue). *Reset loop* starts over. Changing the plan starts a new run. It resumes from the stored
+  does the re-queue). *Redo all* regenerates every shot. Changing the plan starts a new run. It resumes from the stored
   shots after a failure, and continuity *head* / *history* needs it: each shot reads the result of the one before.
 - **Auto loop (all shots at once)**: every shot in one queue run, each node runs for every shot before the next node.
   Holds all decoded shots in memory. Continuity *head* / *history* does not work here (all shots are conditioned
@@ -721,3 +721,11 @@ or *Crop + mask*.
 | Only the face or the hair is described | the click was on the head: click the body |
 | The other person is described | add an exclude point (right-click) on the other person, **👁 Segment**, save, describe again |
 | The swap still hits the wrong person | make the description more specific (position: "on the left", clothing colours) |
+
+### Cancel a pending redo
+
+After marking a stored shot for redo, click **Undo redo** to keep its previous take.
+**Clear redo selection** cancels all pending redo selections and preserves stored files and loop progress.
+Once a shot has been regenerated, its previous take cannot be restored through this control.
+**Refresh status** rereads the cache status; it cannot recover files deleted by older versions of Reset loop.
+Changing the seed, model or other render settings still invalidates stored shots even after cancelling redo.

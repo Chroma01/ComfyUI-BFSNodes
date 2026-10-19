@@ -1575,3 +1575,58 @@ class FillDetailsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RedoRecoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.directory = Path(self.tmp.name)
+        self.plan = {"video": "test.mp4"}
+        self.state = {"done": [0, 1], "count": 2, "sig": {"0": "a", "1": "b"},
+                      "gen": {"0": "old", "1": "next"}, "from": {"1": "old"},
+                      "cur": {"sigs": ["a", "b"], "prev": [False, True]}}
+        for i in range(2):
+            (self.directory / f"shot_{i:04d}.pt").write_bytes(b"saved take")
+        for name, value in (("_input_path", lambda _: "video"), ("run_key", lambda *_: "test"),
+                            ("run_dir", lambda *a, **kw: str(self.directory))):
+            patcher = patch.object(SL, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        SL.save_state("test", self.state)
+
+    def test_redo_can_be_cancelled_with_continuity_restored(self):
+        self.assertEqual(SL.redo_shots(self.plan, [0])["ok"], [False, False])
+        result = SL.redo_shots(self.plan, [0], cancel=True)
+        self.assertEqual(result["ok"], [True, True])
+        self.assertEqual(result["redo"], [])
+
+    def test_reset_preserves_files_and_state(self):
+        SL.redo_shots(self.plan, [0], cascade=False)
+        result = SL.cache_status(self.plan, reset=True)
+        self.assertEqual(result["ok"], [True, True])
+        self.assertEqual((self.directory / "shot_0000.pt").read_bytes(), b"saved take")
+        self.assertNotIn("0", SL.run_state("test").get("keep_next", {}))
+        self.assertEqual(SL.run_state("test")["gen"], self.state["gen"])
+
+    def test_repeated_selection_does_not_overwrite_undo(self):
+        SL.redo_shots(self.plan, [0])
+        SL.redo_shots(self.plan, [0])
+        self.assertEqual(SL.redo_shots(self.plan, [0], cancel=True)["ok"], [True, True])
+
+    def test_cancel_does_not_make_changed_settings_valid(self):
+        SL.redo_shots(self.plan, [0])
+        st = SL.run_state("test")
+        st["cur"]["sigs"][0] = "changed seed"
+        SL.save_state("test", st)
+        self.assertEqual(SL.redo_shots(self.plan, [0], cancel=True)["ok"], [False, False])
+
+    def test_cancel_does_not_restore_replaced_take(self):
+        SL.redo_shots(self.plan, [0])
+        st = SL.run_state("test")
+        st["gen"]["0"] = "new"
+        SL.save_state("test", st)
+        self.assertEqual(SL.redo_shots(self.plan, [0], cancel=True)["ok"], [False, False])
+
+    def test_reset_without_selection_preserves_completed_run(self):
+        self.assertEqual(SL.cache_status(self.plan, reset=True)["ok"], [True, True])
