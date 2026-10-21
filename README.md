@@ -139,7 +139,10 @@ workflow once per shot, and join the results back with the original timing and s
   every node downstream runs once per shot.
 - **BFS Shot Unpack** — guide frames, references, prompt and length of one shot, for any model.
 - **BFS Shot H3 Conditioning** — MiniMax H3 conditioning for one shot with the native nodes
-  (aligned guide and/or native reference video).
+  (aligned guide, native reference video, or aligned guide + CLIP video context).
+- **MiniMax H3 Reference to Video — Guide 0 CLIP Context (BFS)** — lets Qwen see the video
+  guide at 2 fps without native guide video-reference latents; use Add Guide separately for motion.
+  See [H3 guide modes](MINIMAX_H3_GUIDES.md#video-context-in-clip-with-aligned-guide-latents).
 - **BFS Shot Join** — concatenates, trims to the true lengths, cross-fades soft joins, returns audio. With `comparison` on, its `guide` output is the original video frame for frame.
 - **BFS Video Compare** — one player for two videos (Join's `guide` and `images`): wipe ↔ / ↕, overlay or side by side, any of guide / target / difference on top, plus a per-pixel difference map and the difference per frame (click to jump).
 

@@ -472,7 +472,7 @@ export const secondPassSize = (w, h, sp) => {
 };
 
 // ---- reference pictures (<Picture 1..12>)
-export const MAX_REFS = 12;
+export const MAX_REFS = 100;
 // a reference list of the plan: `refs` (plans from 1.113 on), else the old ref / ref2 pair; empty slots at the end dropped
 export const refList = (refs, a = "", b = "") => {
   const out = (Array.isArray(refs) ? refs : [a, b]).map(x => (typeof x === "string" ? x : "")).slice(0, MAX_REFS);

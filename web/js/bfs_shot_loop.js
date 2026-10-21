@@ -108,7 +108,7 @@ function Panel(io) {
     plan.auto_prompts = { ...(p.auto_prompts || {}) };
     if (!Array.isArray(plan.bounds)) plan.bounds = [];
     if (!Array.isArray(plan.segs)) plan.segs = [];
-    // plans before 1.113 had two references (ref / ref2): now a list of up to 12 pictures
+    // plans before 1.113 had two references (ref / ref2): now a list of up to MAX_REFS pictures
     plan.global_refs = refList(p.global_refs, p.global_ref, p.global_ref2);
     plan.segs.forEach(m => { if (m) m.refs = refList(m.refs, m.ref, m.ref2); });
     // Colored Mark: a color per picture (was: two marker colors), regions tied to a picture (was: region 2)

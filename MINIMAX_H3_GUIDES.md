@@ -142,3 +142,59 @@ Sidecar and phase have CPU geometry/rotary parity tests, including mixed image,
 video and audio, but no full pretrained H3 quality validation yet. They distinguish
 sources; they do not guarantee the same face. See the
 [training configuration guide](https://github.com/alisson-anjos/ai-toolkit/blob/minimax-h3-latent-guides/H3_REFERENCE_ROPE.md).
+
+
+## Video context in CLIP with aligned guide latents
+
+Select **aligned guide + CLIP video context** in **BFS Shot H3 Conditioning**
+(or its Simple variant). Qwen receives only the CURRENT SHOT as `<Video 1>` at
+2 fps with real timestamps, using the same shot interval passed to Add Guide.
+It does not receive the full source video on every shot. The original shot frames
+provide visual context even when source blur modifies the aligned latent guide.
+Images retain their `<Picture 1>` through `<Picture N>` order and native image
+reference latents. Planner and the new standalone node allow up to 100 pictures
+(the Comfy autogrow capacity); available model context and memory can limit this.
+The original H3 node keeps its own unchanged input limits.
+
+The shot itself enters the diffusion model only as aligned `minimax_keyframes`
+through Add Guide; the new mode does not create a native `minimax_refs` video block
+for it. Its Qwen embeddings still travel in `positive`. Explicitly enabling the
+separate native masked-region video reference adds that as `<Video 2>`.
+
+For a native workflow, use **MiniMax H3 Reference to Video — Guide 0 CLIP Context
+(BFS)** in place of **MiniMax H3 Reference to Video**:
+
+1. Connect your source guide to **guide_video_0**, and pictures to `ref_images`.
+   `0` identifies the input's special role; its prompt token is `<Video 1>` because
+   H3 numbers video tokens from 1. Only this guide is CLIP-only.
+2. Optional `ref_videos` remain ACTUAL native video references, receiving both Qwen
+   encoding and native reference latents. With guide 0 connected they are
+   `<Video 2>`, `<Video 3>`, `<Video 4>`; without it native numbering starts at 1.
+   Up to 3 actual reference videos are available, as in the original node.
+3. Connect the returned `positive` and target `latent` to **MiniMax H3 Add Guide**,
+   with the SAME guide frames, VAE and `frame_idx = 0`.
+4. Feed Add Guide's `positive` and the target `latent` to your sampler.
+
+Video inputs use the native 24-fps convention, are trimmed to the requested target
+length, and round down to the native 17*k+5 frame grid. There is no separate 15s
+hard cap in this helper; practical context/memory and checkpoint training limits
+still apply. Native reference soundtracks remain paired to their `ref_video_N`
+input, not to guide 0. Supply guide audio through Add Guide.
+The helper resizes only the guide frames sampled for Qwen and never VAE-encodes
+that guide as a native video reference. Images, actual reference videos and audio
+retain the native implementation. Target latent starts empty; Add Guide supplies
+aligned motion. The BFS mode performs the context and aligned-guide steps
+internally; Shot Join only assembles/composites the generated outputs.
+
+Example: `<Subject 1> comes from <Picture 3> and follows the blond performer in
+the yellow shirt in <Video 1>. <Subject 2> comes from <Picture 1> and <Picture 2>
+and follows the orange-haired performer in the white shirt in <Video 1>. Keep
+these assignments through crossings and occlusions.` A picture need not mean a
+separate person; multiple images can define one identity, and there can be N
+assigned subjects/reference assets within the available context.
+
+Existing modes and defaults are unchanged. Qwen encoding cost and text context
+length increase. Checkpoints trained with `guide_latent_only` did not see the
+source video in Qwen: this is an experimental inference option, not a demonstrated
+identity-binding improvement. GPU and visual validation remain for the user's
+local workflow.

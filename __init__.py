@@ -119,7 +119,15 @@ except Exception as _e:  # noqa
     print(f"[BFSNodes] Video Compare node not loaded: {_e!r}")
     VCMP_NODE_CLASS_MAPPINGS, VCMP_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 
+try:
+    from .minimax_h3_clip_video import NODE_CLASS_MAPPINGS as H3CLIP_NODE_CLASS_MAPPINGS
+    from .minimax_h3_clip_video import NODE_DISPLAY_NAME_MAPPINGS as H3CLIP_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:  # noqa
+    print(f"[BFSNodes] MiniMax H3 CLIP video context not loaded: {_e!r}")
+    H3CLIP_NODE_CLASS_MAPPINGS, H3CLIP_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+
 NODE_CLASS_MAPPINGS = {
+    **H3CLIP_NODE_CLASS_MAPPINGS,
     **H3GUIDE_NODE_CLASS_MAPPINGS,
     **SHOT_NODE_CLASS_MAPPINGS,
     **PANEL_NODE_CLASS_MAPPINGS,
@@ -149,6 +157,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    **H3CLIP_NODE_DISPLAY_NAME_MAPPINGS,
     **H3GUIDE_NODE_DISPLAY_NAME_MAPPINGS,
     **SHOT_NODE_DISPLAY_NAME_MAPPINGS,
     **PANEL_NODE_DISPLAY_NAME_MAPPINGS,

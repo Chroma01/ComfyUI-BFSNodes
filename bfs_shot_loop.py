@@ -504,7 +504,7 @@ def _load_plan(plan_json: str) -> dict:
     return out
 
 
-MAX_REFS = 12   # reference pictures per shot, <Picture 1..12>; the continuity and setting pictures come after them
+MAX_REFS = 100  # matches Comfy autogrow input capacity; continuity/setting pictures follow the shot refs
 
 
 def ref_list(refs, ref="", ref2="") -> list[str]:
@@ -3343,7 +3343,7 @@ class BFSShotPlanner:
             # the ref_image / ref_image_2 inputs were removed in 1.113 (the references live in the panel, up to
             # 12); a workflow saved with them connected still links them, and they are ignored
             print("[BFS Shot Planner] ref_image / ref_image_2 are no longer planner inputs: the connected images "
-                  "are ignored. Set the references in the panel (Prompts & refs tab, up to 12).", flush=True)
+                  "are ignored. Set the references in the panel (Prompts & refs tab, up to 100).", flush=True)
         if vlm is not None:
             _VLM["clip"] = vlm       # the panel's Analyse button uses it too
         vcfg = vlm_cfg(p.get("vlm_cfg"))
@@ -4154,7 +4154,7 @@ def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torc
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
-    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none"]
+    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none", "aligned guide + CLIP video context"]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4166,7 +4166,8 @@ class BFSShotH3Conditioning:
                 "guide_mode": (cls.GUIDE_MODES, {"default": cls.GUIDE_MODES[0], "tooltip":
                     "aligned guide: the shot's frames sit on the generated frames (MiniMax H3 Add Guide), "
                     "frame by frame. native reference video: the shot enters as <Video 1> like the reference "
-                    "video input. both: the two together."}),
+                    "video input. both: the two together. aligned guide + CLIP video context: Qwen sees "
+                    "the shot at 2 fps, while its latents enter only as an aligned guide."}),
                 "first_frame": (["none", "shot's first frame"], {"default": "none", "tooltip":
                     "Anchor the shot's own first frame as an extra aligned image guide."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
@@ -4241,7 +4242,8 @@ class BFSShotH3Conditioning:
     FUNCTION = "condition"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Build MiniMax H3 conditioning for one shot with the native nodes: Reference to Video "
-                   "(prompt, references, length) plus the shot as an aligned guide and/or reference video.")
+                   "(prompt, references, length) plus the shot as an aligned guide and/or reference video. "
+                   "CLIP video context lets Qwen see the shot without native shot reference latents.")
 
     def condition(self, shot, clip, vae, guide_mode, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, model=None, vlm=None, setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
@@ -4265,7 +4267,8 @@ class BFSShotH3Conditioning:
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
         audio = shot["audio"] if (with_audio and audio_vae is not None) else None
         native = guide_mode in (self.GUIDE_MODES[1], self.GUIDE_MODES[2])
-        aligned = guide_mode in (self.GUIDE_MODES[0], self.GUIDE_MODES[2])
+        clip_context = guide_mode == self.GUIDE_MODES[4]
+        aligned = guide_mode in (self.GUIDE_MODES[0], self.GUIDE_MODES[2]) or clip_context
         text = shot["prompt"] or ""
         setting = setting_picture(shot, setting_ref, setting_mask) if setting_ref and setting_ref != "off" else None
         if setting is not None:
@@ -4287,9 +4290,6 @@ class BFSShotH3Conditioning:
             text = add_setting(text, len(refs), "<Subject 1>" in text)
         text = fill_details_now(text, vlm, shot_refs(shot), f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}",
                                 shot.get("ref_names"))
-        if len(refs) > 9:   # H3's own node stops at 9; OpenJutsu-style LoRAs were trained with up to 9 pictures
-            print(f"[BFS Shot H3 Conditioning] shot {shot.get('index', 0) + 1}: {len(refs)} reference pictures "
-                  "(more than the 9 H3 and its LoRAs usually see)", flush=True)
         kwargs = dict(clip=clip, prompt=text, width=shot["width"], height=shot["height"],
                       length=shot["gen_length"], ref_image_size=ref_image_size, vae=vae,
                       audio_vae=audio_vae, ref_images=refs or None)
@@ -4341,10 +4341,15 @@ class BFSShotH3Conditioning:
                 print(f"{gtag}: masked-region reference video at {guide_px.shape[2]}x{guide_px.shape[1]} ({mask_ref_size})",
                       flush=True)
                 vids[f"ref_video_{len(vids) + 1}"] = guide_px
-                kwargs["prompt"] = add_mask_video(kwargs["prompt"], len(vids))
-                print(f"{gtag}: the masked region is <Video {len(vids)}> (write {{mask_video}} in the prompt to place "
+                kwargs["prompt"] = add_mask_video(kwargs["prompt"], len(vids) + int(clip_context))
+                print(f"{gtag}: the masked region is <Video {len(vids) + int(clip_context)}> (write {{mask_video}} in the prompt to place "
                       f"its tag, otherwise a sentence is added)", flush=True)
             kwargs["ref_videos"] = vids
+        if clip_context:
+            from .minimax_h3_clip_video import clip_with_video_context
+            kwargs["clip"] = clip_with_video_context(clip, {"shot": shot["frames"]}, shot["gen_length"], source_fps=float(shot["fps"]))
+            print(f"{gtag}: shot is <Video 1> in Qwen/CLIP at 2 fps; motion uses Add Guide, "
+                  "without native shot reference latents", flush=True)
         positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
         if pg in (MASK_GUIDES[1], MASK_GUIDES[2]):
             positive = MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae,
@@ -4441,7 +4446,9 @@ class BFSShotH3ConditioningSimple:
                 "vae": ("VAE",),
                 "guide_mode": (cls.GUIDE_MODES, {"default": cls.GUIDE_MODES[0], "tooltip":
                     "aligned guide: preserve the shot frame by frame with MiniMax H3 Add Guide. "
-                    "native reference video: provide it as <Video 1> context. both: use both paths."}),
+                    "native reference video: provide it as <Video 1> context. both: use both paths. "
+                    "aligned guide + CLIP video context: Qwen sees the shot at 2 fps without native "
+                    "shot reference latents; motion still uses Add Guide."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
             },
             "optional": {
