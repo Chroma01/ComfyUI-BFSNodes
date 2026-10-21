@@ -2112,18 +2112,19 @@ def _clean_written(text: str) -> str:
 
 # frames 0 = from the shot's length; style: "h3" (the official six sections) or "captions" (the short OpenJutsu captions)
 AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3"}
-AUTO_PROMPT_REVISION = "motion-visual-roles-v2"
+AUTO_PROMPT_REVISION = "motion-visual-roles-v3"
 
 AUTO_REQUEST_RULES = """Motion-transfer contract and requested visual changes (apply in every output format):
 - The source performance is fixed: transfer the assigned performer's actions, body movement, gesture timing, head motion, gaze, visible mouth movement and expressions at the corresponding timestamps. Retarget that performance to the reference character's anatomy.
-- Everything visual can change when explicitly requested: rendering style and medium (including anime), location/background, lighting, weather, colors, clothing/accessories, camera viewpoint and framing. State those changes in the finished English prompt, even when the request mixes languages. Source frames describe the source; their style and location do not override the requested target.
+- Everything visual can change when explicitly requested: rendering style and medium, location/background, lighting, weather, colors, clothing/accessories, camera viewpoint and framing. State those changes in the finished English prompt, even when the request mixes languages. Source frames describe the source; their style and location do not override the requested target.
 - Preserve source visual attributes only when the request leaves them unspecified. Follow the source camera by default, but apply requested camera changes while retaining the subject performance and timing. Never add a blanket 'everything remains unchanged' that cancels requested visual edits.
 - Read the role of every reference from the request and its visible content: character, setting/environment, outfit, object or style. A setting reference supplies the target location; it is not another performer. Several pictures may be views of one identity. Retain the original <Picture n> indices and each requested assignment; do not assume every picture is a different character.
-- A setting can come from an image OR from a text description. Describe the requested setting, including when it differs from the source, without requiring another reference picture. A requested anime style applies to the target characters and scene unless the user limits its scope.
+- A setting can come from an image OR from a text description. Describe the requested setting, including when it differs from the source, without requiring another reference picture. Apply a requested rendering style only at the scope the user specifies.
 - Colored subject markings identify performers, independently of screen position. Keep each designated color-to-reference assignment fixed through overlap, position changes, exits/reentries and cuts. Use generic words such as 'the subject marked in green', never a required 2D/3D implementation. Facial highlights are performance annotations; marking colors/materials are not skin, fur, clothing, eye or scenery colors to copy.
 - Color bindings apply only to the designated performers, never to a setting/style reference. Reference appearances remain the default for each bound identity; apply explicitly requested visual changes consistently to that identity. Unmarked content can receive requested scene/style changes while unassigned performers retain their identities.
 - Preserve the template's format and labels, but adapt any default visual-preservation clause that conflicts with the user's requested target. Keep the source performance fixed. Respect the actual generation region: masked generation only changes pixels inside its mask; a full-scene style or background change needs full-frame generation.
-Example request: 'Replace the man with the goblin in <Picture 1>, no estilo anime, using <Picture 2> as the setting.' The answer must explicitly render the goblin and target scene in anime style, use <Picture 2> for the environment, and transfer the man's performance and timing. Do not silently restore the source's live-action look or source room."""
+- Default rendering medium: retain the observed source medium unless the actual request or an explicitly designated style reference changes it. A background/location reference supplies the setting, not an automatic global style conversion. A character reference supplies that character, not an automatic global style conversion.
+- Apply only the actual request and template provided below. Do not invent extra visual transformations or copy sample content from general instructions."""
 H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
                "non_diegetic_music")
 
@@ -2164,7 +2165,7 @@ AUTO_CAPTION_RULES = """Write the prompt in the short style of a video-edit requ
 - First, for each change the request asks for, one sentence like "Replace the man in the video with the young woman with long wavy red hair, wearing a black leather jacket and blue jeans, from <Picture 1>." Say who or what in the video is replaced, then a short description of what the picture shows, taken from the picture itself: for a person or creature its apparent gender and age, hair and clothes; for an animal its kind and coat; for an outfit or an object what it is, its colour and material; for a place what kind of place it is.
 - When there are several people or animals, say which one in the video becomes which picture (left, right, in front, behind, the one who enters later). Mention every picture the request uses, as <Picture 1>, <Picture 2> and so on, and call the source "the video".
 - Retarget the source performance to the reference character's body and limbs, keeping the source action sequence and timing rather than inventing a new walk cycle or pose.
-- Explicitly include every requested visual change, including anime or another style, a new background from text or a setting picture, lighting, outfit and camera changes. Translate mixed-language instructions into English. A setting picture defines the environment, not another character.
+- Explicitly include every requested visual change, including an explicitly requested rendering style, a new background from text or a setting picture, lighting, outfit and camera changes. Translate mixed-language instructions into English. A setting picture defines the environment, not another character.
 - End with the fixed source performance and timing. Keep source location and camera only when the request leaves them unchanged; requested visual changes still apply.
 Do not invent anything. Reply with the prompt only."""
 
@@ -2268,7 +2269,9 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
                           "You write the request a user types to edit a video with a video model.")
         ask = ask.replace(rel, "The source is the video; transfer its performance and timing. Apply requested visual "
                                "changes, including changes to camera, style and setting.")
-    ask += "\n\n" + AUTO_REQUEST_RULES
+    ask += ("\n\n" + AUTO_REQUEST_RULES + "\n\nActual request to fulfill: "
+            + (instruction.strip() or "Follow the actual template and supplied reference roles.")
+            + "\nChange only the requested attributes. Preserve the source rendering medium unless a style change is explicitly requested.")
     images = _letterbox_batch(list(frames) + list(pictures))
     tokens = 512 if captions else max(1536, int(max_tokens))
     sampling = {"temperature": 0.6, "repetition_penalty": 1.1, "presence_penalty": 0.8}
@@ -4184,7 +4187,8 @@ class BFSShotH3Conditioning:
                     "video input. both: the two together. aligned guide + CLIP video context: Qwen sees "
                     "the shot at clip_video_fps, while its latents enter only as an aligned guide."}),
                 "first_frame": (["none", "shot's first frame"], {"default": "none", "tooltip":
-                    "Anchor the shot's own first frame as an extra aligned image guide."}),
+                    "Anchor the shot's own first frame as an extra aligned image guide. Leave this at none when "
+                    "replacing the source location: its first frame also anchors the original background."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
             },
             "optional": {
@@ -4196,6 +4200,7 @@ class BFSShotH3Conditioning:
                 "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder). Fills {details} "
                                             "when the planner left it (no 📝 Describe refs, no VLM on the planner)."}),
                 "setting_ref": (SETTING_MODES, {"default": "off", "tooltip":
+                    "This references the ORIGINAL source setting; leave it off when replacing that location. "
                     "TSC's trick: one more reference picture, the shot's middle frame with the person covered in TV "
                     "static, so the model sees the place in full detail (the panel / guide is often small). It is "
                     "the last <Picture n>; a sentence about it is added to subject_definitions (or write {setting} "

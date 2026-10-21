@@ -410,6 +410,13 @@ implementation. This update changes prompt writing, not the existing marking ren
 After updating, restart ComfyUI, hard-refresh the browser and click **Write all prompts** to regenerate previously
 written prompts with these rules. Existing written prompts are preserved until rewritten.
 
+**1.115.5:** a setting replacement alone does not request a new rendering style. The writer preserves the source
+medium unless the actual request or an explicitly designated style reference changes it; instructional examples
+must not supply unrequested target attributes. For background replacement, use full-frame generation, disable
+paste/crop-only composition and inpainting outside a subject mask, set **first_frame** to **none**, and leave
+**setting_ref** off (that option adds the original source location). The full aligned guide still contains source
+scene geometry, so a correct prompt alone does not guarantee complete background replacement by a checkpoint.
+
 In **Prompts & refs → 🤖 Auto prompt**, *Write the prompts with the VLM* turns the prompt boxes (global and per shot)
 into **requests** ("replace the bottle with the red can from Picture 2", "Picture 1 dances in the rain"), and the VLM
 writes each shot's MiniMax H3 prompt in the official full-reference format (MiniMaxAI/MiniMax-H3

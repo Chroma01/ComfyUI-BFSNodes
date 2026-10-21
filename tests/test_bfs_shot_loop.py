@@ -1071,6 +1071,8 @@ class MultiRefTest(unittest.TestCase):
             SL.vlm_generate = old
         self.assertIn("short style of a video-edit request", seen["prompt"])
         self.assertNotIn("full-reference format", seen["prompt"])
+        self.assertNotIn("anime", seen["prompt"].lower())  # no sample style may leak into a request with no style edit
+        self.assertNotIn("Example request:", seen["prompt"])
         self.assertEqual(seen["tokens"], 512)
         self.assertTrue(out.startswith("Replace the dog in the video with the gaunt goblin from <Picture 1>."))
         self.assertEqual(SL.caption_problems(out, 2), [])
