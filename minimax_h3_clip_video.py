@@ -1,5 +1,6 @@
 """H3 video context in Qwen embeddings without a native video-latent reference."""
 import math
+import time
 from dataclasses import replace
 
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
@@ -24,11 +25,34 @@ class _VideoContextClip:
         while index < len(items) and items[index].get("type") == "image":
             index += 1
         kwargs["minimax_ref_items"] = items[:index] + self._items + items[index:]
-        return self._clip.tokenize(text, **kwargs)
+        tokens = self._clip.tokenize(text, **kwargs)
+        def count_video_blocks(value):
+            if isinstance(value, dict):
+                if value.get("minimax_video_block") is True:
+                    return 1
+                return sum(count_video_blocks(v) for k, v in value.items() if k != "data")
+            if isinstance(value, (list, tuple)):
+                return sum(count_video_blocks(v) for v in value)
+            return 0
+        expected = sum((item["data"].shape[0] + 1) // 2 for item in self._items)
+        actual = count_video_blocks(tokens)
+        if actual < expected:
+            raise ValueError("CLIP did not produce the H3 video vision blocks. Use the native MiniMax H3 CLIP loader.")
+        print(f"[BFS H3 CLIP context] tokenizer confirmed {actual} video vision blocks "
+              f"(guide requires {expected}); encoding next", flush=True)
+        return tokens
+
+    def encode_from_tokens_scheduled(self, tokens, *args, **kwargs):
+        start = time.perf_counter()
+        result = self._clip.encode_from_tokens_scheduled(tokens, *args, **kwargs)
+        shapes = [tuple(entry[0].shape) for entry in result]
+        print(f"[BFS H3 CLIP context] Qwen encoding complete in {time.perf_counter() - start:.2f}s; "
+              f"conditioning shapes={shapes}. Guide native video reference blocks: 0", flush=True)
+        return result
 
 
-def clip_with_video_context(clip, videos, length, source_fps=24.0):
-    """Native H3 24-fps frame convention, presented to Qwen at 2 fps.
+def clip_with_video_context(clip, videos, length, source_fps=24.0, context_fps=2.0):
+    """Native H3 24-fps frame convention, presented to Qwen at a selectable sampling rate.
 
     Only selected frames are resized. No video VAE encoding or minimax_refs
     video block is created here. Real image reference blocks are unaffected.
@@ -39,6 +63,9 @@ def clip_with_video_context(clip, videos, length, source_fps=24.0):
 
     if not math.isfinite(source_fps) or source_fps <= 0:
         raise ValueError("CLIP video context needs a positive source frame rate")
+    if not math.isfinite(context_fps) or not 0.5 <= context_fps <= 24:
+        raise ValueError("clip_video_fps must be between 0.5 and 24")
+    effective_fps = min(context_fps, source_fps)
     frame_count = temporal_shape(length)[0]
     items = []
     for frames in (videos or {}).values():
@@ -55,10 +82,17 @@ def clip_with_video_context(clip, videos, length, source_fps=24.0):
         if width * height < cw * ch:
             cw = max(CANVAS_MULTIPLE, round(width / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
             ch = max(CANVAS_MULTIPLE, round(height / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-        indices = sorted({round(i * source_fps / 2)
-                          for i in range(math.ceil(n / source_fps * 2))
-                          if round(i * source_fps / 2) < n})
+        indices = sorted({round(i * source_fps / effective_fps)
+                          for i in range(math.ceil(n / source_fps * effective_fps))
+                          if round(i * source_fps / effective_fps) < n})
         selected = _resize(frames[indices], cw, ch, "disabled")
+        times = [index / source_fps for index in indices]
+        preview = times if len(times) <= 6 else times[:3] + times[-3:]
+        print(f"[BFS H3 CLIP context] guide: input={frames.shape[0]} frames at {source_fps:g} fps; "
+              f"used={n}; requested={context_fps:g} fps, effective={effective_fps:g} fps; "
+              f"sent={len(indices)} RGB frames at {cw}x{ch}; "
+              f"timestamps={[round(t, 3) for t in preview]} seconds (first/last); "
+              "native guide video reference latents: OFF", flush=True)
         items.append({"type": "video", "data": selected,
                       "timestamps": [index / source_fps for index in indices]})
     return _VideoContextClip(clip, items) if items else clip
@@ -73,9 +107,15 @@ class BFSMiniMaxH3ReferenceToVideoGuideContext(MiniMaxH3ReferenceToVideo):
         inputs = list(schema.inputs)
         inputs.insert(1, io.Image.Input(
             "guide_video_0", optional=True,
-            tooltip=("The motion guide / current shot, as native 24-fps frames. Qwen sees it at 2 fps "
+            tooltip=("The motion guide / current shot, as native 24-fps frames. Qwen sees it at clip_video_fps "
                      "as <Video 1>; no native guide video reference latents are added. Connect the "
                      "same frames to Add Guide for motion. Other ref_videos start at <Video 2>."),
+        ))
+        inputs.append(io.Float.Input(
+            "clip_video_fps", default=2.0, min=0.5, max=24.0, step=0.5,
+            tooltip=("Guide 0 sampling rate for Qwen only. Default/native presentation is 2 fps; "
+                     "try 4 or 8 fps. Higher values increase context and encoding cost, not output fps. "
+                     "Never duplicates frames above the source rate. Actual reference videos stay native 2 fps."),
         ))
         for item in inputs:
             if item.id == "ref_images":
@@ -100,9 +140,9 @@ class BFSMiniMaxH3ReferenceToVideoGuideContext(MiniMaxH3ReferenceToVideo):
     @classmethod
     def execute(cls, clip, prompt, width, height, length, ref_image_size="match", vae=None,
                 audio_vae=None, guide_video_0=None, ref_images=None, ref_videos=None,
-                ref_video_audios=None, ref_audios=None):
+                ref_video_audios=None, ref_audios=None, clip_video_fps=2.0):
         if guide_video_0 is not None:
-            clip = clip_with_video_context(clip, {"guide_video_0": guide_video_0}, length)
+            clip = clip_with_video_context(clip, {"guide_video_0": guide_video_0}, length, context_fps=clip_video_fps)
         return MiniMaxH3ReferenceToVideo.execute(
             clip=clip, prompt=prompt, width=width, height=height, length=length,
             ref_image_size=ref_image_size, vae=vae, audio_vae=audio_vae,

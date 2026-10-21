@@ -4167,7 +4167,7 @@ class BFSShotH3Conditioning:
                     "aligned guide: the shot's frames sit on the generated frames (MiniMax H3 Add Guide), "
                     "frame by frame. native reference video: the shot enters as <Video 1> like the reference "
                     "video input. both: the two together. aligned guide + CLIP video context: Qwen sees "
-                    "the shot at 2 fps, while its latents enter only as an aligned guide."}),
+                    "the shot at clip_video_fps, while its latents enter only as an aligned guide."}),
                 "first_frame": (["none", "shot's first frame"], {"default": "none", "tooltip":
                     "Anchor the shot's own first frame as an extra aligned image guide."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
@@ -4234,6 +4234,10 @@ class BFSShotH3Conditioning:
                     "mask_guide '+ reference video' only: size of that reference video (fraction of the generation "
                     "size). The native reference channel keeps a smaller video as it is, so 1/2 costs ~1/4 of the "
                     "tokens; it only has to show the pose and outline."}),
+                "clip_video_fps": ("FLOAT", {"default": 2.0, "min": 0.5, "max": 24.0, "step": 0.5,
+                    "tooltip": "Only for aligned guide + CLIP video context. Qwen sampling rate for this shot; "
+                    "try 2, 4 or 8 fps. Higher values cost more context/encoding time, not output fps. "
+                    "Console confirms sent frames, video vision tokens and completed encoding."}),
             },
         }
 
@@ -4247,7 +4251,7 @@ class BFSShotH3Conditioning:
 
     def condition(self, shot, clip, vae, guide_mode, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, model=None, vlm=None, setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
-                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         # every picture of the shot, <Picture 1> first (chosen in the planner; use_ref_2 left in 1.113)
         refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS])}
@@ -4347,8 +4351,8 @@ class BFSShotH3Conditioning:
             kwargs["ref_videos"] = vids
         if clip_context:
             from .minimax_h3_clip_video import clip_with_video_context
-            kwargs["clip"] = clip_with_video_context(clip, {"shot": shot["frames"]}, shot["gen_length"], source_fps=float(shot["fps"]))
-            print(f"{gtag}: shot is <Video 1> in Qwen/CLIP at 2 fps; motion uses Add Guide, "
+            kwargs["clip"] = clip_with_video_context(clip, {"shot": shot["frames"]}, shot["gen_length"], source_fps=float(shot["fps"]), context_fps=clip_video_fps)
+            print(f"{gtag}: shot is <Video 1> in Qwen/CLIP at {clip_video_fps:g} fps; motion uses Add Guide, "
                   "without native shot reference latents", flush=True)
         positive, latent = MiniMaxH3ReferenceToVideo.execute(**kwargs).args[:2]
         if pg in (MASK_GUIDES[1], MASK_GUIDES[2]):
@@ -4447,7 +4451,7 @@ class BFSShotH3ConditioningSimple:
                 "guide_mode": (cls.GUIDE_MODES, {"default": cls.GUIDE_MODES[0], "tooltip":
                     "aligned guide: preserve the shot frame by frame with MiniMax H3 Add Guide. "
                     "native reference video: provide it as <Video 1> context. both: use both paths. "
-                    "aligned guide + CLIP video context: Qwen sees the shot at 2 fps without native "
+                    "aligned guide + CLIP video context: Qwen sees the shot at clip_video_fps without native "
                     "shot reference latents; motion still uses Add Guide."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
             },
@@ -4471,6 +4475,10 @@ class BFSShotH3ConditioningSimple:
                 "source_blur_effect": (BLUR_EFFECTS, {"default": BLUR_EFFECTS[0], "tooltip":
                     "blur: no detail left. invert colours: keeps the shapes and the expression but not the skin tone "
                     "or the colours."}),
+                "clip_video_fps": ("FLOAT", {"default": 2.0, "min": 0.5, "max": 24.0, "step": 0.5,
+                    "tooltip": "Only for aligned guide + CLIP video context. Qwen sampling rate for this shot; "
+                    "try 2, 4 or 8 fps. Higher values cost more context/encoding time, not output fps. "
+                    "Console confirms sent frames, video vision tokens and completed encoding."}),
             },
         }
 
@@ -4483,12 +4491,13 @@ class BFSShotH3ConditioningSimple:
 
     def condition(self, shot, clip, vae, guide_mode, ref_image_size,
                   audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
-                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur"):
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0):
         positive, latent, _, prompt = BFSShotH3Conditioning().condition(
             shot, clip, vae, guide_mode, "none", ref_image_size,
             audio_vae=audio_vae, with_audio=with_audio, vlm=vlm, inpaint=inpaint,
             source_blur=source_blur, source_blur_strength=source_blur_strength,
-            source_blur_segmenter=source_blur_segmenter, source_blur_effect=source_blur_effect)
+            source_blur_segmenter=source_blur_segmenter, source_blur_effect=source_blur_effect,
+            clip_video_fps=clip_video_fps)
         return positive, latent, prompt
 
 

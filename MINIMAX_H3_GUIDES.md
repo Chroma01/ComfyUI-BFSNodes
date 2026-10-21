@@ -198,3 +198,28 @@ length increase. Checkpoints trained with `guide_latent_only` did not see the
 source video in Qwen: this is an experimental inference option, not a demonstrated
 identity-binding improvement. GPU and visual validation remain for the user's
 local workflow.
+
+
+### Guide sampling rate and console evidence
+
+`clip_video_fps` is available on both BFS conditioning variants and the Guide 0
+node. Default is 2 fps; range is 0.5–24 fps, capped to the source frame rate
+without duplicating frames. It changes guide sampling in Qwen only, not the
+aligned guide, output fps, or native reference-video sampling. Try 4 or 8 fps
+against 2 fps with the same shot, prompt, references, seed and sampler settings.
+Native H3 timestamps are retained; higher sampling rates are an experiment, not
+a guarantee of stronger identity binding.
+
+Console messages with `[BFS H3 CLIP context]` report the input/used frame count,
+requested/effective fps, sent RGB frames, dimensions and first/last timestamps.
+A second message confirms that the tokenizer actually emitted H3 video vision
+blocks; an incompatible CLIP fails explicitly rather than silently ignoring the
+video. The final message appears only after Qwen encoding returns, with elapsed
+time and conditioning shapes. Qwen can pad an odd sample count to pairs.
+These logs confirm the conditioning path ran, not visual quality.
+
+Compare `aligned guide (Add Guide)` against `aligned guide + CLIP video context`
+with all other settings fixed to assess whether video context changes the result.
+Use a fresh sampler execution (Planner cached renders may otherwise return old
+results); the CLIP-context logs only appear when conditioning actually executes.
+Compare 2/4/8 fps separately to isolate the sampling-rate effect.
