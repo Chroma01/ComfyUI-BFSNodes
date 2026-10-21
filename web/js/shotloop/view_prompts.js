@@ -1,7 +1,7 @@
 // 📝 Prompts & refs tab: the global reference / prompt, the VLM (shot suggestions) and the reference descriptions ({details}).
 import { h, fld, check, section, pill, hint, select, refBox, promptChips, MAX_REFS, MARK_PALETTE, pictureColor } from "./common.js";
 
-const PRESETS = ["short", "object", "full body", "head / face", "face attributes", "outfit", "custom"];
+const PRESETS = ["short", "object", "full body", "head / face", "face attributes", "outfit", "scene / setting", "custom"];
 
 function globalSection(c) {
   const { plan } = c;
@@ -117,7 +117,7 @@ function autoSection(c) {
       check(A.enabled, v => c.setAuto("enabled", v), "Write the prompts with the VLM",
         "On: the prompt boxes (global and per shot) hold your request ('change the bottle into a red can', 'Picture 1 dances in the rain'); the VLM writes each shot's MiniMax H3 prompt from key frames of the shot, the pictures and their descriptions, the request and the shot's Colored Marks, selection and mode, in H3's official full-reference format."),
       fld("Style", select(A.style || "h3", [["h3", "H3 official (six sections)"], ["captions", "OpenJutsu captions (short)"]],
-        v => c.setAuto("style", v), { style: "width:auto" }), "captions: 'Replace the ... in the video with ... from <Picture 1>. Keep ...', the training captions' style (OpenJutsu); a template on the prompt input wins over both"),
+        v => c.setAuto("style", v), { style: "width:auto" }), "Choose prompt format. The guide performance stays fixed; request style, setting, lighting, outfit or camera changes explicitly. Identify setting pictures in the request; bind colors only to character references."),
       fld("Key frames", select(String(A.frames || 0), [["0", "auto (by length)"], ...[3, 4, 5, 6, 8, 10, 12].map(n => [String(n), String(n)])],
         v => c.setAuto("frames", parseInt(v) || 0), { style: "width:auto" }), "auto: about 1.5 per second, 3 to 8"),
       fld("Source video in the prompt", select(A.source || "guide", [["guide", "guide video (aligned guide)"], ["video", "<Video 1> (native reference video)"]],

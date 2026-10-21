@@ -1814,6 +1814,11 @@ _WHAT = ("First say what the subject is in a few words (e.g. 'A young woman', 'A
 _DESCRIBE_ONLY = ("Treat all pictures as views of the same subject and use only clearly visible details. Return only "
                   "the requested English description, with no heading, label, preamble, bullet list or Markdown.")
 DESCRIBE_PRESETS = {
+    "scene / setting": ("Describe the environment in this reference image for a video-generation prompt, in two or "
+                        "three concise English sentences: location, spatial layout, architecture, scenery, furniture, "
+                        "materials, colors and visible lighting. This image is a setting reference, not a replacement "
+                        "character. Describe people only if needed to distinguish the space; do not turn them into "
+                        "subject identities. Use only visible facts. Return only the description."),
     # default: a noun phrase that fits inside the prompt, "<Subject 1> is the {details} shown in <Picture 1>"
     "short": ("Describe the subject of these reference pictures for a video-generation prompt. Write one English noun "
               "phrase of at most 20 words: first identify what the subject is (such as a young woman, goblin, humanoid "
@@ -1857,7 +1862,7 @@ DESCRIBE_PRESETS = {
                "pose, action or background. No negations, no names. " + _DESCRIBE_ONLY),
 }
 _DESCRIBE_WORD_LIMITS = {"short": 20, "object": 25, "full body": 150, "head / face": 110, "face attributes": 65,
-                         "outfit": 90}
+                         "outfit": 90, "scene / setting": 90}
 # presets that write a noun phrase for a blank inside a prompt sentence (the others write paragraphs)
 PHRASE_PRESETS = ("short", "object")
 _DESCRIBE_CACHE: dict[tuple, str] = {}
@@ -2107,6 +2112,18 @@ def _clean_written(text: str) -> str:
 
 # frames 0 = from the shot's length; style: "h3" (the official six sections) or "captions" (the short OpenJutsu captions)
 AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3"}
+AUTO_PROMPT_REVISION = "motion-visual-roles-v2"
+
+AUTO_REQUEST_RULES = """Motion-transfer contract and requested visual changes (apply in every output format):
+- The source performance is fixed: transfer the assigned performer's actions, body movement, gesture timing, head motion, gaze, visible mouth movement and expressions at the corresponding timestamps. Retarget that performance to the reference character's anatomy.
+- Everything visual can change when explicitly requested: rendering style and medium (including anime), location/background, lighting, weather, colors, clothing/accessories, camera viewpoint and framing. State those changes in the finished English prompt, even when the request mixes languages. Source frames describe the source; their style and location do not override the requested target.
+- Preserve source visual attributes only when the request leaves them unspecified. Follow the source camera by default, but apply requested camera changes while retaining the subject performance and timing. Never add a blanket 'everything remains unchanged' that cancels requested visual edits.
+- Read the role of every reference from the request and its visible content: character, setting/environment, outfit, object or style. A setting reference supplies the target location; it is not another performer. Several pictures may be views of one identity. Retain the original <Picture n> indices and each requested assignment; do not assume every picture is a different character.
+- A setting can come from an image OR from a text description. Describe the requested setting, including when it differs from the source, without requiring another reference picture. A requested anime style applies to the target characters and scene unless the user limits its scope.
+- Colored subject markings identify performers, independently of screen position. Keep each designated color-to-reference assignment fixed through overlap, position changes, exits/reentries and cuts. Use generic words such as 'the subject marked in green', never a required 2D/3D implementation. Facial highlights are performance annotations; marking colors/materials are not skin, fur, clothing, eye or scenery colors to copy.
+- Color bindings apply only to the designated performers, never to a setting/style reference. Reference appearances remain the default for each bound identity; apply explicitly requested visual changes consistently to that identity. Unmarked content can receive requested scene/style changes while unassigned performers retain their identities.
+- Preserve the template's format and labels, but adapt any default visual-preservation clause that conflicts with the user's requested target. Keep the source performance fixed. Respect the actual generation region: masked generation only changes pixels inside its mask; a full-scene style or background change needs full-frame generation.
+Example request: 'Replace the man with the goblin in <Picture 1>, no estilo anime, using <Picture 2> as the setting.' The answer must explicitly render the goblin and target scene in anime style, use <Picture 2> for the environment, and transfer the man's performance and timing. Do not silently restore the source's live-action look or source room."""
 H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
                "non_diegetic_music")
 
@@ -2134,7 +2151,7 @@ Always write the labels with angle brackets: <Subject 1>, <Picture 1>{video_labe
 
 # a request that is already a prompt template (e.g. the one a LoRA was trained with): kept as it is, made specific
 AUTO_TEMPLATE_RULES = """The user's request is a prompt TEMPLATE (for example the one their LoRA was trained with). Return the same template, made specific to this shot:
-- Keep every sentence of the template, in the same order, with the same section names; add no section and remove none.
+- Keep the template's sentence order and section names; add no section and remove none. Adapt visual-preservation clauses when they conflict with the user's explicit requested style, setting or other visual changes.
 - Keep its first word{trigger} exactly as the very first text of your answer.
 - Where the template describes a subject in general words, add the visible features from the reference pictures and their descriptions.
 - Apply the user's request to it (who is replaced by whom, what changes), in the template's own words.
@@ -2146,8 +2163,9 @@ Return only the finished prompt, with nothing before or after it."""
 AUTO_CAPTION_RULES = """Write the prompt in the short style of a video-edit request: two to four sentences in English, one paragraph, no section names, no labels other than <Picture n>, no lists, no markdown.
 - First, for each change the request asks for, one sentence like "Replace the man in the video with the young woman with long wavy red hair, wearing a black leather jacket and blue jeans, from <Picture 1>." Say who or what in the video is replaced, then a short description of what the picture shows, taken from the picture itself: for a person or creature its apparent gender and age, hair and clothes; for an animal its kind and coat; for an outfit or an object what it is, its colour and material; for a place what kind of place it is.
 - When there are several people or animals, say which one in the video becomes which picture (left, right, in front, behind, the one who enters later). Mention every picture the request uses, as <Picture 1>, <Picture 2> and so on, and call the source "the video".
-- A subject acts with its own body: a person or creature replacing an animal uses hands, an animal replacing a person walks on four legs.
-- Then one sentence on what stays: whether the background and location are kept or replaced (by a picture only if that picture shows a place), and that the motion, camera and timing follow the video.
+- Retarget the source performance to the reference character's body and limbs, keeping the source action sequence and timing rather than inventing a new walk cycle or pose.
+- Explicitly include every requested visual change, including anime or another style, a new background from text or a setting picture, lighting, outfit and camera changes. Translate mixed-language instructions into English. A setting picture defines the environment, not another character.
+- End with the fixed source performance and timing. Keep source location and camera only when the request leaves them unchanged; requested visual changes still apply.
 Do not invent anything. Reply with the prompt only."""
 
 
@@ -2169,7 +2187,7 @@ def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = ""
     """What a written prompt was made from (the panel computes the same string to show it is out of date)."""
     marks = [[x["picture"], x["color"]] for x in seg.get("color_guide_marks") or []] if seg.get("color_guide") else []
     return json.dumps([instruction or "", names, marks, shot_mode(seg), (seg.get("mask") or {}).get("text") or "",
-                       seg.get("target") or "", template or "", style or "h3"], separators=(",", ":"), ensure_ascii=False)
+                       seg.get("target") or "", template or "", style or "h3", AUTO_PROMPT_REVISION], separators=(",", ":"), ensure_ascii=False)
 
 
 def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_texts: list, instruction: str,
@@ -2189,11 +2207,12 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
     notes = []
     if seg.get("color_guide"):
         marks = seg.get("color_guide_marks") or []
-        who = "; ".join(f"the person tinted {_COLOR_GUIDE_NAMES.get(x['color'], x['color'])} becomes the subject from "
+        who = "; ".join(f"the subject marked in {_COLOR_GUIDE_NAMES.get(x['color'], x['color'])} follows the appearance from "
                         f"<Picture {x['picture']}>" for x in marks)
-        notes.append("In the source frames, translucent colored tints are temporary editing marks, not anyone's look: "
-                     f"{who}. In subject_definitions and detailed_description, say which tinted person each subject "
-                     "replaces, and that the marks are removed completely in the target video.")
+        notes.append("In the source frames, colored subject markings identify performers, not their appearance: "
+                     f"{who}. Preserve these color-to-picture bindings throughout the performance. Describe markings "
+                     "generically; facial highlights convey expression. The target uses the reference identities and "
+                     "requested visual changes rather than marking colors or materials.")
     if seg.get("target"):
         notes.append(f"The subject being replaced in the source: {seg['target']}.")
     elif sel:
@@ -2214,7 +2233,8 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
         summary_start = ("\"The target video is an edited version of the guide video.\" and what it shows with which "
                          "subjects.")
         rel = ("The source shot is given to the model as the guide video, aligned frame by frame (it has no tag; call it "
-               "\"the guide video\"): the target keeps its timing, camera and motion unless the request changes them.")
+               "\"the guide video\"): transfer its performance and timing. Follow the source camera by default, "
+               "and apply any explicitly requested visual or camera changes.")
         source_name, video_label = "guide video", ""
     # the template: the conditioning prompt input (the one a LoRA was trained with), or a request that is a whole prompt
     if not template and is_template(instruction):
@@ -2246,8 +2266,9 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
     if captions:   # the caption style has no H3 sections, no shot structure and no <Subject n>
         ask = ask.replace("You write the prompt for MiniMax H3, a video model, in its full-reference format.",
                           "You write the request a user types to edit a video with a video model.")
-        ask = ask.replace(rel, "The source is the video; the target keeps its timing, camera and motion unless the "
-                               "request changes them.")
+        ask = ask.replace(rel, "The source is the video; transfer its performance and timing. Apply requested visual "
+                               "changes, including changes to camera, style and setting.")
+    ask += "\n\n" + AUTO_REQUEST_RULES
     images = _letterbox_batch(list(frames) + list(pictures))
     tokens = 512 if captions else max(1536, int(max_tokens))
     sampling = {"temperature": 0.6, "repetition_penalty": 1.1, "presence_penalty": 0.8}
@@ -2272,10 +2293,8 @@ def tidy_caption(text: str, seg: dict | None = None) -> str:
     t = " ".join(drop_repeats(t).split())
     t = re.sub(r"(?<![<\w])(Picture) (\d+)(?![\w>])", r"<\1 \2>", t)
     if seg and seg.get("color_guide"):
-        names = [_COLOR_GUIDE_NAMES.get(x["color"], x["color"]) for x in seg.get("color_guide_marks") or []]
-        if any(n not in t for n in names):
-            t = color_guide_prompt(t, seg["color_guide_marks"])
-    return t
+        t = color_guide_prompt(t, seg.get("color_guide_marks") or [])
+    return " ".join(t.split())
 
 
 def caption_problems(text: str, npics: int) -> list[str]:
@@ -2387,9 +2406,7 @@ def tidy_h3_prompt(text: str, seg: dict | None = None, trigger: str = "", cuts: 
     # 'Picture 1' / 'Subject 2' / 'Video 1' written without their brackets
     t = re.sub(r"(?<![<\w])(Picture|Subject|Video|Audio) (\d+)(?![\w>])", r"<\1 \2>", t)
     if seg and seg.get("color_guide"):
-        names = [_COLOR_GUIDE_NAMES.get(x["color"], x["color"]) for x in seg.get("color_guide_marks") or []]
-        if any(n not in t for n in names):
-            t = color_guide_prompt(t, seg["color_guide_marks"])
+        t = color_guide_prompt(t, seg.get("color_guide_marks") or [])
     return t.strip()
 
 
@@ -4000,17 +4017,15 @@ def color_guide_prompt(prompt: str, marks: list[dict]) -> str:
         if (name, x["picture"]) not in seen:
             seen.add((name, x["picture"]))
             pairs.append((name, x["picture"]))
-    keep = ("the movement, pose, gestures, head motion, gaze and expression seen through the mark")
-    if len(pairs) == 1:
-        name, k = pairs[0]
-        mapping = (f"The {name} mark shows the only person to replace. Replace only the person marked in {name} with "
-                   f"the character from <Picture {k}>, keeping {keep}. Keep every other visible person and all unmarked "
-                   "content unchanged, and remove the mark completely from the result.")
-    else:
-        who = "; ".join(f"the person marked in {name} becomes the character from <Picture {k}>" for name, k in pairs)
-        mapping = (f"The colored marks show the people to replace: {who}. Each one keeps {keep.replace('the mark', 'their mark')}. "
-                   "Keep every unmarked person and all unmarked content unchanged, and remove every mark completely "
-                   "from the result.")
+    if not pairs:
+        return str(prompt or "")
+    who = "; ".join(f"the subject marked in {name} uses the character appearance from <Picture {k}>" for name, k in pairs)
+    mapping = (f"Color bindings: {who}. Keep each binding fixed through position changes, occlusion and cuts, "
+               "transferring the guide performance and timing. Markings and facial highlights are guidance only; "
+               "render reference appearances with the requested visual changes, including scene or style changes, "
+               "rather than copying marking colors or materials.")
+    if mapping in str(prompt or ""):
+        return str(prompt or "")
     # Keep the color contract inside the matching sections of the user's existing structured prompt.
     text, n = re.subn(r"(?is)(\bsubject_definitions\s*:.*?)(\s+summary\s*:)",
                       lambda m: m.group(1) + " " + mapping + m.group(2), str(prompt or ""), count=1)

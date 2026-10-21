@@ -392,6 +392,24 @@ explicitly in any template.
 
 ### 🤖 Auto prompt (1.113.0)
 
+**Visual edits and color bindings (1.115.4):** the guide fixes the assigned performers' motion, action timing,
+head movement, gaze and expressions. Explicitly request the target style, background, lighting, weather, outfit
+or camera changes. For example: `Replace the man with the goblin from <Picture 1>, render the whole scene in anime
+style, and use the hall from <Picture 2> as the setting. Keep the guide performance and timing.` A setting can also
+be described in text. Use **full frame** generation for changes to the entire scene; masked generation only changes
+the generated region.
+
+References can have different roles. In the example above, Picture 1 defines the character and Picture 2 defines
+the environment. To describe the latter, choose **scene / setting** in that picture's description preset. For several
+characters, bind colors only to their character references: `The subject marked in green uses <Picture 1>; the subject
+marked in purple uses <Picture 2>; <Picture 3> defines the setting.` Picture indices stay unchanged. A marking color
+identifies the same performer across position changes, occlusion and cuts; it is not a target skin/clothing color.
+Facial highlights are performance annotations. Prompt wording is generic and does not require a specific 2D/3D marking
+implementation. This update changes prompt writing, not the existing marking renderer or tracking behavior.
+
+After updating, restart ComfyUI, hard-refresh the browser and click **Write all prompts** to regenerate previously
+written prompts with these rules. Existing written prompts are preserved until rewritten.
+
 In **Prompts & refs → 🤖 Auto prompt**, *Write the prompts with the VLM* turns the prompt boxes (global and per shot)
 into **requests** ("replace the bottle with the red can from Picture 2", "Picture 1 dances in the rain"), and the VLM
 writes each shot's MiniMax H3 prompt in the official full-reference format (MiniMaxAI/MiniMax-H3

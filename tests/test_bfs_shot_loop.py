@@ -948,10 +948,19 @@ class MultiRefTest(unittest.TestCase):
             {"picture": 5, "text": "the dog"}, {"picture": 3}]})   # a region with neither text nor points is ignored
         self.assertEqual([(x["picture"], x["color"]) for x in marks], [(2, "#9b30ff"), (5, "#ffe600")])
         text = SL.color_guide_prompt("A scene.", marks)
-        self.assertIn("marked in purple becomes the character from <Picture 2>", text)
-        self.assertIn("marked in yellow becomes the character from <Picture 5>", text)
+        self.assertIn("marked in purple uses the character appearance from <Picture 2>", text)
+        self.assertIn("marked in yellow uses the character appearance from <Picture 5>", text)
         one = SL.color_guide_prompt("", marks[:1])
-        self.assertIn("Replace only the person marked in purple with the character from <Picture 2>", one)
+        self.assertIn("the subject marked in purple uses the character appearance from <Picture 2>", one)
+
+    def test_color_contract_is_present_even_when_reference_appearance_mentions_the_color(self):
+        seg = {"color_guide": True, "color_guide_marks": [{"picture": 3, "color": "#00ff00"}]}
+        raw = "Replace the man with the green goblin from <Picture 3>. Render the scene as anime on a rooftop."
+        text = SL.tidy_caption(raw, seg)
+        self.assertIn("the subject marked in green uses the character appearance from <Picture 3>", text)
+        self.assertIn("anime on a rooftop", text)
+        self.assertNotIn("all unmarked content unchanged", text)
+        self.assertEqual(SL.color_guide_prompt(text, seg["color_guide_marks"]), text)
 
     def test_auto_prompt_asks_with_the_official_format(self):
         seen = {}
@@ -970,7 +979,7 @@ class MultiRefTest(unittest.TestCase):
             SL.vlm_generate = old
         self.assertEqual(seen["n"], 5)                       # 3 frames + 2 pictures
         for want in ("swap the man for the robot", "<Picture 2>: image 5, described as: a silver robot",
-                     "tinted purple becomes the subject from <Picture 2>", "Only the selected subject is generated again",
+                     "marked in purple follows the appearance from <Picture 2>", "Only the selected subject is generated again",
                      "edited version of <Video 1>", "retention_analysis:", "non_diegetic_music:", "00:00.500",
                      "Never write a timestamp inside a shot", "is replaced by <Subject N>"):
             self.assertIn(want, seen["prompt"])
