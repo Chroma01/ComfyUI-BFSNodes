@@ -754,3 +754,7 @@ After marking a stored shot for redo, click **Undo redo** to keep its previous t
 Once a shot has been regenerated, its previous take cannot be restored through this control.
 **Refresh status** rereads the cache status; it cannot recover files deleted by older versions of Reset loop.
 Changing the seed, model or other render settings still invalidates stored shots even after cancelling redo.
+
+### Experimental native temporal motion transfer
+
+`BFS Shot H3 Conditioning` now has **native temporal alignment (experimental)** in `guide_mode`. Connect MODEL in and route its MODEL output to the guider. This uses the matching experimental LoRA, the shot as native `<Video 1>`, temporal RoPE alignment and soft temporal attention; it does not use Add Guide. Use 24 fps and disable continuity/first-frame/mask guides and VSA. Simple appends a MODEL output without moving existing outputs. The standalone **BFS MiniMax H3 Native Temporal Alignment (Experimental)** node provides the same patch for native workflows. See `H3_NATIVE_TEMPORAL.md` for the full contract and validation limits.

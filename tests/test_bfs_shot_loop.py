@@ -484,6 +484,20 @@ class ConditioningPromptTest(unittest.TestCase):
         self.assertEqual(out[2], "m")
         self.assertNotIn("duet", SL.BFSShotH3Conditioning.INPUT_TYPES()["optional"])
 
+    def test_native_temporal_requires_model_before_encoding(self):
+        shot = self._shot()
+        with self.assertRaisesRegex(ValueError, "MODEL connected"):
+            SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", SL.BFSShotH3Conditioning.GUIDE_MODES[5], "none", "match")
+        self.assertEqual(self.seen, {})
+
+    def test_native_temporal_passes_shot_as_video_and_returns_patched_model(self):
+        import minimax_h3_native_temporal as temporal
+        shot = self._shot(); shot["fps"] = 24
+        with patch.object(temporal, "patch_temporal_model", return_value="patched"):
+            out = SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", SL.BFSShotH3Conditioning.GUIDE_MODES[5], "none", "match", model="model")
+        self.assertEqual(out[2], "patched")
+        self.assertIs(self.seen["ref_videos"]["ref_video_1"], shot["frames"])
+
     def test_setting_picture_is_the_last_reference_with_static(self):
         mask = torch.zeros(22, 8, 8)
         mask[:, 2:4, 2:4] = 1
@@ -505,11 +519,11 @@ class SimpleConditioningTest(unittest.TestCase):
         self.assertIn("with_audio", names)
         self.assertIn("inpaint", names)
         self.assertNotIn("duet", names)
-        self.assertNotIn("model", names)
+        self.assertIn("model", names)
         self.assertNotIn("rope_gap", names)
         self.assertNotIn("task", names)
 
-    def test_forwards_safe_advanced_defaults_and_hides_model_output(self):
+    def test_forwards_safe_advanced_defaults_and_appends_model_output(self):
         seen = {}
         original = SL.BFSShotH3Conditioning.condition
 
@@ -525,7 +539,7 @@ class SimpleConditioningTest(unittest.TestCase):
         finally:
             SL.BFSShotH3Conditioning.condition = original
 
-        self.assertEqual(out, ("positive", "latent", "prompt"))
+        self.assertEqual(out, ("positive", "latent", "prompt", "unchanged model"))
         self.assertEqual(seen["args"][4], "none")
         self.assertTrue(seen["kwargs"]["with_audio"])
         self.assertEqual(seen["kwargs"]["inpaint"], SL.INPAINT_MODES[0])

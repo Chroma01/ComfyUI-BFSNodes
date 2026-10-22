@@ -93,6 +93,12 @@ except Exception as _e:  # noqa
     print(f"[BFSNodes] BFS Shot Noise node not loaded: {_e!r}")
     SNOISE_NODE_CLASS_MAPPINGS, SNOISE_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 try:
+    from .minimax_h3_native_temporal import NODE_CLASS_MAPPINGS as H3TEMP_NODE_CLASS_MAPPINGS
+    from .minimax_h3_native_temporal import NODE_DISPLAY_NAME_MAPPINGS as H3TEMP_NODE_DISPLAY_NAME_MAPPINGS
+except Exception as _e:
+    print(f"[BFSNodes] H3 native temporal nodes not loaded: {_e!r}")
+    H3TEMP_NODE_CLASS_MAPPINGS, H3TEMP_NODE_DISPLAY_NAME_MAPPINGS = {}, {}
+try:
     from .minimax_h3_downscaled_guide import NODE_CLASS_MAPPINGS as H3GUIDE_NODE_CLASS_MAPPINGS
     from .minimax_h3_downscaled_guide import NODE_DISPLAY_NAME_MAPPINGS as H3GUIDE_NODE_DISPLAY_NAME_MAPPINGS
 except Exception as _e:  # noqa
@@ -129,6 +135,7 @@ except Exception as _e:  # noqa
 NODE_CLASS_MAPPINGS = {
     **H3CLIP_NODE_CLASS_MAPPINGS,
     **H3GUIDE_NODE_CLASS_MAPPINGS,
+    **H3TEMP_NODE_CLASS_MAPPINGS,
     **SHOT_NODE_CLASS_MAPPINGS,
     **PANEL_NODE_CLASS_MAPPINGS,
     **GV_NODE_CLASS_MAPPINGS,
@@ -159,6 +166,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     **H3CLIP_NODE_DISPLAY_NAME_MAPPINGS,
     **H3GUIDE_NODE_DISPLAY_NAME_MAPPINGS,
+    **H3TEMP_NODE_DISPLAY_NAME_MAPPINGS,
     **SHOT_NODE_DISPLAY_NAME_MAPPINGS,
     **PANEL_NODE_DISPLAY_NAME_MAPPINGS,
     **GV_NODE_DISPLAY_NAME_MAPPINGS,

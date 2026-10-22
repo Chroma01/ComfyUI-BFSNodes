@@ -953,7 +953,15 @@ function upgradeConditioningWidgets(node, info) {
 
 function upgradeLegacySlots(node, info) {
   const cls = node.comfyClass;
-  if (cls === "BFSShotH3Conditioning" || cls === "BFSShotH3ConditioningSimple") { upgradeConditioningWidgets(node, info); return; }
+  if (cls === "BFSShotH3Conditioning" || cls === "BFSShotH3ConditioningSimple") {
+    upgradeConditioningWidgets(node, info);
+    // 1.115.9 appends MODEL routing to Simple; preserve all existing slot indices/links.
+    if (cls === "BFSShotH3ConditioningSimple") {
+      if (!node.inputs?.some(x => x.name === "model")) node.addInput("model", "MODEL");
+      if (!node.outputs?.some(x => x.name === "model")) node.addOutput("model", "MODEL");
+    }
+    return;
+  }
   // ref_image / ref_image_2 outputs at slots `at`, at+1 -> refs (list) / ref_count
   const listOutputs = at => {
     const a = node.outputs?.[at], b = node.outputs?.[at + 1];

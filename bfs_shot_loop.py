@@ -4217,7 +4217,7 @@ def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torc
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
-    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none", "aligned guide + CLIP video context"]
+    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none", "aligned guide + CLIP video context", "native temporal alignment (experimental)"]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4230,7 +4230,8 @@ class BFSShotH3Conditioning:
                     "aligned guide: the shot's frames sit on the generated frames (MiniMax H3 Add Guide), "
                     "frame by frame. native reference video: the shot enters as <Video 1> like the reference "
                     "video input. both: the two together. aligned guide + CLIP video context: Qwen sees "
-                    "the shot at clip_video_fps, while its latents enter only as an aligned guide."}),
+                    "the shot at clip_video_fps, while its latents enter only as an aligned guide. Native temporal alignment: "
+                    "experimental mode matching native_temporal_v1 training; requires MODEL routing, 24 fps and no Add Guide/VSA."}),
                 "first_frame": (["none", "shot's first frame"], {"default": "none", "tooltip":
                     "Anchor the shot's own first frame as an extra aligned image guide. Leave this at none when "
                     "replacing the source location: its first frame also anchors the original background."}),
@@ -4240,7 +4241,7 @@ class BFSShotH3Conditioning:
                 "audio_vae": ("VAE",),
                 "with_audio": ("BOOLEAN", {"default": False, "tooltip":
                     "Attach the shot's soundtrack to the guide / reference video (needs audio_vae)."}),
-                "model": ("MODEL", {"tooltip": "Optional: passed through to the model output unchanged (workflows "
+                "model": ("MODEL", {"tooltip": "Optional: passed through, or patched in native temporal mode. Route MODEL output to the guider (workflows "
                                                "that routed the model through this node keep working)."}),
                 "vlm": ("CLIP", {"tooltip": "Optional VLM (CLIPLoader with a Qwen3-VL text encoder). Fills {details} "
                                             "when the planner left it (no 📝 Describe refs, no VLM on the planner)."}),
@@ -4335,7 +4336,17 @@ class BFSShotH3Conditioning:
         if prev is not None and shot.get("chain") == "reference":
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
         audio = shot["audio"] if (with_audio and audio_vae is not None) else None
-        native = guide_mode in (self.GUIDE_MODES[1], self.GUIDE_MODES[2])
+        temporal = guide_mode == self.GUIDE_MODES[5]
+        if temporal:
+            if model is None:
+                raise ValueError("Native temporal alignment needs MODEL connected; route this node's MODEL output to the guider.")
+            if first_frame != "none" or shot.get("chain") not in (None, "off") or shot.get("head") or shot.get("history"):
+                raise ValueError("Native temporal mode requires first-frame and shot continuity guides disabled.")
+            if mask_guide != "off":
+                raise ValueError("Native temporal mode requires mask_guide off; use only the shot as native motion video.")
+            if abs(float(shot["fps"])-24.0) > 1e-6:
+                raise ValueError("Native temporal experiment requires 24 fps shots. Set the Planner output to 24 fps.")
+        native = guide_mode in (self.GUIDE_MODES[1], self.GUIDE_MODES[2]) or temporal
         clip_context = guide_mode == self.GUIDE_MODES[4]
         aligned = guide_mode in (self.GUIDE_MODES[0], self.GUIDE_MODES[2]) or clip_context
         text = shot["prompt"] or ""
@@ -4455,6 +4466,13 @@ class BFSShotH3Conditioning:
                   + f", the rest is kept ({int(nm.shape[2])} latent frames)", flush=True)
         positive = self._history(shot, positive, vae, gtag)
         latent = self._head(shot, latent, vae, gtag)
+        if temporal:
+            try:
+                from .minimax_h3_native_temporal import patch_temporal_model
+            except ImportError:
+                from minimax_h3_native_temporal import patch_temporal_model
+            model = patch_temporal_model(model)
+            print(f"{gtag}: native temporal alignment enabled; use the MODEL output for sampling", flush=True)
         return (positive, latent, model, text)
 
     @staticmethod
@@ -4517,7 +4535,8 @@ class BFSShotH3ConditioningSimple:
                     "aligned guide: preserve the shot frame by frame with MiniMax H3 Add Guide. "
                     "native reference video: provide it as <Video 1> context. both: use both paths. "
                     "aligned guide + CLIP video context: Qwen sees the shot at clip_video_fps without native "
-                    "shot reference latents; motion still uses Add Guide."}),
+                    "shot reference latents; motion still uses Add Guide. Native temporal alignment: experimental native "
+                    "video mode for its matching LoRA; MODEL input and output must be connected, no Add Guide or VSA."}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
             },
             "optional": {
@@ -4544,11 +4563,12 @@ class BFSShotH3ConditioningSimple:
                     "tooltip": "Only for aligned guide + CLIP video context. Qwen sampling rate for this shot; "
                     "try 2, 4 or 8 fps. Higher values cost more context/encoding time, not output fps. "
                     "Console confirms sent frames, video vision tokens and completed encoding."}),
+                "model": ("MODEL", {"tooltip": "Required for native temporal mode. Route MODEL output to the guider."}),
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "STRING")
-    RETURN_NAMES = ("positive", "latent", "prompt")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "STRING", "MODEL")
+    RETURN_NAMES = ("positive", "latent", "prompt", "model")
     FUNCTION = "condition"
     CATEGORY = "BFS/shot loop"
     DESCRIPTION = ("Build the usual MiniMax H3 shot conditioning with references, prompt and an aligned guide "
@@ -4556,14 +4576,14 @@ class BFSShotH3ConditioningSimple:
 
     def condition(self, shot, clip, vae, guide_mode, ref_image_size,
                   audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
-                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0):
-        positive, latent, _, prompt = BFSShotH3Conditioning().condition(
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0, model=None):
+        positive, latent, patched_model, prompt = BFSShotH3Conditioning().condition(
             shot, clip, vae, guide_mode, "none", ref_image_size,
             audio_vae=audio_vae, with_audio=with_audio, vlm=vlm, inpaint=inpaint,
             source_blur=source_blur, source_blur_strength=source_blur_strength,
             source_blur_segmenter=source_blur_segmenter, source_blur_effect=source_blur_effect,
-            clip_video_fps=clip_video_fps)
-        return positive, latent, prompt
+            clip_video_fps=clip_video_fps, model=model)
+        return positive, latent, prompt, patched_model
 
 
 class BFSShotJoin:
