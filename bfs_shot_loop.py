@@ -4340,8 +4340,17 @@ class BFSShotH3Conditioning:
         if temporal:
             if model is None:
                 raise ValueError("Native temporal alignment needs MODEL connected; route this node's MODEL output to the guider.")
-            if first_frame != "none" or shot.get("chain") not in (None, "off") or shot.get("head") or shot.get("history"):
-                raise ValueError("Native temporal mode requires first-frame and shot continuity guides disabled.")
+            # The Planner stores chain="head" even on shot 0, where continuity is dormant.
+            # Reject actual continuity inputs, not a hidden/default mode label.
+            index = int(shot.get("index", 0))
+            chain = shot.get("chain")
+            previous_image = index > 0 and prev is not None and chain in ("reference", "first frame")
+            history = index > 0 and chain == "history" and (
+                shot.get("history") is not None or (
+                    not shot.get("crop") and _LAST_RESULT.get("index") == index - 1
+                    and _LAST_RESULT.get("count") == int(shot.get("count", 0))))
+            if first_frame != "none" or int(shot.get("head") or 0) > 0 or previous_image or history:
+                raise ValueError("Native temporal mode requires first-frame and active shot continuity guides disabled.")
             if mask_guide != "off":
                 raise ValueError("Native temporal mode requires mask_guide off; use only the shot as native motion video.")
             if abs(float(shot["fps"])-24.0) > 1e-6:

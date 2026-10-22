@@ -498,6 +498,25 @@ class ConditioningPromptTest(unittest.TestCase):
         self.assertEqual(out[2], "patched")
         self.assertIs(self.seen["ref_videos"]["ref_video_1"], shot["frames"])
 
+    def test_native_temporal_allows_dormant_first_shot_chain_modes(self):
+        import minimax_h3_native_temporal as temporal
+        for mode in ("head", "history", "reference", "first frame"):
+            with self.subTest(mode=mode), patch.object(temporal, "patch_temporal_model", return_value="patched"):
+                shot = self._shot()
+                shot.update(fps=24, index=0, count=1, chain=mode, head=0, history=None, chain_image=None)
+                out = SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", SL.BFSShotH3Conditioning.GUIDE_MODES[5], "none", "match", model="model")
+                self.assertEqual(out[2], "patched")
+
+    def test_native_temporal_rejects_real_continuity_inputs(self):
+        cases = [dict(index=1, chain="head", head=5),
+                 dict(index=1, chain="history", history=torch.zeros(5, 8, 8, 3)),
+                 dict(index=1, chain="first frame", chain_image=torch.zeros(1, 8, 8, 3))]
+        for fields in cases:
+            with self.subTest(fields=list(fields)):
+                shot = self._shot(); shot.update(fps=24, count=2, **fields)
+                with self.assertRaisesRegex(ValueError, "active shot continuity"):
+                    SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", SL.BFSShotH3Conditioning.GUIDE_MODES[5], "none", "match", model="model")
+
     def test_setting_picture_is_the_last_reference_with_static(self):
         mask = torch.zeros(22, 8, 8)
         mask[:, 2:4, 2:4] = 1
