@@ -2111,8 +2111,8 @@ def _clean_written(text: str) -> str:
 # user's request (the prompt box) and the shot's marks and mode.
 
 # frames 0 = from the shot's length; style: "h3" (the official six sections) or "captions" (the short OpenJutsu captions)
-AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3"}
-AUTO_PROMPT_REVISION = "motion-isolated-picture-bindings-v4"
+AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3", "trigger": "motion_transfer"}
+AUTO_PROMPT_REVISION = "motion-trigger-bindings-v5"
 
 AUTO_REQUEST_RULES = """Motion-transfer contract and requested visual changes (apply in every output format):
 - The source performance is fixed: transfer the assigned performer's actions, body movement, gesture timing, head motion, gaze, visible mouth movement and expressions at the corresponding timestamps. Retarget that performance to the reference character's anatomy.
@@ -2187,16 +2187,16 @@ def shot_mode(seg: dict) -> str:
     return "mask" if seg.get("inpaint") else "paste" if seg.get("paste") else "frame"
 
 
-def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = "", style: str = "h3") -> str:
+def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = "", style: str = "h3", prompt_trigger: str = "motion_transfer") -> str:
     """What a written prompt was made from (the panel computes the same string to show it is out of date)."""
     marks = [[x["picture"], x["color"]] for x in seg.get("color_guide_marks") or []] if seg.get("color_guide") else []
     return json.dumps([instruction or "", names, marks, shot_mode(seg), (seg.get("mask") or {}).get("text") or "",
-                       seg.get("target") or "", template or "", style or "h3", AUTO_PROMPT_REVISION], separators=(",", ":"), ensure_ascii=False)
+                       seg.get("target") or "", template or "", style or "h3", prompt_trigger, AUTO_PROMPT_REVISION], separators=(",", ":"), ensure_ascii=False)
 
 
 def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_texts: list, instruction: str,
                     seg: dict, source: str = "guide", duration: float = 0.0, max_tokens: int = 2048,
-                    cuts: list | None = None, template: str = "", style: str = "h3", source_facts: str | None = None) -> str:
+                    cuts: list | None = None, template: str = "", style: str = "h3", source_facts: str | None = None, prompt_trigger: str = "motion_transfer") -> str:
     """One shot's prompt in H3's full-reference format, written by the VLM from key frames of the shot ([1,H,W,3] each,
     at `times` seconds into it), the shot's reference pictures (<Picture 1> first) with their descriptions, the user's
     request and the shot's Colored Marks, selection and mode."""
@@ -2243,7 +2243,9 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
     # the template: the conditioning prompt input (the one a LoRA was trained with), or a request that is a whole prompt
     if not template and is_template(instruction):
         template, instruction = instruction, ""
-    trigger = request_trigger(template)
+    trigger = request_trigger(template) or request_trigger(instruction) or str(prompt_trigger or "").strip().rstrip(":")
+    if trigger and not re.fullmatch(r"[A-Za-z][\w-]*", trigger):
+        raise ValueError("Invalid prompt trigger")
     if cuts:
         shots_rule = ("The source has camera cuts at " + ", ".join(_mmss(t) for t in cuts) + ": start a new shot at each "
                       "of them and nowhere else, " + ", ".join(f'"[Shot {k + 2}] At {_mmss(t)}, the shot cuts to ..."'
@@ -2290,7 +2292,7 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
         images = _letterbox_batch(list(frames) + list(pictures))
     tokens = 512 if captions else max(1536, int(max_tokens))
     sampling = {"temperature": 0.6, "repetition_penalty": 1.1, "presence_penalty": 0.8}
-    tidy = (lambda t: tidy_caption(t, seg)) if captions else \
+    tidy = (lambda t: tidy_caption(t, seg, trigger)) if captions else \
         (lambda t: tidy_h3_prompt(t, seg, trigger, bool(cuts), npics, bool(template)))
     check = (lambda t: caption_problems(t, npics)) if captions else (lambda t: h3_prompt_problems(t, npics, bool(template)))
     text = tidy(vlm_generate(clip, ask, images, tokens, sampling=sampling))
@@ -2304,7 +2306,7 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
     return text if captions else name_subjects(text)
 
 
-def tidy_caption(text: str, seg: dict | None = None) -> str:
+def tidy_caption(text: str, seg: dict | None = None, trigger: str | None = None) -> str:
     """A caption-style answer: one paragraph, no fences or quotes, no repeated sentences, labels with brackets, and
     the Colored Mark mapping added when a mark color is missing."""
     t = str(text or "").replace("```text", "").replace("```", "").strip().strip('"').strip()
@@ -2312,6 +2314,9 @@ def tidy_caption(text: str, seg: dict | None = None) -> str:
     t = re.sub(r"(?<![<\w])(Picture) (\d+)(?![\w>])", r"<\1 \2>", t)
     if seg and seg.get("color_guide"):
         t = color_guide_prompt(t, seg.get("color_guide_marks") or [])
+    if trigger is not None:
+        t = re.sub(r"^(?:motion_transfer|body_swap|vfx_edit):\s*", "", t, flags=re.I)
+        if trigger:t = trigger + ": " + t
     return " ".join(t.split())
 
 
@@ -2488,8 +2493,8 @@ def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, nam
     text = write_h3_prompt(clip, frames, [(int(x) - seg["start"]) / fps for x in picks], pictures,
                            picture_evidence, request, seg, ap.get("source") or "guide", L / fps,
                            int(vcfg.get("max_tokens") or 1024), [(c - seg["start"]) / fps for c in cuts], tmpl,
-                           ap.get("style") or "h3", source_facts=source_facts)
-    return {"text": text, "for": auto_prompt_for(instruction, names, seg, template, ap.get("style") or "h3")}
+                           ap.get("style") or "h3", source_facts=source_facts, prompt_trigger=ap["trigger"])
+    return {"text": text, "for": auto_prompt_for(instruction, names, seg, template, ap.get("style") or "h3", ap["trigger"])}
 
 
 PLACE_Q = ("This picture shows a place; the patch of black-and-white noise only hides a person, ignore it. Describe the "
@@ -3494,7 +3499,7 @@ class BFSShotPlanner:
                 got = stored.get(key) or {}
                 if got.get("text"):
                     written[i] = got["text"]
-                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template, ap["style"]):
+                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template, ap["style"], ap["trigger"]):
                         print(f"[BFS Shot Planner] shot {i + 1}: its written prompt is older than its request, pictures or "
                               "marks (🤖 Write in the panel to write it again)", flush=True)
                 elif vlm is not None:

@@ -1074,7 +1074,7 @@ class MultiRefTest(unittest.TestCase):
         self.assertNotIn("anime", seen["prompt"].lower())  # no sample style may leak into a request with no style edit
         self.assertNotIn("Example request:", seen["prompt"])
         self.assertEqual(seen["tokens"], 512)
-        self.assertTrue(out.startswith("Replace the dog in the video with the gaunt goblin from <Picture 1>."))
+        self.assertTrue(out.startswith("motion_transfer: Replace the dog in the video with the gaunt goblin from <Picture 1>."))
         self.assertEqual(SL.caption_problems(out, 2), [])
         self.assertTrue(SL.caption_problems("subject_definitions: <Subject 1> is x", 1))
 
@@ -1678,3 +1678,9 @@ class IsolatedReferenceBindingTests(unittest.TestCase):
         start = browser.index("const autoFor =")
         signature = browser[start:browser.index("const writtenOf", start)]
         self.assertIn('"' + SL.AUTO_PROMPT_REVISION + '"', signature)
+
+    def test_motion_trigger_is_added_once_and_can_be_disabled(self):
+        self.assertEqual(SL.tidy_caption("Replace the actor.", trigger="motion_transfer"), "motion_transfer: Replace the actor.")
+        self.assertEqual(SL.tidy_caption("motion_transfer: Replace the actor.", trigger="motion_transfer"), "motion_transfer: Replace the actor.")
+        self.assertEqual(SL.tidy_caption("motion_transfer: Replace the actor.", trigger=""), "Replace the actor.")
+        self.assertNotEqual(SL.auto_prompt_for("edit", [], {}, prompt_trigger=""), SL.auto_prompt_for("edit", [], {}, prompt_trigger="motion_transfer"))
