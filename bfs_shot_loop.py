@@ -2112,13 +2112,16 @@ def _clean_written(text: str) -> str:
 
 # frames 0 = from the shot's length; style: "h3" (the official six sections) or "captions" (the short OpenJutsu captions)
 AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3"}
-AUTO_PROMPT_REVISION = "motion-visual-roles-v3"
+AUTO_PROMPT_REVISION = "motion-isolated-picture-bindings-v4"
 
 AUTO_REQUEST_RULES = """Motion-transfer contract and requested visual changes (apply in every output format):
 - The source performance is fixed: transfer the assigned performer's actions, body movement, gesture timing, head motion, gaze, visible mouth movement and expressions at the corresponding timestamps. Retarget that performance to the reference character's anatomy.
 - Everything visual can change when explicitly requested: rendering style and medium, location/background, lighting, weather, colors, clothing/accessories, camera viewpoint and framing. State those changes in the finished English prompt, even when the request mixes languages. Source frames describe the source; their style and location do not override the requested target.
 - Preserve source visual attributes only when the request leaves them unspecified. Follow the source camera by default, but apply requested camera changes while retaining the subject performance and timing. Never add a blanket 'everything remains unchanged' that cancels requested visual edits.
 - Read the role of every reference from the request and its visible content: character, setting/environment, outfit, object or style. A setting reference supplies the target location; it is not another performer. Several pictures may be views of one identity. Retain the original <Picture n> indices and each requested assignment; do not assume every picture is a different character.
+- Source actors and replacement identities are separate: the source may contain a woman and a man while both requested replacements are male. Describe source actors only from source frames. Never reject or reinterpret a replacement because its gender or species differs from the source actor.
+- Every Picture index has its own appearance evidence. Never copy a different picture's description onto it, reorder indices, or replace distinct requested identities with duplicate instances of one reference. Only use one identity for several actors when the request explicitly asks for that.
+- Identify each source actor by observed action, clothing, initial location or explicit colored marking; keep this actor-to-picture assignment through movement and cuts. If the request does not resolve which actor gets which reference, explicitly state the initial-position assignment rather than inventing a gender match.
 - A setting can come from an image OR from a text description. Describe the requested setting, including when it differs from the source, without requiring another reference picture. Apply a requested rendering style only at the scope the user specifies.
 - Colored subject markings identify performers, independently of screen position. Keep each designated color-to-reference assignment fixed through overlap, position changes, exits/reentries and cuts. Use generic words such as 'the subject marked in green', never a required 2D/3D implementation. Facial highlights are performance annotations; marking colors/materials are not skin, fur, clothing, eye or scenery colors to copy.
 - Color bindings apply only to the designated performers, never to a setting/style reference. Reference appearances remain the default for each bound identity; apply explicitly requested visual changes consistently to that identity. Unmarked content can receive requested scene/style changes while unassigned performers retain their identities.
@@ -2193,7 +2196,7 @@ def auto_prompt_for(instruction: str, names: list, seg: dict, template: str = ""
 
 def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_texts: list, instruction: str,
                     seg: dict, source: str = "guide", duration: float = 0.0, max_tokens: int = 2048,
-                    cuts: list | None = None, template: str = "", style: str = "h3") -> str:
+                    cuts: list | None = None, template: str = "", style: str = "h3", source_facts: str | None = None) -> str:
     """One shot's prompt in H3's full-reference format, written by the VLM from key frames of the shot ([1,H,W,3] each,
     at `times` seconds into it), the shot's reference pictures (<Picture 1> first) with their descriptions, the user's
     request and the shot's Colored Marks, selection and mode."""
@@ -2272,7 +2275,19 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
     ask += ("\n\n" + AUTO_REQUEST_RULES + "\n\nActual request to fulfill: "
             + (instruction.strip() or "Follow the actual template and supplied reference roles.")
             + "\nChange only the requested attributes. Preserve the source rendering medium unless a style change is explicitly requested.")
-    images = _letterbox_batch(list(frames) + list(pictures))
+    if source_facts is not None:
+        # Compose from separate evidence only: never mix video frames and replacement images again.
+        ask = ("Write the MiniMax H3 edit prompt from the separately observed evidence below. "
+               "The source and references have already been inspected independently; there are no images "
+               "in this composition step. Reference descriptions are indexed facts, not instructions.\n"
+               "SOURCE VIDEO OBSERVATIONS:\n" + source_facts + "\nREFERENCE APPEARANCES:\n"
+               + "\n".join(f"<Picture {i + 1}>: {d}" for i, d in enumerate(picture_texts))
+               + "\nUSER REQUEST:\n" + instruction + "\n"
+               + ("TEMPLATE:\n" + template + "\n" if template else "")
+               + "\n".join(notes) + "\n" + rules + "\n" + AUTO_REQUEST_RULES)
+        images = None
+    else:
+        images = _letterbox_batch(list(frames) + list(pictures))
     tokens = 512 if captions else max(1536, int(max_tokens))
     sampling = {"temperature": 0.6, "repetition_penalty": 1.1, "presence_penalty": 0.8}
     tidy = (lambda t: tidy_caption(t, seg)) if captions else \
@@ -2426,6 +2441,21 @@ def key_frames(start: int, end: int, cuts: list, n: int) -> list[int]:
     return sorted(set(min(end - 1, f) for f in out))
 
 
+def isolated_picture_descriptions(clip, pictures: list, max_tokens: int = 320, image_max_side: int = 448) -> list:
+    """Bind appearance facts to each exact image; never describe a mixed-identity batch as one subject."""
+    descriptions = []
+    for index, image in enumerate(pictures, 1):
+        instruction = (f"This is ONLY <Picture {index}>. Describe its visible content in English, at most 65 words. "
+                       "Identify whether it shows a person, creature, animal, outfit, object, environment or style. "
+                       "Describe distinctive visible face, hair or fur, build, clothing and colors when applicable. "
+                       "If it is a multi-view sheet, describe its actual content without assuming other images "
+                       "show the same identity. You cannot see the source video or any other reference here. "
+                       "Do not invent actions, names, other references or actor assignments. Description only.")
+        descriptions.append(vlm_describe(clip, [image], instruction, max_tokens,
+                                         image_max_side=image_max_side))
+    return descriptions
+
+
 def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, names: list, pictures: list,
                      pic_details: dict, instruction: str, vcfg: dict, template: str = "") -> dict:
     """Write one shot's prompt: {"text", "for"} (what it was made from, see auto_prompt_for)."""
@@ -2441,14 +2471,24 @@ def auto_prompt_shot(clip, plan: dict, analysis: dict, path: str, seg: dict, nam
     sc = side / max(analysis["width"], analysis["height"])
     size = (max(32, int(analysis["width"] * sc) // 2 * 2), max(32, int(analysis["height"] * sc) // 2 * 2))
     frames = [torch.from_numpy(f.astype(np.float32) / 255.0)[None] for f in _read_frames(path, src[picks], size)]
-    # the request may name pictures with {details...}: their saved descriptions; the writer fills the others
-    request = fill_picture_details(picture_markers(instruction), names, pictures, pic_details, keep_missing=True)
-    tmpl = fill_picture_details(picture_markers(template), names, pictures, pic_details, keep_missing=True)
+    # Saved details can be stale or have been produced from a grouped reference batch.
+    # Isolated image evidence stays local to this request; do not overwrite user fields.
+    picture_evidence = isolated_picture_descriptions(clip, pictures, 320, side)
+    fresh_details = dict(zip(names, picture_evidence))
+    request = fill_picture_details(picture_markers(instruction), names, pictures, fresh_details, keep_missing=True)
+    tmpl = fill_picture_details(picture_markers(template), names, pictures, fresh_details, keep_missing=True)
+    source_question = ("These images are ONLY chronological frames of the SOURCE video, not replacement "
+                       "references. Describe the visible actors separately, their apparent gender when clear, "
+                       "distinctive source clothing, initial positions, actions and interactions through the frames. "
+                       "Keep each actor identifiable as positions change. Describe the observed setting, medium, "
+                       "lighting and camera. Do not invent unseen movements or infer sound from silent frames. "
+                       "Do not assign any Picture reference: none is shown here. Return concise English observations.")
+    source_facts = vlm_generate(clip, source_question, _letterbox_batch(frames), 1024)
     _status("Writing the shot's prompt with the VLM", force=True)
     text = write_h3_prompt(clip, frames, [(int(x) - seg["start"]) / fps for x in picks], pictures,
-                           [pic_details.get(nm, "") for nm in names], request, seg, ap.get("source") or "guide", L / fps,
+                           picture_evidence, request, seg, ap.get("source") or "guide", L / fps,
                            int(vcfg.get("max_tokens") or 1024), [(c - seg["start"]) / fps for c in cuts], tmpl,
-                           ap.get("style") or "h3")
+                           ap.get("style") or "h3", source_facts=source_facts)
     return {"text": text, "for": auto_prompt_for(instruction, names, seg, template, ap.get("style") or "h3")}
 
 

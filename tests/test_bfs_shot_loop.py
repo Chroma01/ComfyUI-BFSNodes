@@ -1641,3 +1641,34 @@ class RedoRecoveryTest(unittest.TestCase):
 
     def test_reset_without_selection_preserves_completed_run(self):
         self.assertEqual(SL.cache_status(self.plan, reset=True)["ok"], [True, True])
+
+
+class IsolatedReferenceBindingTests(unittest.TestCase):
+    def test_each_reference_has_its_own_image_and_index(self):
+        images = [torch.zeros(1, 4, 4, 3), torch.ones(1, 4, 4, 3)]
+        calls = []
+        def describe(clip, batch, instruction, tokens, **kwargs):
+            self.assertEqual(len(batch), 1)
+            calls.append((batch[0], instruction))
+            return "human in dark suit" if batch[0] is images[0] else "goblin in loincloth"
+        with patch.object(SL, "vlm_describe", side_effect=describe):
+            result = SL.isolated_picture_descriptions(object(), images)
+        self.assertEqual(result, ["human in dark suit", "goblin in loincloth"])
+        self.assertIn("ONLY <Picture 1>", calls[0][1])
+        self.assertIn("ONLY <Picture 2>", calls[1][1])
+        self.assertIs(calls[0][0], images[0])
+        self.assertIs(calls[1][0], images[1])
+
+    def test_final_writer_only_receives_separate_text_facts(self):
+        captured = []
+        def generate(clip, prompt, images, tokens, **kwargs):
+            captured.append((prompt, images))
+            return "Replace the woman with the human from <Picture 1> and the man with the goblin from <Picture 2>."
+        with patch.object(SL, "vlm_generate", side_effect=generate):
+            SL.write_h3_prompt(object(), [], [], [object(), object()],
+                ["human in dark suit", "pink goblin"], "Replace both fighters", {},
+                style="captions", source_facts="A woman and a man are fighting.")
+        self.assertIsNone(captured[0][1])
+        self.assertIn("<Picture 1>: human in dark suit", captured[0][0])
+        self.assertIn("<Picture 2>: pink goblin", captured[0][0])
+        self.assertIn("A woman and a man are fighting", captured[0][0])
