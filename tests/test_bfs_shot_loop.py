@@ -1672,3 +1672,9 @@ class IsolatedReferenceBindingTests(unittest.TestCase):
         self.assertIn("<Picture 1>: human in dark suit", captured[0][0])
         self.assertIn("<Picture 2>: pink goblin", captured[0][0])
         self.assertIn("A woman and a man are fighting", captured[0][0])
+
+    def test_browser_and_backend_use_same_prompt_revision(self):
+        browser = (ROOT / "web/js/bfs_shot_loop.js").read_text()
+        start = browser.index("const autoFor =")
+        signature = browser[start:browser.index("const writtenOf", start)]
+        self.assertIn('"' + SL.AUTO_PROMPT_REVISION + '"', signature)
