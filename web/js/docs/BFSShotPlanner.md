@@ -758,3 +758,5 @@ Changing the seed, model or other render settings still invalidates stored shots
 ### Experimental native temporal motion transfer
 
 `BFS Shot H3 Conditioning` now has **native temporal alignment (experimental)** in `guide_mode`. Connect MODEL in and route its MODEL output to the guider. This uses the matching experimental LoRA, the shot as native `<Video 1>`, temporal RoPE alignment and soft temporal attention; it does not use Add Guide. Use 24 fps and disable continuity/first-frame/mask guides and VSA. Simple appends a MODEL output without moving existing outputs. The standalone **BFS MiniMax H3 Native Temporal Alignment (Experimental)** node provides the same patch for native workflows. See `H3_NATIVE_TEMPORAL.md` for the full contract and validation limits.
+
+Native temporal performance (1.115.11): `native_temporal_backend` defaults to `flash partitions (no compile)`, preserving the same temporal penalty. `native_guide_scale` can reduce only guide resolution (try 0.5); output dimensions and frame count stay unchanged. The original Flex backend remains available for comparison.

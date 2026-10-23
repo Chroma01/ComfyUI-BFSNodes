@@ -4304,6 +4304,10 @@ class BFSShotH3Conditioning:
                     "tooltip": "Only for aligned guide + CLIP video context. Qwen sampling rate for this shot; "
                     "try 2, 4 or 8 fps. Higher values cost more context/encoding time, not output fps. "
                     "Console confirms sent frames, video vision tokens and completed encoding."}),
+                "native_guide_scale": ("FLOAT", {"default": 1.0, "min": 0.125, "max": 1.0, "step": 0.125,
+                    "tooltip": "Native temporal mode only: spatial scale of the motion video before encoding; output size, frame count and identity references stay unchanged. Try 0.5 to reduce guide tokens/VRAM."}),
+                "native_temporal_backend": (["flash partitions (no compile)", "flex (original)"], {"default": "flash partitions (no compile)",
+                    "tooltip": "Native temporal mode only. Flash partitions preserves the temporal attention policy without compilation; Flex is the original implementation."}),
             },
         }
 
@@ -4317,7 +4321,7 @@ class BFSShotH3Conditioning:
 
     def condition(self, shot, clip, vae, guide_mode, first_frame, ref_image_size,
                   audio_vae=None, with_audio=False, model=None, vlm=None, setting_ref="off", setting_mask=None, inpaint="off", mask_guide="off", mask_ref_size="1/2", mask_guide_look="grey blurred",
-                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0):
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0, native_guide_scale=1.0, native_temporal_backend="flash partitions (no compile)"):
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide, MiniMaxH3ReferenceToVideo
         # every picture of the shot, <Picture 1> first (chosen in the planner; use_ref_2 left in 1.113)
         refs = {f"ref_image_{k}": r for k, r in enumerate(shot_refs(shot)[:MAX_REFS])}
@@ -4414,6 +4418,14 @@ class BFSShotH3Conditioning:
             pmask = generation_mask(shot, log=gtag)
             guide_px = masked_only(shot["frames"], pmask, look=mask_guide_look)
             print(f"{gtag}: mask guide ({pg}, look: {mask_guide_look}), {mask_report(pmask)}", flush=True)
+        if temporal and float(native_guide_scale) != 1.0:
+            if not 0.125 <= float(native_guide_scale) <= 1.0:
+                raise ValueError("native_guide_scale must be between 0.125 and 1.0")
+            source_h, source_w = seen.shape[1:3]
+            size = (max(32, int(source_h*float(native_guide_scale))//32*32),
+                    max(32, int(source_w*float(native_guide_scale))//32*32))
+            seen = torch.nn.functional.interpolate(seen.movedim(-1,1),size=size,mode="bilinear",align_corners=False).movedim(1,-1)
+            print(f"{gtag}: native motion reference scaled {source_w}x{source_h} -> {size[1]}x{size[0]}; all {seen.shape[0]} frames retained, output unchanged",flush=True)
         if native or pg == MASK_GUIDES[3]:
             vids = {}
             if native:
@@ -4480,7 +4492,7 @@ class BFSShotH3Conditioning:
                 from .minimax_h3_native_temporal import patch_temporal_model
             except ImportError:
                 from minimax_h3_native_temporal import patch_temporal_model
-            model = patch_temporal_model(model)
+            model = patch_temporal_model(model, backend=native_temporal_backend)
             print(f"{gtag}: native temporal alignment enabled; use the MODEL output for sampling", flush=True)
         return (positive, latent, model, text)
 
@@ -4573,6 +4585,10 @@ class BFSShotH3ConditioningSimple:
                     "try 2, 4 or 8 fps. Higher values cost more context/encoding time, not output fps. "
                     "Console confirms sent frames, video vision tokens and completed encoding."}),
                 "model": ("MODEL", {"tooltip": "Required for native temporal mode. Route MODEL output to the guider."}),
+                "native_guide_scale": ("FLOAT", {"default": 1.0, "min": 0.125, "max": 1.0, "step": 0.125,
+                    "tooltip": "Native temporal mode only: spatial scale of the motion video before encoding; output size, frame count and identity references stay unchanged. Try 0.5 to reduce guide tokens/VRAM."}),
+                "native_temporal_backend": (["flash partitions (no compile)", "flex (original)"], {"default": "flash partitions (no compile)",
+                    "tooltip": "Native temporal mode only. Flash partitions preserves the temporal attention policy without compilation; Flex is the original implementation."}),
             },
         }
 
@@ -4585,13 +4601,13 @@ class BFSShotH3ConditioningSimple:
 
     def condition(self, shot, clip, vae, guide_mode, ref_image_size,
                   audio_vae=None, with_audio=False, vlm=None, inpaint=INPAINT_MODES[0],
-                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0, model=None):
+                  source_blur="off", source_blur_strength=1.0, source_blur_segmenter="SAM 3.1", source_blur_effect="blur", clip_video_fps=2.0, model=None, native_guide_scale=1.0, native_temporal_backend="flash partitions (no compile)"):
         positive, latent, patched_model, prompt = BFSShotH3Conditioning().condition(
             shot, clip, vae, guide_mode, "none", ref_image_size,
             audio_vae=audio_vae, with_audio=with_audio, vlm=vlm, inpaint=inpaint,
             source_blur=source_blur, source_blur_strength=source_blur_strength,
             source_blur_segmenter=source_blur_segmenter, source_blur_effect=source_blur_effect,
-            clip_video_fps=clip_video_fps, model=model)
+            clip_video_fps=clip_video_fps, model=model, native_guide_scale=native_guide_scale, native_temporal_backend=native_temporal_backend)
         return positive, latent, prompt, patched_model
 
 

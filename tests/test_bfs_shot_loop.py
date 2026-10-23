@@ -517,6 +517,15 @@ class ConditioningPromptTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "active shot continuity"):
                     SL.BFSShotH3Conditioning().condition(shot, "clip", "vae", SL.BFSShotH3Conditioning.GUIDE_MODES[5], "none", "match", model="model")
 
+    def test_native_guide_scale_keeps_output_and_frames(self):
+        import minimax_h3_native_temporal as temporal
+        shot = self._shot(); shot.update(fps=24, frames=torch.zeros(22,64,128,3))
+        with patch.object(temporal, "patch_temporal_model", return_value="patched"):
+            SL.BFSShotH3Conditioning().condition(shot,"clip","vae",SL.BFSShotH3Conditioning.GUIDE_MODES[5],"none","match",model="model",native_guide_scale=0.5)
+        self.assertEqual(tuple(self.seen["ref_videos"]["ref_video_1"].shape),(22,32,64,3))
+        self.assertEqual((self.seen["width"],self.seen["height"],self.seen["length"]),(448,800,22))
+        self.assertEqual(tuple(shot["frames"].shape),(22,64,128,3))
+
     def test_setting_picture_is_the_last_reference_with_static(self):
         mask = torch.zeros(22, 8, 8)
         mask[:, 2:4, 2:4] = 1

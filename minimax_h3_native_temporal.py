@@ -4,13 +4,17 @@ Per-model wrappers only: no global ComfyUI monkey patches or extra weights.
 """
 import copy
 import math
+import time
 import torch
 try:
     from . import minimax_h3_native_temporal_core as core
+    from . import minimax_h3_temporal_fast as fast
 except ImportError:
     import minimax_h3_native_temporal_core as core
+    import minimax_h3_temporal_fast as fast
 
 MARKER = 'bfs_h3_native_temporal_v1'
+BACKENDS = ['flash partitions (no compile)', 'flex (original)']
 
 
 def temporal_layout(native, refs, keyframes, video_index=1):
@@ -53,7 +57,8 @@ def temporal_layout(native, refs, keyframes, video_index=1):
     return result, source, target
 
 
-def attention_override(ctx, previous=None):
+def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False):
+    first=[log_first]
     def override(original, q, k, v, heads, mask=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
         # Token refiner and other attention paths retain their original backend.
         n = q.shape[-2] if skip_reshape else q.shape[1]
@@ -67,12 +72,24 @@ def attention_override(ctx, previous=None):
             raise ValueError('Native temporal attention does not support another attention mask override.')
         if not skip_reshape:
             q, k, v = [x.view(x.shape[0], x.shape[1], heads, -1).transpose(1, 2) for x in (q,k,v)]
-        out = core.attention(q, k, v, ctx)
+        timing=first[0]
+        if timing:
+            print(f'[BFS H3 native temporal] first attention starting: backend={backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
+            if q.is_cuda: torch.cuda.synchronize(q.device)
+            started=time.perf_counter()
+        out = fast.attention(q,k,v,plan) if backend==BACKENDS[0] else core.attention(q,k,v,ctx)
+        if timing:
+            if q.is_cuda: torch.cuda.synchronize(q.device)
+            print(f'[BFS H3 native temporal] first attention finished in {time.perf_counter()-started:.3f}s',flush=True)
+            first[0]=False
         return out if skip_output_reshape else out.transpose(1, 2).reshape(out.shape[0], -1, out.shape[1]*out.shape[3])
     return override
 
 
-def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0):
+def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0]):
+    if backend not in BACKENDS: raise ValueError("Unknown native temporal attention backend")
+    if backend==BACKENDS[0] and not hasattr(torch.ops.aten, '_scaled_dot_product_flash_attention'):
+        raise RuntimeError("This PyTorch build lacks native FlashAttention with LSE. Update PyTorch or select flex (original).")
     cfg = core.options(dict(native_temporal_alignment=True, native_temporal_strength=strength,
                             native_temporal_window_seconds=window, native_temporal_falloff_seconds=falloff,
                             native_temporal_max_penalty=cap))
@@ -92,6 +109,8 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     previous = patched.model_options.get('model_function_wrapper')
     cache = [None, None]
     logged = [False]
+    plan_cache = [None, None]
+    calls = [0]
 
     def wrapper(model_function, args):
         conds = args.get('c', {})
@@ -110,17 +129,23 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         ctx = core.TemporalContext(times, source[None].to(device), target[None].to(device),
                                   torch.ones_like(source[None], device=device), strength, window, falloff, cap,
                                   torch.tensor([strength,window,falloff,cap],device=device,dtype=torch.float32))
-        to['optimized_attention_override'] = attention_override(ctx)
+        if plan_cache[0] is not layout:
+            plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,strength,window,falloff,cap)]
+        to['optimized_attention_override'] = attention_override(ctx, backend=backend, plan=plan_cache[1], log_first=not logged[0])
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
-            print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF', flush=True)
+            print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={backend}; packed_rows={layout.seq_len}', flush=True)
             logged[0] = True
-        if previous:
-            return previous(model_function, copied)
-        return model_function(copied['input'], copied['timestep'], **copied['c'])
+        calls[0]+=1
+        started=time.perf_counter()
+        result=previous(model_function, copied) if previous else model_function(copied['input'], copied['timestep'], **copied['c'])
+        if calls[0]<=2:
+            if device.type=='cuda':torch.cuda.synchronize(device)
+            print(f'[BFS H3 native temporal] model evaluation {calls[0]} finished in {time.perf_counter()-started:.2f}s (includes weights/offload and all blocks)',flush=True)
+        return result
 
     patched.set_model_unet_function_wrapper(wrapper)
-    patched.model_options[MARKER] = dict(version=core.VERSION, video_index=video_index, **cfg)
+    patched.model_options[MARKER] = dict(version=core.VERSION, video_index=video_index, backend=backend, **cfg)
     return patched
 
 
@@ -133,7 +158,8 @@ class BFSMiniMaxH3NativeTemporal:
             'strength': ('FLOAT', {'default':2.0,'min':0.0,'max':20.0,'step':0.1}),
             'window_seconds': ('FLOAT', {'default':0.2,'min':0.0,'max':10.0,'step':0.01}),
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
-            'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})}}
+            'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
+            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions preserves the bounded temporal score policy without torch.compile. Flex is the original implementation.'})}}
     RETURN_TYPES = ('MODEL',)
     FUNCTION = 'apply'
     CATEGORY = 'BFS/MiniMax H3'
@@ -142,8 +168,8 @@ class BFSMiniMaxH3NativeTemporal:
         'to the guider. No Add Guide or VSA. Guide/output must share a 24fps temporal grid. '
         'Does not encode video or load the LoRA. Defaults match training.')
 
-    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0):
-        return (patch_temporal_model(model,motion_video_index,strength,window_seconds,falloff_seconds,max_penalty),)
+    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=BACKENDS[0]):
+        return (patch_temporal_model(model,motion_video_index,strength,window_seconds,falloff_seconds,max_penalty,attention_backend),)
 
 NODE_CLASS_MAPPINGS = {'BFSMiniMaxH3NativeTemporal': BFSMiniMaxH3NativeTemporal}
 NODE_DISPLAY_NAME_MAPPINGS = {'BFSMiniMaxH3NativeTemporal': 'BFS MiniMax H3 Native Temporal Alignment (Experimental)'}

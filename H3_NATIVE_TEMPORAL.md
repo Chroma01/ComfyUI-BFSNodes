@@ -38,7 +38,7 @@ score -= min(strength * (max(abs(t_target - t_guide) - window_seconds, 0) / fall
 
 Defaults: strength 2.0, window 0.20 s, falloff 0.25 s, maximum penalty 6.0. Set strength 0 to test temporal RoPE alignment alone. Bypass the node to test fully native baseline. Text, image references, target self-attention, reference audio, and token-refiner attention retain their normal behavior.
 
-CUDA uses PyTorch compiled FlexAttention without allocating an S×S bias matrix. Requires a PyTorch build with FlexAttention and a compatible native ComfyUI H3 PackedLayout/attention override API. The tiny dense CPU implementation is a test oracle only and refuses long sequences. Start with model compilation/malloc graph optimizations disabled until validated on your local ComfyUI build.
+As of 1.115.11 the default backend is **flash partitions (no compile)**: it uses native CUDA FlashAttention with log-sum-exp outputs, positive partition merging and bounded frame chunks. No dense S×S bias tensor or torch.compile is used in this backend. CUDA FP16/BF16 and PyTorch's native FlashAttention-with-LSE primitive are required. The original compiled FlexAttention remains selectable for comparison. Start with model compilation/malloc graph optimizations disabled until validated on your local ComfyUI build.
 
 Runtime confirmation:
 
@@ -51,3 +51,16 @@ This log confirms the patch ran, not that visual motion or identity quality is c
 ## Validation
 
 Tests compare an audited native ComfyUI layout with positions exported by the actual training implementation, including image references and reference audio. They verify original conditioning/layout immutability, temporal-length rejection, attention score math/output shapes, token-refiner fallback, per-model routing and incompatible patches. Planner tests verify native-video conditioning and returned MODEL routing. Full ComfyUI GPU generation remains pending local validation; the active training process is not restarted or modified by this source change.
+
+
+## Performance changes in 1.115.11
+
+The temporal rule and RoPE policy are unchanged. For motion keys, the modified softmax weight is decomposed exactly as `exp(-cap) + (exp(-penalty) - exp(-cap))`. The first term is ordinary attention over all motion keys. The positive correction is zero for distant times and can be computed with short per-frame batches. Non-motion keys keep weight one. All partitions are recombined with their log-sum-exp normalizers. This is not a hard temporal window or sparse approximation. BF16 partition merging has normal floating-point rounding differences; the small CUDA comparison against SDPA measured relative output error 0.00452.
+
+A synthetic long-sequence benchmark on RTX PRO 6000 Blackwell / PyTorch 2.12.0+cu130, 107126 tokens, 8 heads, head dimension 128 measured approximately 0.628 s for original FlexAttention, 0.422 s for Flash partitions and 0.327 s for unmodified native FlashAttention. Training was running concurrently, so these are indicative isolated-kernel timings, not whole-model inference results or RTX 5090 speed guarantees. Small sequences have additional partition-launch overhead and can favor FlexAttention. No full-model GPU generation is claimed here.
+
+Standalone node: `attention_backend` selects the implementation. Planner conditioning: `native_temporal_backend` selects it. Neither setting loads a LoRA or changes its weights. Defaults select Flash partitions; choose `flex (original)` for an A/B comparison.
+
+Planner `native_guide_scale` defaults to 1.0 for compatibility. Try 0.5 on VRAM-constrained GPUs: it reduces only the motion-reference spatial dimensions (about four times fewer guide tokens), keeping all timestamps/frames, output dimensions and identity images unchanged. This changes the visual detail supplied by the guide and must be evaluated for quality. In standalone workflows resize only the motion video before Reference to Video to get the same effect.
+
+The console logs the first attention's input shape and completion time and the first two full model evaluation times. If attention is fast but a full model evaluation remains slow, investigate model loading/offload and the remaining blocks rather than assuming compilation. These timings synchronize CUDA at those diagnostic points only. The active training code and its backend are unchanged.
