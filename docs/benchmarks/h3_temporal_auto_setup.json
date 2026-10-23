@@ -1,0 +1,22 @@
+{
+  "first_use": {
+    "status": "passed",
+    "version": "h3_native_temporal_kernel_v1",
+    "shape": [
+      1,
+      2,
+      83,
+      128
+    ],
+    "dense_and_sol_finite": true
+  },
+  "fresh_process_offline_cache": {
+    "status": "passed",
+    "network_requests": 0,
+    "api_version": "h3_native_temporal_kernel_v1",
+    "api_file": "temporal_attention.py"
+  },
+  "platform": "Linux x86_64 / RTX PRO 6000 Blackwell SM120 / CUDA 13 driver",
+  "automatic_component_release": "h3-native-temporal-kernel-v1",
+  "source_commit": "9953b6caec7a5cb3e2486dd97a365f7af44eedad"
+}

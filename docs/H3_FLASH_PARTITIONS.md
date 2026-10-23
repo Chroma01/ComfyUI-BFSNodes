@@ -139,7 +139,7 @@ Alignment does not guarantee identity binding. The user has reported useful resu
 
 ## Native one-pass Kitchen extension
 
-From 1.115.16, the optional [native Kitchen temporal extension](../H3_NATIVE_TEMPORAL.md#one-pass-native-kitchen-kernels-111516) fuses the temporal rule into dense INT8 and sol-attn kernels. It removes the per-frame attention loop. Initial full-head diagnostics were faster than Flash Partitions, while visual/end-to-end validation remains pending. Installation is opt-in and separate from updating BFS.
+From 1.115.16, the optional [native Kitchen temporal extension](../H3_NATIVE_TEMPORAL.md#one-pass-native-kitchen-kernels-111516) fuses the temporal rule into dense INT8 and sol-attn kernels. It removes the per-frame attention loop. Initial full-head diagnostics were faster than Flash Partitions, while visual/end-to-end validation remains pending. From 1.115.17, first-use setup is automatic on supported Linux SM120 systems with a CUDA-13-capable driver; manual installation remains available elsewhere.
 
 ## Experimental sol-attn compatibility
 

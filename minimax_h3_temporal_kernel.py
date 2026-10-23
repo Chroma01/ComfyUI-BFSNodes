@@ -1,5 +1,9 @@
-"""Optional native Comfy Kitchen extension; lazy import, no environment mutation."""
+"""Native Kitchen extension: existing installation or verified first-use cache."""
 import importlib
+try:
+    from . import minimax_h3_temporal_bootstrap as bootstrap
+except ImportError:
+    import minimax_h3_temporal_bootstrap as bootstrap
 
 
 def api_for(q):
@@ -8,10 +12,10 @@ def api_for(q):
     try:
         api = importlib.import_module('comfy_kitchen.temporal_attention')
     except ImportError:
-        return None
+        return bootstrap.ensure(q.device)
     if getattr(api, 'VERSION', None) != 'h3_native_temporal_kernel_v1':
         raise RuntimeError('Unsupported Comfy Kitchen temporal extension version; update the temporal overlay.')
-    return api if api.is_available(q.device) else None
+    return api if api.is_available(q.device) else bootstrap.ensure(q.device)
 
 
 def policy_for(api, plan, ctx):
@@ -42,3 +46,12 @@ def run(kind, q, k, v, plan, ctx, **kwargs):
         q,k,v=[t.to(torch.bfloat16) for t in (q,k,v)]
     fn = api.int8_attention if kind == 'dense' else api.sol_attn
     return fn(q,k,v,policy,**kwargs).to(dtype)
+
+
+def prepare_model(model):
+    """Prepare a selected native backend during node execution, before sampling."""
+    device=getattr(model,'load_device',None)
+    if getattr(device,'type',None)=='cuda':
+        from types import SimpleNamespace
+        return api_for(SimpleNamespace(device=device))
+    return None

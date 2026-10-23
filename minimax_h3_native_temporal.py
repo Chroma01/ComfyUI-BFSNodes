@@ -160,8 +160,10 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         raise ValueError('Native temporal alignment requires a native ComfyUI MiniMaxH3 model.')
     opts = model.model_options.get('transformer_options', {})
     dense_override, sparse_patch = sparse_compat.selection(opts)
-    dense_backend_selection(dense_override)
+    selected_dense_at_setup=dense_backend_selection(dense_override)
     sparse_compat.without_owned_blocks(opts, sparse_patch)
+    if backend==BACKENDS[2] or selected_dense_at_setup=='comfy_kitchen_int8' or sparse_patch is not None:
+        sol.native_kernel.prepare_model(model)
     patched = model.clone()
     previous = patched.model_options.get('model_function_wrapper')
     cache = [None, None]

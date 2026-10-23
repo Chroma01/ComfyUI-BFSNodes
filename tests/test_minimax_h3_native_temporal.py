@@ -182,3 +182,13 @@ def test_sol_sparse_window_runs_temporal_kernel_and_logs_activation(monkeypatch,
  torch.testing.assert_close(out,expected,atol=1e-6,rtol=1e-5)
  assert len(calls)==plan.frames+1
  assert 'sol-attn ACTIVE' in capsys.readouterr().out
+
+
+def test_node_prepares_selected_kitchen_before_sampling_but_not_flash(monkeypatch):
+ calls=[]
+ monkeypatch.setattr(node.sol.native_kernel,'prepare_model',lambda model:calls.append(model))
+ m=Model();m.load_device=torch.device('cuda:0')
+ node.patch_temporal_model(m,backend=node.BACKENDS[0])
+ assert calls==[]
+ node.patch_temporal_model(m,backend=node.BACKENDS[2])
+ assert calls==[m]

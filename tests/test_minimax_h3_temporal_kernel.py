@@ -41,5 +41,15 @@ def test_bridge_rejects_wrong_extension_version(monkeypatch):
 def test_cpu_and_missing_binary_keep_compatibility_path(monkeypatch):
  assert bridge.api_for(torch.zeros(1)) is None
  api,_=fake_api(monkeypatch);api.is_available=lambda d:False
+ monkeypatch.setattr(bridge.bootstrap,'ensure',lambda d:None)
  q=SimpleNamespace(device=torch.device('cuda'))
  assert bridge.api_for(q) is None
+
+
+def test_prepare_model_runs_before_sampling_when_cuda_is_selected(monkeypatch):
+ calls=[]
+ monkeypatch.setattr(bridge,'api_for',lambda q:calls.append(q.device) or 'ready')
+ assert bridge.prepare_model(SimpleNamespace(load_device=torch.device('cuda:0'))) == 'ready'
+ assert calls==[torch.device('cuda:0')]
+ assert bridge.prepare_model(SimpleNamespace(load_device=torch.device('cpu'))) is None
+ assert bridge.prepare_model(SimpleNamespace()) is None
