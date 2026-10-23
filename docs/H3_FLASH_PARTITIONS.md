@@ -137,6 +137,10 @@ Flash Partitions preserves the dense score policy and its quadratic work. More s
 
 Alignment does not guarantee identity binding. The user has reported useful results from the existing 10500 LoRA plus this patch, and weaker identity retention from an early fresh-native checkpoint. Those are qualitative observations, not a matched-training comparison or evidence that the patch alone teaches swapping. No LoRA strength ramp, image-reference boost or identity loss is implemented by this backend.
 
+## Experimental sol-attn compatibility
+
+Version 1.115.14 can recognize Model Sparse Attention with sol-attn and preserve the temporal score rule via repeated frame-wise calls. This initial compatibility path was slower than Flash Partitions; it is not the proposed fast one-pass sparse kernel. See [implementation limits and measurements](../H3_NATIVE_TEMPORAL.md#model-sparse-attention-sol-attn-compatibility-111514). SLA and VSA remain unsupported.
+
 ## Video example
 
 See the [synchronized six-column video and interpretation](../H3_NATIVE_TEMPORAL.md#video-comparison-an-add-guide-trained-lora-with-native-temporal-alignment), including the step-10500 Add Guide-trained LoRA running with the new native temporal method. The separate early step-750 identity-drift report is distinguished there.

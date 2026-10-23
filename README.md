@@ -202,4 +202,6 @@ Experimental native temporal motion-transfer inference (standalone node and Shot
 
 [Illustrated explanation: native temporal alignment with compile-free Flash Partitions](docs/H3_FLASH_PARTITIONS.md) covers the exact temporal rule, positive partition decomposition, log-sum-exp merging, measured performance, guide scaling and current backend limitations.
 
+Experimental temporal mode automatically recognizes **Model Attention Backend** (Kitchen/PyTorch) and, from 1.115.14, **Model Sparse Attention → sol-attn**. The initial sol-attn compatibility path repeats frame-wise calls and was slower than Flash Partitions; see [setup, measurements and limitations](H3_NATIVE_TEMPORAL.md#model-sparse-attention-sol-attn-compatibility-111514). SLA/VSA remain unsupported.
+
 ![H3 temporal weight decomposition](docs/illustrations/h3_temporal_weight_decomposition.png)

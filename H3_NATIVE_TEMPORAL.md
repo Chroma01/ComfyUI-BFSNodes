@@ -35,7 +35,7 @@ The requested background replacement is partial: source architecture and layout 
 4. Select `motion_video_index = 1` (or the actual `<Video N>` supplying motion).
 5. Use the same 24 fps frame window for guide and output. H3 may trim frame counts to its supported cadence; use a matching valid count such as 107.
 
-Do not add Add Guide, first-frame guides, VSA, Model Sparse Attention, or unknown attention/block replacements. The official Model Attention Backend node is supported from 1.115.13; see the Kitchen section below. The node raises a clear error for incompatible layouts and temporal lengths instead of silently stretching motion. Source video audio is supported by native packing but is not temporally biased by this patch. For CFG paths, every conditioning branch evaluated by the patched model must retain the native motion reference; an empty negative branch without references cannot provide its timeline. Training preview uses CFG 1.
+Do not add Add Guide, first-frame guides, VSA, SLA, or unknown attention/block replacements. Model Sparse Attention with sol-attn is experimentally supported from 1.115.14; see its limitations below. The official Model Attention Backend node is supported from 1.115.13; see the Kitchen section below. The node raises a clear error for incompatible layouts and temporal lengths instead of silently stretching motion. Source video audio is supported by native packing but is not temporally biased by this patch. For CFG paths, every conditioning branch evaluated by the patched model must retain the native motion reference; an empty negative branch without references cannot provide its timeline. Training preview uses CFG 1.
 
 ## Planner
 
@@ -92,7 +92,7 @@ The console logs the first attention's input shape and completion time and the f
 
 ## Comfy Kitchen and Model Attention Backend (1.115.13)
 
-The official **Model Attention Backend** node is now recognized automatically. Select **comfy kitchen attention** there and route its MODEL through native temporal conditioning to the guider. Its official PyTorch selection is also accepted. Unrelated attention overrides and Model Sparse Attention remain incompatible. The runtime MODEL wrapper recognizes a supported dense selection applied before or after the temporal patch; keep only one temporal patch on the path.
+The official **Model Attention Backend** node is now recognized automatically. Select **comfy kitchen attention** there and route its MODEL through native temporal conditioning to the guider. Its official PyTorch selection is also accepted. Unrelated attention overrides remain incompatible. Model Sparse Attention with sol-attn is supported separately from 1.115.14, as documented below. The runtime MODEL wrapper recognizes a supported dense selection applied before or after the temporal patch; keep only one temporal patch on the path.
 
 With Kitchen selected, the console reports `backend=comfy kitchen (experimental)`. You can also explicitly select this backend in the standalone node or Planner conditioning. Without an upstream Kitchen selection, the existing default remains Flash Partitions. If ComfyUI itself falls back from unavailable Kitchen to PyTorch, the temporal patch does not claim Kitchen was selected. A supported selection from Model Attention Backend takes precedence over the BFS backend selector.
 
@@ -104,4 +104,35 @@ Initial isolated tests on an RTX PRO 6000 Blackwell with PyTorch 2.12.0+cu130 an
 - A real CUDA BF16 test at `[1, 2, 1248, 128]` measured relative output norm error **0.01506** against the FP32 oracle, with finite outputs. INT8 quantization is approximate; this is not a visual quality measurement.
 - At `[1, 2, 42836, 128]`, 22 latent frames and 7,062 guide rows, one warmed evaluation measured **0.1043 s Kitchen** versus **0.01739 s Flash Partitions**. This initial Kitchen path was slower. The test used two heads rather than H3's full 56, with concurrent training; these are diagnostics, not end-to-end or RTX 5090 timings. No speed claim or default-backend change follows from this result.
 
-The active training backend is unchanged. Full ComfyUI video output and local performance still require validation. This implementation does not enable sol-attn, SLA or VSA alongside temporal alignment.
+The active training backend is unchanged. Full ComfyUI video output and local performance still require validation. Version 1.115.14 adds a separate experimental sol-attn compatibility path below; SLA and VSA remain unsupported.
+
+## Model Sparse Attention: sol-attn compatibility (1.115.14)
+
+**This is an experimental compatibility implementation, not a speed optimization.** It automatically recognizes the official **Model Sparse Attention** node with `method = sol-attn`, keeps native temporal RoPE alignment and applies the temporal score penalty through Comfy Kitchen's `sol_attn(key_bias=...)`. The runtime banner identifies `backend=sol-attn frame bias (experimental)`; an `sol-attn ACTIVE` line confirms a sparse call actually ran. Dense windows can use the previously selected dense temporal backend, and the first attention log identifies that actual backend.
+
+Suggested MODEL wiring:
+
+```text
+LoRA loader -> Model Attention Backend (optional dense fallback)
+            -> Model Sparse Attention (sol-attn)
+            -> BFS native temporal node / Shot H3 Conditioning -> guider
+```
+
+The official dense and sparse selections are detected, including owned H3 hooks when a later dense node hides the sparse override. Unrecognized replacements still raise an error. `tau`, `extra_tokens`, `start_percent`, `end_percent`, `dense_blocks` and `min_tokens` retain their sparse-node meanings. Outside eligible sparse calls, the bounded temporal rule still runs through the dense temporal backend. SLA and VSA are rejected.
+
+ComfyUI's usual H3 sparse producer hooks would bypass BFS's temporal score modification. BFS therefore bypasses **only the hooks owned by that exact official sol-attn patch**, in a per-evaluation options copy, and performs attention through its temporal override. Other model clones and unrelated block hooks are not removed. This compatibility path does not retain the native sparse producer's streamed QKV memory optimization.
+
+The public sol-attn kernel currently accepts equal-length Q/K/V and a **key-only** bias; it does not accept the query-dependent temporal bias in one pass. BFS runs one unbiased full-sequence pass for non-target queries, then one full-sequence pass per target latent frame with that frame's key bias, retaining only its target query rows. All conditioning keys are forced into sol-attn's exact branch, since its pooled branch does not honor `key_bias`. This exact-conditioning requirement takes precedence over `sink_conditioning = off`. Other video keys retain sol-attn's routing/pooled approximation. Bias storage is compact `latent_frames * packed_rows`, but sequence computation is repeated `latent_frames + 1` times when the temporal penalty is enabled. This is not equivalent to dense attention and can be substantially slower than Flash Partitions.
+
+Measured diagnostics with PyTorch 2.12.0+cu130, comfy-kitchen 0.2.35, RTX PRO 6000 Blackwell, and concurrent Swap Anything training:
+
+| Packed shape | Flash Partitions | sol-attn frame-wise compatibility |
+| --- | ---: | ---: |
+| `[1, 2, 42836, 128]` | 0.01742 s | 0.1604 s |
+| `[1, 56, 42836, 128]` | 0.4191 s | 2.6490 s |
+
+Both tests used 22 latent frames, 7,062 guide rows, one warmup and one timed evaluation per backend. They measure isolated attention, not full video generation or an RTX 5090. **The initial full-head implementation was about 6.3 times slower; Flash Partitions remains the recommended default.** A fast one-pass implementation would require extending the sparse kernel with query-dependent temporal bias, not merely enabling the existing node.
+
+CPU tests validate the temporal policy against the dense oracle, official-node recognition, owned-hook isolation and dense-window fallback. A CUDA random-input test at `[1, 2, 1248, 128]` produced finite output. Forcing all keys exact gave relative output norm error 0.01332 against FP32; the ordinary tau=1.3 sparse/pooled version gave 0.46068 on those random inputs. The latter is a substantial numerical difference, not evidence of visual quality or a universal model error. Real H3 video quality still requires evaluation. Diagnostics are recorded in [the initial sol-attn benchmark data](docs/benchmarks/h3_sol_temporal_initial.json).
+
+Neither this feature nor its tests change the active training backend.

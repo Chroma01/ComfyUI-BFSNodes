@@ -119,3 +119,66 @@ def test_model_attention_backend_is_honored_without_manual_selection(monkeypatch
   return 'ok'
  assert patched.model_options['model_function_wrapper'](fn,args)=='ok'
  assert selected==[(node.BACKENDS[expected_backend],incoming)]
+
+@pytest.mark.parametrize('hidden_by_later_dense_node',[False,True])
+def test_sol_node_owned_producer_is_bypassed_but_temporal_override_remains(monkeypatch,hidden_by_later_dense_node):
+ Patch=type('SparseAttnPatch',(),{'__module__':'comfy_extras.nodes_sparse_attention'})
+ patch=Patch();patch.vsa=False;patch.topk_ratio=0.
+ previous=None
+ def sparse_override(*args):return patch,previous,args
+ sparse_override.__module__='comfy_extras.nodes_sparse_attention'
+ sparse_override.__qualname__='make_attention_override.<locals>.override'
+ def block_patch(*args):return patch,args
+ block_patch.__module__=sparse_override.__module__
+ block_patch.__qualname__='make_h3_block_patch.<locals>.block_patch'
+ m=Model();m.model_options={'transformer_options':{'optimized_attention_override':None if hidden_by_later_dense_node else sparse_override,'patches_replace':{'dit':{'block':block_patch}}}}
+ patched=node.patch_temporal_model(m)
+ selected=[]
+ def capture(ctx,previous=None,backend=None,sparse_patch=None,**kw):
+  selected.append((backend,sparse_patch));return 'temporal sol hook'
+ monkeypatch.setattr(node,'attention_override',capture)
+ l,r=example();opts=patched.model_options['transformer_options']
+ args=dict(input=torch.zeros(1),timestep=torch.ones(1),c=dict(minimax_payload=dict(layout=l,refs=r),transformer_options=opts))
+ def fn(x,t,**c):
+  assert c['transformer_options']['patches_replace']['dit']=={}
+  assert c['transformer_options']['optimized_attention_override']=='temporal sol hook'
+  return 'ok'
+ assert patched.model_options['model_function_wrapper'](fn,args)=='ok'
+ assert selected==[(node.SOL_BACKEND,patch)]
+ assert m.model_options['transformer_options']['patches_replace']['dit']
+
+
+def test_sol_dense_window_preserves_temporal_policy(monkeypatch,capsys):
+ l,r=example();aligned,src,tgt=node.temporal_layout(l,r,None)
+ ctx=node.core.TemporalContext(aligned.position_ids[:,0].float()[None]/40,src[None],tgt[None],torch.ones(1,l.seq_len,dtype=torch.bool),2.,.2,.25,6.)
+ plan=node.fast.make_plan(aligned.position_ids,src,tgt,2.,.2,.25,6.)
+ patch=SimpleNamespace(dense_reason=lambda *a:'outside sigma window',log_once=lambda *a:None)
+ q,k,v=[torch.randn(1,2,l.seq_len,128) for _ in range(3)]
+ monkeypatch.setattr(node.fast,'attention',lambda q,k,v,p:node.core.dense_reference(q,k,v,ctx))
+ expected=node.core.dense_reference(q,k,v,ctx)
+ out=node.attention_override(ctx,backend=node.SOL_BACKEND,plan=plan,sparse_patch=patch,dense_backend=node.BACKENDS[0],log_first=True)(None,q,k,v,2,skip_reshape=True,skip_output_reshape=True)
+ torch.testing.assert_close(out,expected)
+ assert 'dense fallback: outside sigma window' in capsys.readouterr().out
+
+
+def test_sol_sparse_window_runs_temporal_kernel_and_logs_activation(monkeypatch,capsys):
+ from types import ModuleType
+ ck=ModuleType('comfy_kitchen');ck.sol_attn_is_available=lambda device:True
+ monkeypatch.setitem(sys.modules,'comfy_kitchen',ck)
+ l,r=example();aligned,src,tgt=node.temporal_layout(l,r,None)
+ ctx=node.core.TemporalContext(aligned.position_ids[:,0].float()[None]/40,src[None],tgt[None],torch.ones(1,l.seq_len,dtype=torch.bool),2.,.2,.25,6.)
+ plan=node.fast.make_plan(aligned.position_ids,src,tgt,2.,.2,.25,6.)
+ patch=SimpleNamespace(dense_reason=lambda *a:None,sinks=lambda *a:((0,0),(0,0)),tau=1.3,extra_tokens=256)
+ actual_sol=node.sol.attention
+ calls=[]
+ def oracle(q,k,v,key_bias=None,**kw):
+  calls.append(key_bias)
+  mask=None if key_bias is None else key_bias.view(1,1,1,-1)
+  return torch.nn.functional.scaled_dot_product_attention(q.transpose(1,2),k.transpose(1,2),v.transpose(1,2),attn_mask=mask).transpose(1,2)
+ monkeypatch.setattr(node.sol,'attention',lambda *a,**kw:actual_sol(*a,**kw,kernel=oracle))
+ q,k,v=[torch.randn(1,2,l.seq_len,128) for _ in range(3)]
+ expected=node.core.dense_reference(q,k,v,ctx)
+ out=node.attention_override(ctx,backend=node.SOL_BACKEND,plan=plan,sparse_patch=patch,dense_backend=node.BACKENDS[0])(None,q,k,v,2,skip_reshape=True,skip_output_reshape=True)
+ torch.testing.assert_close(out,expected,atol=1e-6,rtol=1e-5)
+ assert len(calls)==plan.frames+1
+ assert 'sol-attn ACTIVE' in capsys.readouterr().out

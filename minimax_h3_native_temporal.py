@@ -11,12 +11,17 @@ try:
     from . import minimax_h3_native_temporal_core as core
     from . import minimax_h3_temporal_fast as fast
     from . import minimax_h3_temporal_kitchen as kitchen
+    from . import minimax_h3_temporal_sol as sol
+    from . import minimax_h3_sparse_compat as sparse_compat
 except ImportError:
     import minimax_h3_native_temporal_core as core
     import minimax_h3_temporal_fast as fast
     import minimax_h3_temporal_kitchen as kitchen
+    import minimax_h3_temporal_sol as sol
+    import minimax_h3_sparse_compat as sparse_compat
 
 MARKER = 'bfs_h3_native_temporal_v1'
+SOL_BACKEND = 'sol-attn frame bias (experimental)'
 BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)']
 
 def dense_backend_selection(override):
@@ -78,7 +83,7 @@ def temporal_layout(native, refs, keyframes, video_index=1):
     return result, source, target
 
 
-def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False):
+def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False, sparse_patch=None, dense_backend=None):
     first=[log_first]
     def override(original, q, k, v, heads, mask=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
         # Token refiner and other attention paths retain their original backend.
@@ -93,14 +98,36 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
             raise ValueError('Native temporal attention does not support another attention mask override.')
         if not skip_reshape:
             q, k, v = [x.view(x.shape[0], x.shape[1], heads, -1).transpose(1, 2) for x in (q,k,v)]
+        chosen = backend
+        reason = None
+        if backend == SOL_BACKEND:
+            options = kwargs.get('transformer_options') or {}
+            reason = sparse_patch.dense_reason(options, n, options.get('block_index'))
+            if reason is None:
+                import comfy_kitchen as ck
+                if q.shape[-1] != 128 or not ck.sol_attn_is_available(q.device):
+                    reason = 'sol-attn requires head dimension 128 and an available CUDA kernel'
+            if reason is not None:
+                sparse_patch.log_once(('temporal_dense', n, reason), f'temporal dense fallback: {reason}')
+                chosen = dense_backend
         timing=first[0]
         if timing:
-            print(f'[BFS H3 native temporal] first attention starting: backend={backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
+            if reason is not None:
+                print(f'[BFS H3 native temporal] sol-attn dense fallback: {reason}',flush=True)
+            print(f'[BFS H3 native temporal] first attention starting: backend={chosen}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
             if q.is_cuda: torch.cuda.synchronize(q.device)
             started=time.perf_counter()
-        if backend == BACKENDS[2]:
+        if chosen == SOL_BACKEND:
+            if not getattr(plan, '_sol_active_logged', False):
+                passes = plan.frames+1 if ctx.strength and ctx.cap else 1
+                print(f'[BFS H3 native temporal] sol-attn ACTIVE: tau={sparse_patch.tau}, exact conditioning keys, {passes} full-sequence passes per attention call.',flush=True)
+                plan._sol_active_logged = True
+            _, sink_q = sparse_patch.sinks(options, n)
+            out = sol.attention(q,k,v,plan,ctx,tau=sparse_patch.tau,
+                                token_aug=sparse_patch.extra_tokens,sink_q=sink_q)
+        elif chosen == BACKENDS[2]:
             out = kitchen.attention(q,k,v,plan,ctx)
-        elif backend == BACKENDS[0]:
+        elif chosen == BACKENDS[0]:
             out = fast.attention(q,k,v,plan)
         else:
             out = core.attention(q,k,v,ctx)
@@ -129,9 +156,9 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     if net.__class__.__name__ != 'MiniMaxH3Model':
         raise ValueError('Native temporal alignment requires a native ComfyUI MiniMaxH3 model.')
     opts = model.model_options.get('transformer_options', {})
-    dense_backend_selection(opts.get('optimized_attention_override'))
-    if opts.get('patches_replace', {}).get('dit'):
-        raise ValueError('Remove VSA and other attention/block replacement patches before native temporal alignment.')
+    dense_override, sparse_patch = sparse_compat.selection(opts)
+    dense_backend_selection(dense_override)
+    sparse_compat.without_owned_blocks(opts, sparse_patch)
     patched = model.clone()
     previous = patched.model_options.get('model_function_wrapper')
     cache = [None, None]
@@ -151,21 +178,26 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         device = args['input'][0].device if isinstance(args['input'], (list, tuple)) else args['input'].device
         to = dict(conds.get('transformer_options', {}))
         incoming = to.get('optimized_attention_override')
-        selected_dense = dense_backend_selection(incoming)
+        dense_override, sparse_patch = sparse_compat.selection(to)
+        selected_dense = dense_backend_selection(dense_override)
         active_backend = (BACKENDS[2] if selected_dense == 'comfy_kitchen_int8' else
                           BACKENDS[0] if selected_dense == 'pytorch' else backend)
-        if to.get('patches_replace', {}).get('dit'):
-            raise ValueError('Native temporal alignment conflicts with another attention/block replacement patch.')
+        dense_backend = active_backend
+        if sparse_patch is not None:
+            active_backend = SOL_BACKEND
+        to = sparse_compat.without_owned_blocks(to, sparse_patch)
         times = layout.position_ids[:, 0].float()[None].to(device)/40.0
         ctx = core.TemporalContext(times, source[None].to(device), target[None].to(device),
                                   torch.ones_like(source[None], device=device), strength, window, falloff, cap,
                                   torch.tensor([strength,window,falloff,cap],device=device,dtype=torch.float32))
         if plan_cache[0] is not layout:
             plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,strength,window,falloff,cap)]
-        to['optimized_attention_override'] = attention_override(ctx, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0])
+        to['optimized_attention_override'] = attention_override(ctx, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0], sparse_patch=sparse_patch, dense_backend=dense_backend)
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
             print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)
+            if sparse_patch is not None:
+                print('[BFS H3 native temporal] sol-attn compatibility: exact conditioning keys; one full-sequence pass per target latent frame plus an unbiased pass; repeated work may be much slower than Flash Partitions.', flush=True)
             logged[0] = True
         calls[0]+=1
         started=time.perf_counter()

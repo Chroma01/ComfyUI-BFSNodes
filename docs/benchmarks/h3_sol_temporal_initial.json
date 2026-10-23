@@ -1,0 +1,61 @@
+{
+  "probe": {
+    "torch": "2.12.0+cu130",
+    "kitchen": "0.2.35",
+    "status": "finite_sparse_output",
+    "relative_error": 0.46068075299263,
+    "forced_all_keys_exact_relative_error": 0.013319959864020348,
+    "first_call_seconds": 1.1965116760111414,
+    "shape": [
+      1,
+      2,
+      1248,
+      128
+    ],
+    "bias_elements": 8736,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "peak_allocated_bytes": 29803008
+  },
+  "benchmark": {
+    "torch": "2.12.0+cu130",
+    "kitchen": "0.2.35",
+    "status": "passed",
+    "seconds": {
+      "flash_partitions": 0.017417979950550944,
+      "sol_frame_bias": 0.16037049802253023
+    },
+    "shape": [
+      1,
+      2,
+      42836,
+      128
+    ],
+    "frames": 22,
+    "guide_rows": 7062,
+    "bias_elements": 942392,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "peak_allocated_bytes": 210820096,
+    "conditions": "One warmup and one timed evaluation per backend; 2 heads, not full H3; concurrent Swap Anything training; not an end-to-end speed benchmark"
+  },
+  "benchmark_h56": {
+    "torch": "2.12.0+cu130",
+    "kitchen": "0.2.35",
+    "status": "passed",
+    "seconds": {
+      "flash_partitions": 0.41910952096804976,
+      "sol_frame_bias": 2.6489629900315776
+    },
+    "shape": [
+      1,
+      56,
+      42836,
+      128
+    ],
+    "frames": 22,
+    "guide_rows": 7062,
+    "bias_elements": 942392,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "peak_allocated_bytes": 5760942592,
+    "conditions": "One warmup and one timed evaluation per backend; 56 heads; isolated attention, not a full H3 model evaluation; concurrent Swap Anything training; not an end-to-end speed benchmark"
+  }
+}
