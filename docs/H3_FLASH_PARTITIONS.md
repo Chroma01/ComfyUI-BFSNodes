@@ -137,6 +137,10 @@ Flash Partitions preserves the dense score policy and its quadratic work. More s
 
 Alignment does not guarantee identity binding. The user has reported useful results from the existing 10500 LoRA plus this patch, and weaker identity retention from an early fresh-native checkpoint. Those are qualitative observations, not a matched-training comparison or evidence that the patch alone teaches swapping. No LoRA strength ramp, image-reference boost or identity loss is implemented by this backend.
 
+## Video example
+
+See the [synchronized five-column video and interpretation](../H3_NATIVE_TEMPORAL.md#video-comparison-an-add-guide-trained-lora-with-native-temporal-alignment), including the step-10500 Add Guide-trained LoRA running with the new native temporal method. The separate early step-750 identity-drift report is distinguished there.
+
 ## Source and reproducible figures
 
 - [Partition planning, native FlashAttention and stable merge](../minimax_h3_temporal_fast.py)

@@ -2,7 +2,27 @@
 
 Matches ai-toolkit branch [`feat/h3-native-temporal-motion`](https://github.com/alisson-anjos/ai-toolkit/tree/feat/h3-native-temporal-motion), implementation `native_temporal_v1` (commit e0ecf3a). This mode retains a native video reference, aligns its temporal RoPE coordinates with the target, and softly penalizes target queries attending to distant guide times. It preserves native image-reference coordinates and native spatial geometry. It does not add learned weights or load a LoRA.
 
-Use the matching native-temporal LoRA when available. Existing Add Guide motion-transfer LoRAs were trained under a different conditioning contract. Quality is experimental; CPU math/routing tests are not a full video validation.
+Existing Add Guide motion-transfer LoRAs were trained under a different conditioning contract, but the step-10500 example below shows useful transfer to this native temporal mode. This is an experimental observation, not a guarantee for every LoRA. CPU math/routing tests alone do not validate video quality.
+
+## Video comparison: an Add Guide-trained LoRA with native temporal alignment
+
+[**Play the synchronized side-by-side video**](https://github.com/alisson-anjos/ComfyUI-BFSNodes/raw/refs/heads/feat/h3-native-temporal/docs/media/h3_native_temporal_comparison.mp4)
+
+All five columns play together in one 15-second video, starting at the beginning of each supplied export. From left to right:
+
+1. Original guide.
+2. Step-10500 motion-transfer LoRA + native temporal alignment.
+3. The same step-10500 LoRA + guide latents / Add Guide.
+4. The same step-10500 LoRA + native reference, without the temporal patch.
+5. Base model + native reference, without a LoRA or temporal patch.
+
+**Apparently, a LoRA trained with guide latents can also work with this new native temporal method.** In this example, the step-10500 Add Guide-trained LoRA follows the source poses and camera framing with the temporal patch, while maintaining the reference dog's white T-shirt and jeans through the sampled beginning, middle and end. Its Add Guide result also follows the performance. Native reference without the temporal patch preserves the character more successfully with this LoRA than without it, but reproduces the choreography less closely. The base native-reference result loses the reference T-shirt.
+
+A plausible explanation is that the LoRA's learned appearance and motion-transfer behavior can be reused through shared model weights, while the runtime patch supplies temporal correspondence through native reference attention. This example does not isolate that mechanism experimentally or establish universal compatibility. The temporal mode still uses native video-reference latents; it does **not** inject Add Guide latents.
+
+**The reported identity drift concerns the separate, fresh native-temporal LoRA at step 750, not the step-10500 LoRA shown here.** The 750 checkpoint is not included in this comparison. Comparing those checkpoints would also compare different training histories and training durations.
+
+The requested background replacement is partial: source architecture and layout remain mixed with the new street reference. These supplied exports do not include complete seed, prompt and configuration metadata, so this is a qualitative demonstration rather than a controlled benchmark. Pixel difference and PSNR against the guide cannot rank replacement quality when character and background changes are intentional. The 30 fps comparison export does not establish the model's generation frame rate.
 
 ## Standalone native workflow
 
