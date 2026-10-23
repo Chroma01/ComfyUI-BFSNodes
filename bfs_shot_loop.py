@@ -1576,6 +1576,10 @@ def expand_two_ref_prompt(prompt: str) -> str:
     text = str(prompt or "")
     if "{details2}" in text or "<Subject 2>" in text or "<Picture 2>" in text or "{details@" in text:
         return text
+    # Only expand an explicit legacy H3 template. A complete short edit request
+    # must not acquire a phantom second performer/setting or a partial H3 header.
+    if "{details}" not in text or not re.search(r"(?im)^\s*(?:[\w-]+:\s*)?subject_definitions\s*:", text):
+        return text
     second = "<Subject 2> is the {details2} shown in <Picture 2>."
     if re.search(r"(?im)^\s*subject_definitions\s*:", text):
         if re.search(r"(?im)^\s*summary\s*:", text):
@@ -2112,7 +2116,7 @@ def _clean_written(text: str) -> str:
 
 # frames 0 = from the shot's length; style: "h3" (the official six sections) or "captions" (the short OpenJutsu captions)
 AUTO_PROMPT_DEFAULTS = {"enabled": False, "frames": 0, "source": "guide", "style": "h3", "trigger": "motion_transfer"}
-AUTO_PROMPT_REVISION = "motion-trigger-bindings-v5"
+AUTO_PROMPT_REVISION = "motion-trigger-bindings-v6"
 
 AUTO_REQUEST_RULES = """Motion-transfer contract and requested visual changes (apply in every output format):
 - The source performance is fixed: transfer the assigned performer's actions, body movement, gesture timing, head motion, gaze, visible mouth movement and expressions at the corresponding timestamps. Retarget that performance to the reference character's anatomy.
@@ -2127,6 +2131,9 @@ AUTO_REQUEST_RULES = """Motion-transfer contract and requested visual changes (a
 - Color bindings apply only to the designated performers, never to a setting/style reference. Reference appearances remain the default for each bound identity; apply explicitly requested visual changes consistently to that identity. Unmarked content can receive requested scene/style changes while unassigned performers retain their identities.
 - Preserve the template's format and labels, but adapt any default visual-preservation clause that conflicts with the user's requested target. Keep the source performance fixed. Respect the actual generation region: masked generation only changes pixels inside its mask; a full-scene style or background change needs full-frame generation.
 - Default rendering medium: retain the observed source medium unless the actual request or an explicitly designated style reference changes it. A background/location reference supplies the setting, not an automatic global style conversion. A character reference supplies that character, not an automatic global style conversion.
+- A replacement character's face, species, body, fur/hair, outfit and accessories come from its own picture unless the user explicitly edits them. Source clothing/accessories identify the actor being replaced; never turn them into requirements for the replacement. Do not add "if applicable" compromises or invent decisions to keep source shoes, jewelry or clothing.
+- A character picture's studio backdrop and static pose are not a target setting or performance instruction. Its outfit remains part of its appearance. A requested new setting overrides conflicting source architecture, ground surface, weather and lighting; do not append source scenery or lighting as preserved requirements that cancel that setting.
+- Cite only picture indices actually supplied below. Never invent, shift or silently repair an index. Keep character and setting bindings explicit and separate.
 - Apply only the actual request and template provided below. Do not invent extra visual transformations or copy sample content from general instructions."""
 H3_SECTIONS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape",
                "non_diegetic_music")
@@ -2303,6 +2310,9 @@ def write_h3_prompt(clip, frames: list, times: list, pictures: list, picture_tex
         text2 = tidy(vlm_generate(clip, again, images, tokens, seed=1, sampling=sampling))
         if len(check(text2)) < len(problems):
             text = text2
+    invalid_refs = picture_index_problems(text, npics)
+    if invalid_refs:
+        raise ValueError("Prompt writer could not preserve reference indices: " + "; ".join(invalid_refs) + ". Check the request/reference list and Write again.")
     return text if captions else name_subjects(text)
 
 
@@ -2320,9 +2330,16 @@ def tidy_caption(text: str, seg: dict | None = None, trigger: str | None = None)
     return " ".join(t.split())
 
 
+def picture_index_problems(text: str, npics: int) -> list[str]:
+    if npics <= 0:
+        return []
+    bad = sorted({int(k) for k in re.findall(r"<Picture\s+(\d+)>", text, flags=re.I) if not 1 <= int(k) <= npics})
+    return [f"<Picture {k}> does not exist: only {npics} reference pictures are connected" for k in bad]
+
+
 def caption_problems(text: str, npics: int) -> list[str]:
     """What is wrong with a caption-style answer."""
-    problems = []
+    problems = picture_index_problems(text, npics)
     if re.search(r"(?i)\b(subject_definitions|summary|detailed_description)\s*:", text):
         problems.append("it has H3 section names: write a short paragraph instead")
     if "<Subject" in text:
@@ -2374,7 +2391,7 @@ def drop_repeats(text: str) -> str:
 def h3_prompt_problems(text: str, npics: int, template: bool = False) -> list[str]:
     """What is wrong with a written prompt: a missing section, a subject never named by its label in
     detailed_description, a sentence repeated (a loop), an answer cut short."""
-    problems = []
+    problems = picture_index_problems(text, npics)
     if not template:
         problems += [f"the section {n}: is missing" for n in H3_SECTIONS if f"{n}:" not in text]
     i = text.find("detailed_description:")
@@ -3497,11 +3514,13 @@ class BFSShotPlanner:
             for i in work:
                 key, request = f"{segs[i]['start']}-{segs[i]['end']}", segs[i]["prompt"] or p.get("global_prompt", "")
                 got = stored.get(key) or {}
+                if got.get("text") and got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template, ap["style"], ap["trigger"]):
+                    if vlm is None:
+                        raise ValueError(f"Shot {i + 1}: written prompt is outdated after changes to request/pictures/marks or writer rules. Use Write again in the panel, or connect the Planner VLM to regenerate it. The old prompt was not sent to generation.")
+                    print(f"[BFS Shot Planner] shot {i + 1}: regenerating outdated written prompt", flush=True)
+                    got = {}
                 if got.get("text"):
                     written[i] = got["text"]
-                    if got.get("for") != auto_prompt_for(request, names_of(segs[i]), segs[i], template, ap["style"], ap["trigger"]):
-                        print(f"[BFS Shot Planner] shot {i + 1}: its written prompt is older than its request, pictures or "
-                              "marks (🤖 Write in the panel to write it again)", flush=True)
                 elif vlm is not None:
                     new_written[key] = auto_prompt_shot(vlm, p, a, path, segs[i], names_of(segs[i]), refs_of(segs[i]),
                                                         pic_details, request, vcfg, template)

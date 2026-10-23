@@ -939,7 +939,7 @@ class MultiRefTest(unittest.TestCase):
         p = SL._load_plan('{"global_refs": ["a.png", "", "c.png", ""], "global_ref": "stale.png"}')
         self.assertEqual(p["global_refs"], ["a.png", "", "c.png"])
         self.assertEqual((p["global_ref"], p["global_ref2"]), ("a.png", ""))
-        self.assertEqual(len(SL.ref_list([f"{k}.png" for k in range(20)])), SL.MAX_REFS)
+        self.assertEqual(len(SL.ref_list([f"{k}.png" for k in range(20)])), min(20, SL.MAX_REFS))
 
     def test_a_shot_slot_falls_back_to_the_global_one_and_gaps_close(self):
         self.assertEqual(SL.shot_ref_names(["", "x.png"], ["a.png", "b.png", "c.png"]), ["a.png", "x.png", "c.png"])
@@ -1025,7 +1025,7 @@ class MultiRefTest(unittest.TestCase):
                      "edited version of <Video 1>", "retention_analysis:", "non_diegetic_music:", "00:00.500",
                      "Never write a timestamp inside a shot", "is replaced by <Subject N>"):
             self.assertIn(want, seen["prompt"])
-        self.assertTrue(out.startswith("subject_definitions:\n<Subject 1>"))   # fences and bold removed
+        self.assertTrue(out.startswith("motion_transfer: subject_definitions:\n<Subject 1>"))   # fences and bold removed
         self.assertIn("marked in purple", out)                # the mapping the writer left out is added
         seg2 = dict(seg, prompt="")
         self.assertEqual(SL.auto_prompt_for("x", ["a.png"], seg2), SL.auto_prompt_for("x", ["a.png"], dict(seg2)))
@@ -1726,3 +1726,29 @@ class IsolatedReferenceBindingTests(unittest.TestCase):
         self.assertEqual(SL.tidy_caption("motion_transfer: Replace the actor.", trigger="motion_transfer"), "motion_transfer: Replace the actor.")
         self.assertEqual(SL.tidy_caption("motion_transfer: Replace the actor.", trigger=""), "Replace the actor.")
         self.assertNotEqual(SL.auto_prompt_for("edit", [], {}, prompt_trigger=""), SL.auto_prompt_for("edit", [], {}, prompt_trigger="motion_transfer"))
+
+
+class PromptReferenceContractTest(unittest.TestCase):
+    def test_short_caption_does_not_acquire_phantom_second_subject(self):
+        text = "motion_transfer: Replace the dancer with the character from <Picture 1>. Use the requested setting."
+        self.assertEqual(SL.expand_two_ref_prompt(text), text)
+
+    def test_legacy_expansion_requires_explicit_description_template(self):
+        text = "subject_definitions: <Subject 1> is the {details} in <Picture 1>."
+        self.assertIn("<Subject 2>", SL.expand_two_ref_prompt(text))
+        finished = "subject_definitions: <Subject 1> is the fox in <Picture 1>."
+        self.assertEqual(SL.expand_two_ref_prompt(finished), finished)
+
+    def test_invalid_picture_indices_are_reported_in_both_formats(self):
+        text = "Replace the setting with <Picture 3>."
+        self.assertTrue(SL.caption_problems(text, 2))
+        self.assertTrue(SL.h3_prompt_problems(text, 2, template=True))
+        self.assertEqual(SL.picture_index_problems(text, 3), [])
+
+    def test_writer_refuses_nonexistent_reference_after_retry(self):
+        with patch.object(SL, "vlm_generate", return_value="Replace the setting with <Picture 3>.") as generator:
+            with self.assertRaisesRegex(ValueError, "Picture 3.*does not exist"):
+                SL.write_h3_prompt(object(), [], [], [object(), object()],
+                    ["fox wearing blue pants", "city street"], "Use Picture 2 for the setting", {},
+                    style="captions", source_facts="A dancer is moving in a street.")
+        self.assertEqual(generator.call_count, 2)
