@@ -92,6 +92,25 @@ Planner `native_guide_scale` defaults to 1.0 for compatibility. Try 0.5 on VRAM-
 
 The console logs the first attention's input shape and completion time and the first two full model evaluation times. If attention is fast but a full model evaluation remains slow, investigate model loading/offload and the remaining blocks rather than assuming compilation. These timings synchronize CUDA at those diagnostic points only. The active training code and its backend are unchanged.
 
+## Kernel downloads
+
+**Recommended:** update BFSNodes **main, 1.115.22+**, restart ComfyUI, select Kitchen/sol-attn for TARA and let the node download the matching library **and Python API**. A standalone binary file is not the complete extension. The driver must support **CUDA 13**; PyTorch itself may use CUDA 12.x.
+
+[All binaries, build manifest and checksums](https://github.com/alisson-anjos/comfy-kitchen/releases/tag/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad). Direct downloads:
+
+| Architecture | Example GPUs | Linux x86_64 | Windows x86_64 |
+| --- | --- | --- | --- |
+| SM80 | A100 | [libck_temporal_sm80.so](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm80.so) | Not published |
+| SM86 | RTX 30 / A6000 | [libck_temporal_sm86.so](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm86.so) | [libck_temporal_sm86.dll](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm86.dll) |
+| SM89 | RTX 40 / 4090 / RTX 6000 Ada | [libck_temporal_sm89.so](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm89.so) | [libck_temporal_sm89.dll](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm89.dll) |
+| SM90 | H100 | [libck_temporal_sm90.so](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm90.so) | Not published |
+| SM100 | B200 | [libck_temporal_sm100.so](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm100.so) | Not published |
+| SM120 | RTX 50 / 5090 / RTX PRO 6000 Blackwell | [libck_temporal_sm120.so](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm120.so) | [libck_temporal_sm120.dll](https://github.com/alisson-anjos/comfy-kitchen/releases/download/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad/libck_temporal_sm120.dll) |
+
+Confirm the fused path in the sampling log: **`Kitchen ONE-PASS dense kernel ACTIVE`** or **`Kitchen ONE-PASS sol kernel ACTIVE`**. A successful render without this message does not confirm the fused kernel ran; the slower compatibility path may have been used. These published files passed compilation/ABI checks, not GPU workflow validation on every listed card. The separate Flash Partitions backend does not require this extension.
+
+For manual Linux overlay installation, follow the [Kitchen setup guide](https://github.com/alisson-anjos/comfy-kitchen/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL_KERNELS.md). The manual overlay installer is currently Linux-only; on Windows use BFS's automatic cache setup. Verify downloads against SHA256SUMS in the release and never rename a different architecture's binary to make it appear compatible.
+
 ## One-pass native Kitchen kernels (1.115.16)
 
 **From 1.115.22, BFS selects a pinned one-pass extension automatically for Linux x86_64 SM80/86/89/90/100/120 and Windows x86_64 SM86/89/120, with a driver supporting CUDA 13.** It downloads a fixed release into ComfyUI’s user cache, verifies embedded SHA256 hashes and ABI/architecture, and activates it in that execution. No pip install, package replacement or sampling-time compilation is required. Other systems retain the compatibility backends or can use an explicitly built manual overlay.
