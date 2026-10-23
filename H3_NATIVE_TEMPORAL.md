@@ -92,6 +92,10 @@ Planner `native_guide_scale` defaults to 1.0 for compatibility. Try 0.5 on VRAM-
 
 The console logs the first attention's input shape and completion time and the first two full model evaluation times. If attention is fast but a full model evaluation remains slow, investigate model loading/offload and the remaining blocks rather than assuming compilation. These timings synchronize CUDA at those diagnostic points only. The active training code and its backend are unchanged.
 
+## Understanding the temporal controls
+
+[Animated explanation and interactive sliders for free window, falloff, strength and cap](TARA_PARAMETERS.md). These tune temporal preference, not LoRA strength or identity-reference strength.
+
 ## Kernel downloads
 
 **Recommended:** update BFSNodes **main, 1.115.22+**, restart ComfyUI, select Kitchen/sol-attn for TARA and let the node download the matching library **and Python API**. A standalone binary file is not the complete extension. The driver must support **CUDA 13**; PyTorch itself may use CUDA 12.x.
@@ -109,7 +113,7 @@ The console logs the first attention's input shape and completion time and the f
 
 Confirm the fused path in the sampling log: **`Kitchen ONE-PASS dense kernel ACTIVE`** or **`Kitchen ONE-PASS sol kernel ACTIVE`**. A successful render without this message does not confirm the fused kernel ran; the slower compatibility path may have been used. These published files passed compilation/ABI checks, not GPU workflow validation on every listed card. The separate Flash Partitions backend does not require this extension.
 
-For manual Linux overlay installation, follow the [Kitchen setup guide](https://github.com/alisson-anjos/comfy-kitchen/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL_KERNELS.md). The manual overlay installer is currently Linux-only; on Windows use BFS's automatic cache setup. Verify downloads against SHA256SUMS in the release and never rename a different architecture's binary to make it appear compatible.
+For manual Linux or Windows installation, follow the [step-by-step manual guide](https://github.com/alisson-anjos/comfy-kitchen/blob/feat/h3-native-temporal/MANUAL_TEMPORAL_INSTALL.md). It also explains the native H3 integration required when not using BFS. Verify downloads against SHA256SUMS in the release and never rename a different architecture's binary to make it appear compatible.
 
 ## One-pass native Kitchen kernels (1.115.16)
 

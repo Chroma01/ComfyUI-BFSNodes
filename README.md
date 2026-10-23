@@ -211,3 +211,5 @@ Experimental temporal mode automatically recognizes **Model Attention Backend** 
 [Automatic reference descriptions, six-section prompt writing and source-derived video size/frame count](H3_NATIVE_AUTO_PROMPT.md). Includes [visual workflow](examples/h3_tara_native_auto_prompt.comfy.json) and [API graph](examples/h3_tara_native_auto_prompt.api.json), with native Generate Text stages and public BFS helpers; no private benchmark nodes.
 
 TARA kernel downloads, including **RTX4090 (SM89), H100 (SM90) and RTX5090 (SM120)**: [direct download table and setup checks](H3_NATIVE_TEMPORAL.md#kernel-downloads).
+
+[Animated TARA parameter guide](TARA_PARAMETERS.md): free window, falloff, strength and cap, with an offline interactive version.

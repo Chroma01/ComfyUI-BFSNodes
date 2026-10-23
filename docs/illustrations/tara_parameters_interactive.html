@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TARA parameters — interactive explanation</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0c1320;color:#e5edf7}body{max-width:1080px;margin:28px auto;padding:0 18px}h1{font-size:27px;margin-bottom:8px}p{color:#b0c2da;line-height:1.5}canvas{width:100%;height:auto;border:1px solid #34465e;border-radius:12px}.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:20px 0}label{display:block;background:#152334;border-radius:10px;padding:14px}label strong{display:block}label small{display:block;min-height:56px;color:#b0c2da;margin:10px 0;line-height:1.4}input{width:100%;accent-color:#69f5c6}output{color:#69f5c6;font-variant-numeric:tabular-nums}button{background:#253c4d;border:1px solid #536781;color:white;border-radius:7px;padding:9px 16px;margin-right:8px;cursor:pointer}.note{font-size:14px}a{color:#a9dbff}summary{cursor:pointer}code{color:#9ff1d0}
+</style>
+<h1>TARA: a soft preference for the matching moment</h1>
+<p>The output clock moves along the source timeline. Brighter dots receive less temporal suppression. Adjust one control at a time to see its effect. This diagram illustrates the attention rule; it does not simulate a generated video.</p>
+<canvas id="diagram" width="1000" height="400" aria-label="Source timeline and relative weighting curve"></canvas>
+<div class="controls">
+<label><strong>Free window w: <output id="wv">0.20 s</output></strong><small>Time tolerance with no penalty. Wider lets the model consult more nearby moments freely.</small><input id="w" aria-label="Free window in seconds" type="range" min="0" max="0.6" step="0.01" value="0.2"></label>
+<label><strong>Falloff f: <output id="fv">0.25 s</output></strong><small>How gradually the penalty grows beyond that window. Smaller means a sharper drop.</small><input id="f" aria-label="Falloff in seconds" type="range" min="0.05" max="1" step="0.01" value="0.25"></label>
+<label><strong>Strength λ: <output id="lv">2.00</output></strong><small>Multiplies temporal suppression. This does not set LoRA strength or character identity.</small><input id="l" aria-label="Temporal strength" type="range" min="0" max="8" step="0.1" value="2"></label>
+<label><strong>Cap c: <output id="cv">6.00</output></strong><small>Maximum suppression. Distant moments stay available; they are not deleted.</small><input id="c" aria-label="Penalty cap" type="range" min="0" max="12" step="0.1" value="6"></label>
+</div>
+<button id="play">Pause output clock</button><button id="reset">Reset defaults</button>
+<p id="status" aria-live="polite"></p>
+<p class="note">Dots are illustrative times, not the actual latent-frame sampling frequency. The curve shows a relative key-weight multiplier before attention normalization, <strong>not a final attention probability</strong>. A zero strength or cap removes this bias only; it does not undo temporal RoPE alignment. To compare against native H3 without TARA, bypass the complete MODEL patch.</p>
+<details><summary>Exact rule</summary><p>For time difference Δt: <code>penalty = min(c, λ × (max(0, |Δt| − w) / f)²)</code>. The relative multiplier is <code>exp(−penalty)</code>. At the defaults and Δt=0.4 seconds, the penalty is1.28 and the multiplier is about0.278. Other logits and attention normalization still determine the final probabilities.</p></details>
+<p><a href="https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/main/TARA_PARAMETERS.md">Parameter guide</a> · <a href="https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.2/research/tara-h3">Technical report</a></p>
+<script>
+const canvas=document.getElementById('diagram'),ctx=canvas.getContext('2d');
+const fields=Object.fromEntries(['w','f','l','c'].map(k=>[k,document.getElementById(k)]));
+let playing=!window.matchMedia('(prefers-reduced-motion: reduce)').matches,phase=0,last=performance.now();
+function weight(dt,w,f,l,c){return Math.exp(-Math.min(c,l*(Math.max(0,Math.abs(dt)-w)/f)**2));}
+function values(){return ['w','f','l','c'].map(k=>Number(fields[k].value));}
+function draw(now){
+ const delta=Math.min(100,Math.max(0,now-last));last=now;if(playing)phase+=delta/2500;
+ const t=5+.55*Math.sin(phase),[w,f,l,c]=values(),x=s=>60+(s-4)/2*880;
+ ctx.fillStyle='#0c1320';ctx.fillRect(0,0,1000,400);ctx.font='21px system-ui';ctx.fillStyle='#ffc986';ctx.fillText('Output moment: '+t.toFixed(2)+' seconds',25,38);
+ ctx.font='16px system-ui';ctx.fillStyle='#b0c2da';ctx.fillText('Source/reference timeline — highlighted band is the free window',25,70);
+ const lo=Math.max(4,t-w),hi=Math.min(6,t+w);ctx.fillStyle='#153c36';ctx.fillRect(x(lo),100,x(hi)-x(lo),50);
+ ctx.strokeStyle='#60728a';ctx.beginPath();ctx.moveTo(60,125);ctx.lineTo(940,125);ctx.stroke();
+ for(let i=0;i<=40;i++){
+  const s=4+i*.05,a=weight(s-t,w,f,l,c),col=[21,31,45].map((v,j)=>Math.round(v+([105,245,198][j]-v)*a));
+  ctx.fillStyle='rgb('+col.join(',')+')';ctx.strokeStyle='#64748b';ctx.beginPath();ctx.arc(x(s),125,6,0,Math.PI*2);ctx.fill();ctx.stroke();
+ }
+ ctx.font='14px system-ui';ctx.fillStyle='#b0c2da';for(const s of [4,4.5,5,5.5,6])ctx.fillText(s.toFixed(1)+' s',x(s)-16,178);
+ ctx.strokeStyle='#ffc986';ctx.beginPath();ctx.moveTo(x(t),90);ctx.lineTo(x(t),350);ctx.stroke();
+ ctx.fillStyle='#b0c2da';ctx.font='16px system-ui';ctx.fillText('Relative reference weight (before normalization)',25,220);
+ ctx.strokeStyle='#536781';ctx.beginPath();ctx.moveTo(60,245);ctx.lineTo(60,350);ctx.lineTo(940,350);ctx.stroke();
+ ctx.font='13px system-ui';ctx.fillText('1',30,250);ctx.fillText('0',30,351);
+ ctx.strokeStyle='#69f5c6';ctx.lineWidth=3;ctx.beginPath();for(let i=0;i<=400;i++){const s=4+i/200,y=350-weight(s-t,w,f,l,c)*105;if(i===0)ctx.moveTo(x(s),y);else ctx.lineTo(x(s),y);}ctx.stroke();ctx.lineWidth=1;
+ for(const [i,k] of ['w','f','l','c'].entries())document.getElementById(k+'v').textContent=values()[i].toFixed(2)+(i<2?' s':'');
+ document.getElementById('status').textContent=(l===0||c===0)?'Temporal bias is zero here. The complete TARA patch still includes temporal RoPE alignment.':'Green band: no temporal penalty. Outside it: smooth suppression, limited by the cap.';
+ document.getElementById('play').textContent=playing?'Pause output clock':'Play output clock';requestAnimationFrame(draw);
+}
+document.getElementById('play').onclick=()=>{playing=!playing;};
+document.getElementById('reset').onclick=()=>{[.2,.25,2,6].forEach((v,i)=>fields[['w','f','l','c'][i]].value=v);phase=0;};
+requestAnimationFrame(draw);
+</script></html>
