@@ -50,10 +50,12 @@ This log confirms the patch ran, not that visual motion or identity quality is c
 
 ## Validation
 
-Tests compare an audited native ComfyUI layout with positions exported by the actual training implementation, including image references and reference audio. They verify original conditioning/layout immutability, temporal-length rejection, attention score math/output shapes, token-refiner fallback, per-model routing and incompatible patches. Planner tests verify native-video conditioning and returned MODEL routing. Full ComfyUI GPU generation remains pending local validation; the active training process is not restarted or modified by this source change.
+Tests compare an audited native ComfyUI layout with positions exported by the actual training implementation, including image references and reference audio. They verify original conditioning/layout immutability, temporal-length rejection, attention score math/output shapes, token-refiner fallback, per-model routing and incompatible patches. Planner tests verify native-video conditioning and returned MODEL routing. The user has since reported completed RTX 5090 model evaluations; the timings and limitations are documented in the illustrated explanation. Full visual-quality validation remains incomplete. The active training process is not restarted or modified by this source change.
 
 
 ## Performance changes in 1.115.11
+
+See the [illustrated Flash Partitions explanation](docs/H3_FLASH_PARTITIONS.md) for attention scope, derivation, log-sum-exp merging, measurements and limitations.
 
 The temporal rule and RoPE policy are unchanged. For motion keys, the modified softmax weight is decomposed exactly as `exp(-cap) + (exp(-penalty) - exp(-cap))`. The first term is ordinary attention over all motion keys. The positive correction is zero for distant times and can be computed with short per-frame batches. Non-motion keys keep weight one. All partitions are recombined with their log-sum-exp normalizers. This is not a hard temporal window or sparse approximation. BF16 partition merging has normal floating-point rounding differences; the small CUDA comparison against SDPA measured relative output error 0.00452.
 

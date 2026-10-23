@@ -197,3 +197,9 @@ BFSNodes **1.47.0** adds optional MiniMax-H3 overlap/sidecar source-phase RoPE a
 **MiniMax-H3 Identity Reference + RoPE (BFS)**. See [the H3 guide](MINIMAX_H3_GUIDES.md#experimental-reference-layouts-and-source-phase-1470).
 
 Experimental native temporal motion-transfer inference (standalone node and Shot Conditioning mode): see [H3_NATIVE_TEMPORAL.md](H3_NATIVE_TEMPORAL.md). Requires the matching experimental LoRA; preserves native image references and applies temporal RoPE alignment plus soft temporal attention.
+
+### H3 Flash Partitions
+
+[Illustrated explanation: native temporal alignment with compile-free Flash Partitions](docs/H3_FLASH_PARTITIONS.md) covers the exact temporal rule, positive partition decomposition, log-sum-exp merging, measured performance, guide scaling and current backend limitations.
+
+![H3 temporal weight decomposition](docs/illustrations/h3_temporal_weight_decomposition.png)
