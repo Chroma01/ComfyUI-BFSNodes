@@ -205,3 +205,7 @@ Experimental native temporal motion-transfer inference (standalone node and Shot
 Experimental temporal mode automatically recognizes **Model Attention Backend** (Kitchen/PyTorch) and, from 1.115.14, **Model Sparse Attention → sol-attn**. Version 1.115.17 automatically prepares the verified extension on first use on supported Linux SM120 systems. Version 1.115.16+ can use the [one-pass Kitchen extension](H3_NATIVE_TEMPORAL.md#one-pass-native-kitchen-kernels-111516) for dense INT8 and sol-attn. The earlier compatibility path repeats frame-wise calls and was slower than Flash Partitions; see [setup, measurements and limitations](H3_NATIVE_TEMPORAL.md#model-sparse-attention-sol-attn-compatibility-111514). SLA/VSA remain unsupported.
 
 ![H3 temporal weight decomposition](docs/illustrations/h3_temporal_weight_decomposition.png)
+
+### Native H3 auto-prompt workflow
+
+[Automatic reference descriptions, six-section prompt writing and source-derived video size/frame count](H3_NATIVE_AUTO_PROMPT.md). Includes [visual workflow](examples/h3_tara_native_auto_prompt.comfy.json) and [API graph](examples/h3_tara_native_auto_prompt.api.json), with native Generate Text stages and public BFS helpers; no private benchmark nodes.
