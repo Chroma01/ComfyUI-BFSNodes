@@ -4236,7 +4236,7 @@ def inpaint_latent(latent: dict, positive, vae, frames: torch.Tensor, mask: torc
 class BFSShotH3Conditioning:
     """Native MiniMax H3 conditioning for one shot: references, prompt and the shot as a guide."""
 
-    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none", "aligned guide + CLIP video context", "native temporal alignment (experimental)"]
+    GUIDE_MODES = ["aligned guide (Add Guide)", "native reference video (Video 1)", "both", "none", "aligned guide + CLIP video context", "TARA - Native Temporal Alignment (experimental)"]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -4359,7 +4359,7 @@ class BFSShotH3Conditioning:
         if prev is not None and shot.get("chain") == "reference":
             refs[f"ref_image_{len(refs)}"] = prev   # one more <Picture n>, after the shot's own
         audio = shot["audio"] if (with_audio and audio_vae is not None) else None
-        temporal = guide_mode == self.GUIDE_MODES[5]
+        temporal = guide_mode in (self.GUIDE_MODES[5], "native temporal alignment (experimental)")
         if temporal:
             if model is None:
                 raise ValueError("Native temporal alignment needs MODEL connected; route this node's MODEL output to the guider.")

@@ -1,3 +1,5 @@
+> **Experimental:** TARA - Native Temporal Alignment is opt-in. The Planner default remains aligned guide (Add Guide). Existing saved workflows keep their chosen mode.
+
 # Experimental H3 native temporal alignment
 
 Matches ai-toolkit branch [`feat/h3-native-temporal-motion`](https://github.com/alisson-anjos/ai-toolkit/tree/feat/h3-native-temporal-motion), implementation `native_temporal_v1` (commit e0ecf3a). This mode retains a native video reference, aligns its temporal RoPE coordinates with the target, and softly penalizes target queries attending to distant guide times. It preserves native image-reference coordinates and native spatial geometry. It does not add learned weights or load a LoRA.

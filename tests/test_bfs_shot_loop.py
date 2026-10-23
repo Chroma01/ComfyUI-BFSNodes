@@ -484,6 +484,13 @@ class ConditioningPromptTest(unittest.TestCase):
         self.assertEqual(out[2], "m")
         self.assertNotIn("duet", SL.BFSShotH3Conditioning.INPUT_TYPES()["optional"])
 
+    def test_guide_remains_default_and_tara_is_explicitly_experimental(self):
+        cls = SL.BFSShotH3Conditioning
+        self.assertEqual(cls.GUIDE_MODES[0], "aligned guide (Add Guide)")
+        self.assertIn("TARA", cls.GUIDE_MODES[5])
+        self.assertIn("experimental", cls.GUIDE_MODES[5])
+        self.assertEqual(cls.INPUT_TYPES()["required"]["guide_mode"][1]["default"], cls.GUIDE_MODES[0])
+
     def test_native_temporal_requires_model_before_encoding(self):
         shot = self._shot()
         with self.assertRaisesRegex(ValueError, "MODEL connected"):
