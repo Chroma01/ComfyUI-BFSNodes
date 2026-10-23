@@ -105,3 +105,26 @@ def test_pad_last_frame_keeps_full_source_duration_for_decoded_trim():
     assert torch.equal(video[-1],images[-1])
     import json
     assert json.loads(metadata)['padded_tail_frames']==15
+
+
+def test_one_image_request_for_picture_two_fails_before_any_vlm_call(monkeypatch):
+    def must_not_run(*args):raise AssertionError('VLM must not run for a missing requested reference')
+    monkeypatch.setattr(w,'generate_reference',must_not_run)
+    with pytest.raises(ValueError,match=r'User request.*\[2\].*1 image'):
+        w.BFSH3DescribeReferences().describe(None,'Replace background with <Picture 2>',ref_image_1=torch.zeros(1,32,32,3))
+
+
+def test_exact_reference_set_and_target_audit_apply_to_saved_old_templates():
+    node=w.BFSH3BuildNativePrompt()
+    result=node.build('Replace performer with <Picture 1>','Attached references: 1 (Picture 1 through Picture 1).\n\n<Picture 1>: beige shirt and jeans','Source wears a hoodie','{}',template='OLD TEMPLATE {request} {inventory} {guide_analysis}')[0]
+    assert 'EXACT ATTACHED REFERENCE SET: <Picture 1>.' in result
+    assert 'SOURCE, not the target appearance' in result
+    assert 'do not copy source hoodie/pants' in result
+    with pytest.raises(ValueError,match='User request references unattached'):
+        node.build('Use @Picture2','Attached references: 1','Source','{}')
+
+
+def test_reference_validation_handles_native_and_editor_tags_without_renumbering():
+    w.validate_reference_indices('Use <Picture 1>, <Picture 2> and @Picture2',2,'Request')
+    with pytest.raises(ValueError,match=r'\[3\]'):
+        w.validate_reference_indices('Use <picture3>',2,'Request')
