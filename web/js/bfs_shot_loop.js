@@ -527,7 +527,7 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     const marks = s.color_guide ? [[s.color_guide_picture, pictureColor(plan, s.color_guide_picture)],
       ...s.regions.filter(r => String(r.text || "").trim() || (r.points || []).length).map(r => [r.picture, pictureColor(plan, r.picture)])] : [];
     return JSON.stringify([s.prompt || plan.global_prompt || "", s.names, marks, modeOf(s), s.mask?.text || "", s.target || "",
-      plan.auto_prompt?.template || "", plan.auto_prompt?.style || "h3", plan.auto_prompt?.trigger ?? "motion_transfer", "motion-trigger-bindings-v6"]);
+      plan.auto_prompt?.template || "", plan.auto_prompt?.style || "h3", plan.auto_prompt?.trigger ?? "motion_transfer", "motion-trigger-bindings-v7"]);
   };
   const writtenOf = s => plan.auto_prompts?.[segKey(s)] || null;
   const setAuto = (k, v) => { plan.auto_prompt = { ...plan.auto_prompt, [k]: v }; save(); };

@@ -116,7 +116,7 @@ function autoSection(c) {
     h("div", { class: "row", style: "gap:12px;align-items:center" }, [
       check(A.enabled, v => c.setAuto("enabled", v), "Write the prompts with the VLM",
         "On: the prompt boxes (global and per shot) hold your request ('change the bottle into a red can', 'Picture 1 dances in the rain'); the VLM writes each shot's MiniMax H3 prompt from key frames of the shot, the pictures and their descriptions, the request and the shot's Colored Marks, selection and mode, in H3's official full-reference format."),
-      fld("Style", select(A.style || "h3", [["h3", "H3 official (six sections)"], ["captions", "OpenJutsu captions (short)"]],
+      fld("Style", select(A.style || "h3", [["h3", "H3 official (six sections)"], ["captions", "Short edit request"]],
         v => c.setAuto("style", v), { style: "width:auto" }), "Choose prompt format. The guide performance stays fixed; request style, setting, lighting, outfit or camera changes explicitly. Identify setting pictures in the request; bind colors only to character references."),
       fld("Trigger", select(A.trigger ?? "motion_transfer", [["motion_transfer", "motion_transfer:"], ["body_swap", "body_swap:"], ["", "None (plain prompt)"]],
         v => c.setAuto("trigger", v), { style: "width:auto" }), "Match the LoRA caption prefix. Choose None for a model trained without a trigger."),
