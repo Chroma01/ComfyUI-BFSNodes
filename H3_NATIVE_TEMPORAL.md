@@ -35,7 +35,7 @@ The requested background replacement is partial: source architecture and layout 
 4. Select `motion_video_index = 1` (or the actual `<Video N>` supplying motion).
 5. Use the same 24 fps frame window for guide and output. H3 may trim frame counts to its supported cadence; use a matching valid count such as 107.
 
-Do not add Add Guide, first-frame guides, VSA, or other attention/block replacements. The node raises a clear error for incompatible layouts and temporal lengths instead of silently stretching motion. Source video audio is supported by native packing but is not temporally biased by this patch. For CFG paths, every conditioning branch evaluated by the patched model must retain the native motion reference; an empty negative branch without references cannot provide its timeline. Training preview uses CFG 1.
+Do not add Add Guide, first-frame guides, VSA, Model Sparse Attention, or unknown attention/block replacements. The official Model Attention Backend node is supported from 1.115.13; see the Kitchen section below. The node raises a clear error for incompatible layouts and temporal lengths instead of silently stretching motion. Source video audio is supported by native packing but is not temporally biased by this patch. For CFG paths, every conditioning branch evaluated by the patched model must retain the native motion reference; an empty negative branch without references cannot provide its timeline. Training preview uses CFG 1.
 
 ## Planner
 
@@ -89,3 +89,19 @@ Standalone node: `attention_backend` selects the implementation. Planner conditi
 Planner `native_guide_scale` defaults to 1.0 for compatibility. Try 0.5 on VRAM-constrained GPUs: it reduces only the motion-reference spatial dimensions (about four times fewer guide tokens), keeping all timestamps/frames, output dimensions and identity images unchanged. This changes the visual detail supplied by the guide and must be evaluated for quality. In standalone workflows resize only the motion video before Reference to Video to get the same effect.
 
 The console logs the first attention's input shape and completion time and the first two full model evaluation times. If attention is fast but a full model evaluation remains slow, investigate model loading/offload and the remaining blocks rather than assuming compilation. These timings synchronize CUDA at those diagnostic points only. The active training code and its backend are unchanged.
+
+## Comfy Kitchen and Model Attention Backend (1.115.13)
+
+The official **Model Attention Backend** node is now recognized automatically. Select **comfy kitchen attention** there and route its MODEL through native temporal conditioning to the guider. Its official PyTorch selection is also accepted. Unrelated attention overrides and Model Sparse Attention remain incompatible. The runtime MODEL wrapper recognizes a supported dense selection applied before or after the temporal patch; keep only one temporal patch on the path.
+
+With Kitchen selected, the console reports `backend=comfy kitchen (experimental)`. You can also explicitly select this backend in the standalone node or Planner conditioning. Without an upstream Kitchen selection, the existing default remains Flash Partitions. If ComfyUI itself falls back from unavailable Kitchen to PyTorch, the temporal patch does not claim Kitchen was selected. A supported selection from Model Attention Backend takes precedence over the BFS backend selector.
+
+This backend calls `comfy_kitchen.int8_attention(attn_mask=...)` directly. Each target latent frame's spatial queries share one broadcast key bias. Non-target queries use ordinary Kitchen attention, while target-to-guide scores receive the same bounded temporal penalty as the original rule. Native temporal RoPE alignment remains active. It uses no Add Guide injection, no partition log-sum-exp, and no full sequence-by-sequence bias allocation: bias storage is `latent_frames * packed_rows`. It retains full-key attention, not sparse attention. Multiple frame calls can repeat Kitchen quantization work, so compatibility does not imply acceleration.
+
+Initial isolated tests on an RTX PRO 6000 Blackwell with PyTorch 2.12.0+cu130 and comfy-kitchen 0.2.35:
+
+- CPU tests compare the frame-wise policy against the dense mathematical oracle, including zero strength/cap and unchanged non-target queries. Routing tests cover automatic detection of the official dense node.
+- A real CUDA BF16 test at `[1, 2, 1248, 128]` measured relative output norm error **0.01506** against the FP32 oracle, with finite outputs. INT8 quantization is approximate; this is not a visual quality measurement.
+- At `[1, 2, 42836, 128]`, 22 latent frames and 7,062 guide rows, one warmed evaluation measured **0.1043 s Kitchen** versus **0.01739 s Flash Partitions**. This initial Kitchen path was slower. The test used two heads rather than H3's full 56, with concurrent training; these are diagnostics, not end-to-end or RTX 5090 timings. No speed claim or default-backend change follows from this result.
+
+The active training backend is unchanged. Full ComfyUI video output and local performance still require validation. This implementation does not enable sol-attn, SLA or VSA alongside temporal alignment.

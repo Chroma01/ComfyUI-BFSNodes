@@ -3,18 +3,39 @@
 Per-model wrappers only: no global ComfyUI monkey patches or extra weights.
 """
 import copy
+import inspect
 import math
 import time
 import torch
 try:
     from . import minimax_h3_native_temporal_core as core
     from . import minimax_h3_temporal_fast as fast
+    from . import minimax_h3_temporal_kitchen as kitchen
 except ImportError:
     import minimax_h3_native_temporal_core as core
     import minimax_h3_temporal_fast as fast
+    import minimax_h3_temporal_kitchen as kitchen
 
 MARKER = 'bfs_h3_native_temporal_v1'
-BACKENDS = ['flash partitions (no compile)', 'flex (original)']
+BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)']
+
+def dense_backend_selection(override):
+    if override is None:
+        return None
+    # Recognize only ComfyUI's actual ModelPatcher setter wrapper and official
+    # registered dense kernels, never arbitrary attention replacements by name.
+    if getattr(override, '__module__', '') != 'comfy.model_patcher' or not getattr(override, '__qualname__', '').endswith('set_model_optimized_attention.<locals>.optimized_attention_override'):
+        raise ValueError('Native temporal alignment conflicts with another attention replacement. Remove VSA/sparse or unknown attention patches.')
+    try:
+        from comfy.ldm.modules.attention import get_attention_function
+        selected = inspect.getclosurevars(override).nonlocals['optimized_attention']
+    except (ImportError, KeyError, TypeError) as exc:
+        raise ValueError('Unable to identify the Model Attention Backend selection.') from exc
+    for name in ('comfy_kitchen_int8', 'pytorch'):
+        if selected is get_attention_function(name, None) and selected is not None:
+            return name
+    raise ValueError('Unsupported Model Attention Backend for native temporal alignment.')
+
 
 
 def temporal_layout(native, refs, keyframes, video_index=1):
@@ -77,7 +98,12 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
             print(f'[BFS H3 native temporal] first attention starting: backend={backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
             if q.is_cuda: torch.cuda.synchronize(q.device)
             started=time.perf_counter()
-        out = fast.attention(q,k,v,plan) if backend==BACKENDS[0] else core.attention(q,k,v,ctx)
+        if backend == BACKENDS[2]:
+            out = kitchen.attention(q,k,v,plan,ctx)
+        elif backend == BACKENDS[0]:
+            out = fast.attention(q,k,v,plan)
+        else:
+            out = core.attention(q,k,v,ctx)
         if timing:
             if q.is_cuda: torch.cuda.synchronize(q.device)
             print(f'[BFS H3 native temporal] first attention finished in {time.perf_counter()-started:.3f}s',flush=True)
@@ -103,7 +129,8 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     if net.__class__.__name__ != 'MiniMaxH3Model':
         raise ValueError('Native temporal alignment requires a native ComfyUI MiniMaxH3 model.')
     opts = model.model_options.get('transformer_options', {})
-    if opts.get('optimized_attention_override') or opts.get('patches_replace', {}).get('dit'):
+    dense_backend_selection(opts.get('optimized_attention_override'))
+    if opts.get('patches_replace', {}).get('dit'):
         raise ValueError('Remove VSA and other attention/block replacement patches before native temporal alignment.')
     patched = model.clone()
     previous = patched.model_options.get('model_function_wrapper')
@@ -123,7 +150,11 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         layout, source, target = cache[1]
         device = args['input'][0].device if isinstance(args['input'], (list, tuple)) else args['input'].device
         to = dict(conds.get('transformer_options', {}))
-        if to.get('optimized_attention_override') or to.get('patches_replace', {}).get('dit'):
+        incoming = to.get('optimized_attention_override')
+        selected_dense = dense_backend_selection(incoming)
+        active_backend = (BACKENDS[2] if selected_dense == 'comfy_kitchen_int8' else
+                          BACKENDS[0] if selected_dense == 'pytorch' else backend)
+        if to.get('patches_replace', {}).get('dit'):
             raise ValueError('Native temporal alignment conflicts with another attention/block replacement patch.')
         times = layout.position_ids[:, 0].float()[None].to(device)/40.0
         ctx = core.TemporalContext(times, source[None].to(device), target[None].to(device),
@@ -131,10 +162,10 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
                                   torch.tensor([strength,window,falloff,cap],device=device,dtype=torch.float32))
         if plan_cache[0] is not layout:
             plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,strength,window,falloff,cap)]
-        to['optimized_attention_override'] = attention_override(ctx, backend=backend, plan=plan_cache[1], log_first=not logged[0])
+        to['optimized_attention_override'] = attention_override(ctx, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0])
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
-            print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={backend}; packed_rows={layout.seq_len}', flush=True)
+            print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)
             logged[0] = True
         calls[0]+=1
         started=time.perf_counter()
@@ -159,7 +190,7 @@ class BFSMiniMaxH3NativeTemporal:
             'window_seconds': ('FLOAT', {'default':0.2,'min':0.0,'max':10.0,'step':0.01}),
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
             'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
-            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions preserves the bounded temporal score policy without torch.compile. Flex is the original implementation.'})}}
+            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions is the default. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen frame-wise bias is experimental; Flex is the original implementation.'})}}
     RETURN_TYPES = ('MODEL',)
     FUNCTION = 'apply'
     CATEGORY = 'BFS/MiniMax H3'

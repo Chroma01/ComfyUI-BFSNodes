@@ -4325,7 +4325,7 @@ class BFSShotH3Conditioning:
                     "Console confirms sent frames, video vision tokens and completed encoding."}),
                 "native_guide_scale": ("FLOAT", {"default": 1.0, "min": 0.125, "max": 1.0, "step": 0.125,
                     "tooltip": "Native temporal mode only: spatial scale of the motion video before encoding; output size, frame count and identity references stay unchanged. Try 0.5 to reduce guide tokens/VRAM."}),
-                "native_temporal_backend": (["flash partitions (no compile)", "flex (original)"], {"default": "flash partitions (no compile)",
+                "native_temporal_backend": (["flash partitions (no compile)", "flex (original)", "comfy kitchen (experimental)"], {"default": "flash partitions (no compile)",
                     "tooltip": "Native temporal mode only. Flash partitions preserves the temporal attention policy without compilation; Flex is the original implementation."}),
             },
         }
@@ -4606,7 +4606,7 @@ class BFSShotH3ConditioningSimple:
                 "model": ("MODEL", {"tooltip": "Required for native temporal mode. Route MODEL output to the guider."}),
                 "native_guide_scale": ("FLOAT", {"default": 1.0, "min": 0.125, "max": 1.0, "step": 0.125,
                     "tooltip": "Native temporal mode only: spatial scale of the motion video before encoding; output size, frame count and identity references stay unchanged. Try 0.5 to reduce guide tokens/VRAM."}),
-                "native_temporal_backend": (["flash partitions (no compile)", "flex (original)"], {"default": "flash partitions (no compile)",
+                "native_temporal_backend": (["flash partitions (no compile)", "flex (original)", "comfy kitchen (experimental)"], {"default": "flash partitions (no compile)",
                     "tooltip": "Native temporal mode only. Flash partitions preserves the temporal attention policy without compilation; Flex is the original implementation."}),
             },
         }

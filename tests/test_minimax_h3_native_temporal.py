@@ -90,3 +90,32 @@ def test_second_video_selection_preserves_first_video_and_images():
  assert int(source.sum())==56
  assert torch.equal(aligned.position_ids[~source],native.position_ids[~source])
  assert not source[3:23].any()
+
+@pytest.mark.parametrize('install_after_temporal',[False,True])
+@pytest.mark.parametrize('dense_name,expected_backend',[('comfy_kitchen_int8',2),('pytorch',0)])
+def test_model_attention_backend_is_honored_without_manual_selection(monkeypatch,install_after_temporal,dense_name,expected_backend):
+ from types import ModuleType
+ mod=ModuleType('comfy.ldm.modules.attention')
+ def dense(*args,**kwargs):return 'kitchen'
+ mod.get_attention_function=lambda name,default=None:dense if name==dense_name else default
+ monkeypatch.setitem(sys.modules,'comfy.ldm.modules.attention',mod)
+ def setter(optimized_attention):
+  def optimized_attention_override(_, *args, **kwargs):return optimized_attention(*args,**kwargs)
+  optimized_attention_override.__module__='comfy.model_patcher'
+  optimized_attention_override.__qualname__='ModelPatcher.set_model_optimized_attention.<locals>.optimized_attention_override'
+  return optimized_attention_override
+ incoming=setter(dense)
+ m=Model()
+ if not install_after_temporal:m.model_options={'transformer_options':{'optimized_attention_override':incoming}}
+ patched=node.patch_temporal_model(m)
+ selected=[]
+ def capture(ctx,previous=None,backend=None,**kwargs):
+  selected.append((backend,previous));return 'temporal attention'
+ monkeypatch.setattr(node,'attention_override',capture)
+ l,r=example()
+ args=dict(input=torch.zeros(1),timestep=torch.ones(1),c=dict(minimax_payload=dict(layout=l,refs=r),transformer_options={'optimized_attention_override':incoming}))
+ def fn(x,t,**c):
+  assert c['transformer_options']['optimized_attention_override']=='temporal attention'
+  return 'ok'
+ assert patched.model_options['model_function_wrapper'](fn,args)=='ok'
+ assert selected==[(node.BACKENDS[expected_backend],incoming)]
