@@ -7,10 +7,13 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, FancyBboxPatch
 
 OUT=Path(__file__).parent
-plt.rcParams.update({'font.family':'DejaVu Sans','font.size':11,'savefig.facecolor':'white'})
+plt.rcParams.update({'font.family':'DejaVu Sans','font.size':11,'savefig.facecolor':'white','svg.hashsalt':'h3-flash-partitions'})
 
 def save(fig,name):
-    for ext in ['png','svg']:fig.savefig(OUT/(name+'.'+ext),dpi=160,bbox_inches='tight')
+    for ext in ['png','svg']:
+        path=OUT/(name+'.'+ext)
+        fig.savefig(path,dpi=160,bbox_inches='tight',metadata={'Date':None} if ext=='svg' else None)
+        if ext=='svg':path.write_text('\n'.join(line.rstrip() for line in path.read_text().splitlines())+'\n')
     plt.close(fig)
 
 # Conceptual groups: equal spacing within each video, not actual H3 token counts.
