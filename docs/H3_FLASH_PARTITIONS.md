@@ -139,7 +139,7 @@ Alignment does not guarantee identity binding. The user has reported useful resu
 
 ## Video example
 
-See the [synchronized five-column video and interpretation](../H3_NATIVE_TEMPORAL.md#video-comparison-an-add-guide-trained-lora-with-native-temporal-alignment), including the step-10500 Add Guide-trained LoRA running with the new native temporal method. The separate early step-750 identity-drift report is distinguished there.
+See the [synchronized six-column video and interpretation](../H3_NATIVE_TEMPORAL.md#video-comparison-an-add-guide-trained-lora-with-native-temporal-alignment), including the step-10500 Add Guide-trained LoRA running with the new native temporal method. The separate early step-750 identity-drift report is distinguished there.
 
 ## Source and reproducible figures
 

@@ -8,13 +8,16 @@ Existing Add Guide motion-transfer LoRAs were trained under a different conditio
 
 [**Play the synchronized side-by-side video**](https://github.com/alisson-anjos/ComfyUI-BFSNodes/raw/refs/heads/feat/h3-native-temporal/docs/media/h3_native_temporal_comparison.mp4)
 
-All five columns play together in one 15-second video, starting at the beginning of each supplied export. From left to right:
+All six columns play together in one 15-second video, starting at the beginning of each supplied export. From left to right:
 
 1. Original guide.
-2. Step-10500 motion-transfer LoRA + native temporal alignment.
-3. The same step-10500 LoRA + guide latents / Add Guide.
-4. The same step-10500 LoRA + native reference, without the temporal patch.
-5. Base model + native reference, without a LoRA or temporal patch.
+2. Step-10500 motion-transfer LoRA + native temporal alignment, with guide scale **1.0**.
+3. The same step-10500 LoRA + native temporal alignment, with guide scale **0.5**.
+4. The same step-10500 LoRA + guide latents / Add Guide.
+5. The same step-10500 LoRA + native reference, without the temporal patch.
+6. Base model + native reference, without a LoRA or temporal patch.
+
+The temporal columns are labeled **NEW**. The footer includes the character and setting reference thumbnails extracted from the supplied exports. The user confirmed that all supplied runs used the **same seed**. At guide scale 0.5, character appearance remains consistent in the reviewed samples, but some source poses are reproduced less closely than at 1.0 (for example, the raised-arm gesture around 3.7 seconds). Other generation settings were not fully captured in the exports.
 
 **Apparently, a LoRA trained with guide latents can also work with this new native temporal method.** In this example, the step-10500 Add Guide-trained LoRA follows the source poses and camera framing with the temporal patch, while maintaining the reference dog's white T-shirt and jeans through the sampled beginning, middle and end. Its Add Guide result also follows the performance. Native reference without the temporal patch preserves the character more successfully with this LoRA than without it, but reproduces the choreography less closely. The base native-reference result loses the reference T-shirt.
 
@@ -22,7 +25,7 @@ A plausible explanation is that the LoRA's learned appearance and motion-transfe
 
 **The reported identity drift concerns the separate, fresh native-temporal LoRA at step 750, not the step-10500 LoRA shown here.** The 750 checkpoint is not included in this comparison. Comparing those checkpoints would also compare different training histories and training durations.
 
-The requested background replacement is partial: source architecture and layout remain mixed with the new street reference. These supplied exports do not include complete seed, prompt and configuration metadata, so this is a qualitative demonstration rather than a controlled benchmark. Pixel difference and PSNR against the guide cannot rank replacement quality when character and background changes are intentional. The 30 fps comparison export does not establish the model's generation frame rate.
+The requested background replacement is partial: source architecture and layout remain mixed with the new street reference. The seed is confirmed equal by the user, but these supplied exports do not include complete prompt and configuration metadata, so this is a qualitative demonstration rather than a controlled benchmark. Pixel difference and PSNR against the guide cannot rank replacement quality when character and background changes are intentional. The 30 fps comparison export does not establish the model's generation frame rate.
 
 ## Standalone native workflow
 
