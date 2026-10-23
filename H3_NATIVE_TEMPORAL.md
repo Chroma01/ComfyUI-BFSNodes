@@ -108,6 +108,8 @@ The active training backend is unchanged. Full ComfyUI video output and local pe
 
 ## Model Sparse Attention: sol-attn compatibility (1.115.14)
 
+Use **1.115.15 or newer**: 1.115.15 fixes recognition when ComfyUI loads `nodes_sparse_attention.py` under its extensionless absolute file path instead of a dotted module name. The regression test uses extracted official node factories under that loader name.
+
 **This is an experimental compatibility implementation, not a speed optimization.** It automatically recognizes the official **Model Sparse Attention** node with `method = sol-attn`, keeps native temporal RoPE alignment and applies the temporal score penalty through Comfy Kitchen's `sol_attn(key_bias=...)`. The runtime banner identifies `backend=sol-attn frame bias (experimental)`; an `sol-attn ACTIVE` line confirms a sparse call actually ran. Dense windows can use the previously selected dense temporal backend, and the first attention log identifies that actual backend.
 
 Suggested MODEL wiring:

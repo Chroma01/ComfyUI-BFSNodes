@@ -4,7 +4,10 @@ import inspect
 
 def official_sparse_module(obj):
     name = getattr(obj, '__module__', '')
-    return name == 'nodes_sparse_attention' or name.endswith('.nodes_sparse_attention')
+    # ComfyUI's file loader uses the extensionless absolute path as the
+    # module name for .py extras, rather than a dotted import name.
+    leaf = name.replace('\\', '/').rsplit('/', 1)[-1]
+    return leaf == 'nodes_sparse_attention' or leaf.endswith('.nodes_sparse_attention')
 
 
 def unwrap_sol(override):

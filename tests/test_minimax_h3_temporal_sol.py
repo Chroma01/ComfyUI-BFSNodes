@@ -37,12 +37,12 @@ def test_temporal_sol_bias_matches_dense_policy(strength,cap):
  torch.testing.assert_close(sol.attention(q,k,v,plan,ctx,tau=1.3,kernel=oracle),actual)
 
 
-def make_sparse(vsa=False,topk=0.):
- SparseAttnPatch=type('SparseAttnPatch',(),{'__module__':'comfy_extras.nodes_sparse_attention'})
+def make_sparse(vsa=False,topk=0.,module='comfy_extras.nodes_sparse_attention'):
+ SparseAttnPatch=type('SparseAttnPatch',(),{'__module__':module})
  patch=SparseAttnPatch();patch.vsa=vsa;patch.topk_ratio=topk
  previous=None
  def override(*args):return patch,previous,args
- override.__module__='comfy_extras.nodes_sparse_attention'
+ override.__module__=module
  override.__qualname__='make_attention_override.<locals>.override'
  def block_patch(*args):return patch,args
  block_patch.__module__=override.__module__
@@ -71,3 +71,37 @@ def test_vsa_and_sla_still_rejected(vsa,topk):
  _,override,block=make_sparse(vsa,topk)
  with pytest.raises(ValueError,match='only sol-attn'):compat.selection({'optimized_attention_override':override})
  with pytest.raises(ValueError,match='only sol-attn'):compat.selection({'patches_replace':{'dit':{'block':block}}})
+
+
+@pytest.mark.parametrize('module',[
+ '/home/alissonerdx/tools/ComfyUI/comfy_extras/nodes_sparse_attention',
+ 'C:\\ComfyUI\\comfy_extras\\nodes_sparse_attention',
+ 'nodes_sparse_attention',
+ 'comfy_extras.nodes_sparse_attention',
+])
+def test_comfy_file_loader_module_names_are_recognized(module):
+ patch,override,block=make_sparse(module=module)
+ options={'optimized_attention_override':override,'patches_replace':{'dit':{'block':block}}}
+ assert compat.selection(options)==(None,patch)
+ hidden={**options,'optimized_attention_override':None}
+ assert compat.selection(hidden)==(None,patch)
+ assert compat.without_owned_blocks(options,patch)['patches_replace']['dit']=={}
+
+@pytest.mark.parametrize('module',['other_sparse_attention','nodes_sparse_attention_fake','/tmp/not_nodes_sparse_attention'])
+def test_similar_unrelated_module_names_are_rejected(module):
+ _,override,block=make_sparse(module=module)
+ with pytest.raises(ValueError):compat.selection({'optimized_attention_override':override,'patches_replace':{'dit':{'block':block}}})
+
+
+def test_actual_comfy_sparse_factories_under_file_loader_name():
+ module='/home/alissonerdx/tools/ComfyUI/comfy_extras/nodes_sparse_attention'
+ fixture=Path(__file__).parent/'fixtures/comfy_sparse_node_factories.py'
+ namespace={'__name__':module}
+ exec(compile(fixture.read_text(),str(fixture),'exec'),namespace)
+ patch=namespace['SparseAttnPatch'](tau=1.3,topk_ratio=0.,vsa=False,sigma_start=1.,sigma_end=0.,min_tokens=12288,dense_blocks=set(),sink_conditioning='exact_kv_and_rows',extra_tokens=256,verbose=False)
+ override=namespace['make_attention_override'](patch,None)
+ block=namespace['make_h3_block_patch'](SimpleNamespace(),0,patch)
+ options={'optimized_attention_override':override,'patches_replace':{'dit':{('double_block',0):block}}}
+ assert compat.selection(options)==(None,patch)
+ assert compat.without_owned_blocks(options,patch)['patches_replace']['dit']=={}
+ assert options['patches_replace']['dit']
