@@ -20,6 +20,7 @@ class Plan:
     frames: int
     cap: float
     corrections: list
+    frame_times: tuple = ()
 
 
 def make_plan(positions, source, target, strength, window, falloff, cap):
@@ -43,7 +44,7 @@ def make_plan(positions, source, target, strength, window, falloff, cap):
             # Stable log(exp(-penalty)-exp(-cap)); zero correction becomes -inf.
             logs=-penalty+torch.log(-torch.expm1(penalty-cap))
             if torch.isfinite(logs).any():corrections.append((offset,lo,hi,logs.float()))
-    return Plan(sa,sb,ta,tb,int(sc[0]),int(tc[0]),frames,cap if strength>0 else 0.,corrections)
+    return Plan(sa,sb,ta,tb,int(sc[0]),int(tc[0]),frames,cap if strength>0 else 0.,corrections,tuple((st.float()/40).tolist()))
 
 
 def flash_with_lse(q,k,v):

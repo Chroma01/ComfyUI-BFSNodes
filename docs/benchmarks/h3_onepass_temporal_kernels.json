@@ -1,0 +1,137 @@
+{
+  "verification": {
+    "torch": "2.12.0+cu130",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "cases": [
+      {
+        "dtype": "torch.bfloat16",
+        "shape": [
+          1,
+          2,
+          53,
+          128
+        ],
+        "dense_vs_fp32": 0.012292885221540928,
+        "sol_exact_vs_fp32": 0.011282283812761307,
+        "sol_onepass_vs_framewise": 0.0,
+        "finite": true
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "shape": [
+          1,
+          2,
+          1253,
+          128
+        ],
+        "dense_vs_fp32": 0.015596109442412853,
+        "sol_exact_vs_fp32": 0.013514556922018528,
+        "sol_onepass_vs_framewise": 2.1619540348183364e-05,
+        "finite": true
+      },
+      {
+        "dtype": "torch.float16",
+        "shape": [
+          1,
+          2,
+          53,
+          128
+        ],
+        "dense_vs_fp32": 0.013024155050516129,
+        "sol_exact_vs_fp32": 0.011345107108354568,
+        "sol_onepass_vs_framewise": 0.0,
+        "finite": true
+      },
+      {
+        "dtype": "torch.float16",
+        "shape": [
+          1,
+          2,
+          1253,
+          128
+        ],
+        "dense_vs_fp32": 0.015380656346678734,
+        "sol_exact_vs_fp32": 0.013211732730269432,
+        "sol_onepass_vs_framewise": 5.5366094784403685e-06,
+        "finite": true
+      }
+    ],
+    "status": "passed"
+  },
+  "edge_and_bridge": {
+    "cases": [
+      {
+        "strength": 10.0,
+        "cap": 0.01,
+        "window": 0.2,
+        "dense_error": 0.015495287254452705,
+        "sol_exact_error": 0.013426524586975574
+      },
+      {
+        "strength": 0.1,
+        "cap": 30.0,
+        "window": 0.2,
+        "dense_error": 0.015566659159958363,
+        "sol_exact_error": 0.013471982441842556
+      },
+      {
+        "strength": 0.0,
+        "cap": 6.0,
+        "window": 0.0,
+        "dense_error": 0.015584140084683895,
+        "sol_exact_error": 0.01359549630433321
+      },
+      {
+        "strength": 2.0,
+        "cap": 0.0,
+        "window": 0.2,
+        "dense_error": 0.015431488864123821,
+        "sol_exact_error": 0.01330660656094551
+      }
+    ],
+    "bridge_native_calls": {
+      "dense": 1,
+      "sol": 1
+    },
+    "stream_isolation": "passed",
+    "status": "passed"
+  },
+  "benchmark": {
+    "torch": "2.12.0+cu130",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "conditions": "Concurrent training; isolated attention; one warmup + one timed evaluation per implementation; no end-to-end speed claim",
+    "rows": [
+      {
+        "shape": [
+          1,
+          2,
+          42836,
+          128
+        ],
+        "seconds": {
+          "flash_partitions": 0.01711059600347653,
+          "kitchen_framewise": 0.10465262399520725,
+          "kitchen_onepass": 0.011890062014572322,
+          "sol_framewise": 0.15987364604370669,
+          "sol_onepass": 0.01116465002996847
+        }
+      },
+      {
+        "shape": [
+          1,
+          56,
+          42836,
+          128
+        ],
+        "seconds": {
+          "flash_partitions": 0.42317933501908556,
+          "kitchen_framewise": 0.5413047629990615,
+          "kitchen_onepass": 0.24634322000201792,
+          "sol_framewise": 2.675203786988277,
+          "sol_onepass": 0.21625870000571012
+        }
+      }
+    ],
+    "status": "passed"
+  }
+}

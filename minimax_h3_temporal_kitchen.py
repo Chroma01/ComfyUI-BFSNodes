@@ -1,4 +1,6 @@
-"""Frame-wise native Comfy Kitchen temporal bias, without partition LSE.
+"""Prefer native one-pass Kitchen kernels, with a frame-wise fallback.
+
+The fallback avoids partition LSE.
 
 Each target frame shares a key bias across its spatial queries. The compact
 bias is O(frames * sequence), never an expanded sequence-by-sequence mask.
@@ -6,6 +8,10 @@ INT8 quantization changes numerical results; GPU performance needs measurement.
 """
 import inspect
 import torch
+try:
+    from . import minimax_h3_temporal_kernel as native_kernel
+except ImportError:
+    import minimax_h3_temporal_kernel as native_kernel
 
 
 def kitchen_function():
@@ -22,6 +28,10 @@ def kitchen_function():
 def attention(q, k, v, plan, ctx, kernel=None):
     if q.shape[0] != 1 or q.shape != k.shape or q.shape != v.shape:
         raise ValueError('Kitchen temporal attention requires one packed self-attention sequence')
+    if kernel is None:
+        native = native_kernel.run('dense',q,k,v,plan,ctx)
+        if native is not None:
+            return native
     kernel = kitchen_function() if kernel is None else kernel
     if ctx.strength == 0 or ctx.cap == 0:
         return kernel(q, k, v)

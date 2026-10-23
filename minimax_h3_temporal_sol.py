@@ -1,12 +1,16 @@
-"""Experimental temporal policy through native Comfy Kitchen sol-attn.
+"""Prefer the optional one-pass temporal Sol kernel; preserve legacy fallback.
 
-The public kernel accepts equal-length Q/K/V and a key-only bias. Therefore
+Without that extension, the public kernel accepts equal-length Q/K/V and a key-only bias. Therefore
 this compatibility path runs one unbiased pass and one full-sequence pass per
 latent target frame, retaining only that frame's query rows. It is deliberately
 not advertised as a fast one-pass temporal sparse kernel.
 """
 import inspect
 import torch
+try:
+    from . import minimax_h3_temporal_kernel as native_kernel
+except ImportError:
+    import minimax_h3_temporal_kernel as native_kernel
 
 
 def sol_function():
@@ -25,6 +29,10 @@ def attention(q, k, v, plan, ctx, *, tau, token_aug=0, sink_q=(0, 0), kernel=Non
         raise ValueError('Temporal sol-attn requires one packed self-attention sequence with head dimension 128.')
     if plan.source_stop > plan.target_start:
         raise ValueError('Temporal sol-attn requires native motion references before the target video.')
+    if kernel is None:
+        native = native_kernel.run('sol',q,k,v,plan,ctx,tau=tau,token_aug=token_aug,sink_q=sink_q)
+        if native is not None:
+            return native
     fn = sol_function() if kernel is None else kernel
     # Sol's key bias is applied only in the exact branch: all conditioning keys,
     # including the selected motion video, must be forced exact regardless of

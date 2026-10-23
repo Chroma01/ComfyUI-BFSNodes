@@ -90,6 +90,37 @@ Planner `native_guide_scale` defaults to 1.0 for compatibility. Try 0.5 on VRAM-
 
 The console logs the first attention's input shape and completion time and the first two full model evaluation times. If attention is fast but a full model evaluation remains slow, investigate model loading/offload and the remaining blocks rather than assuming compilation. These timings synchronize CUDA at those diagnostic points only. The active training code and its backend are unchanged.
 
+## One-pass native Kitchen kernels (1.115.16)
+
+**BFS now automatically uses the optional native temporal extension for Kitchen dense and sol-attn when installed. Updating BFS alone does not install that extension.** Without it, the earlier frame-wise compatibility paths remain available.
+
+Install the addon using the [Kitchen fork's setup guide](https://github.com/alisson-anjos/comfy-kitchen/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL_KERNELS.md). An [experimental Linux x86_64 SM120 prebuilt](https://github.com/alisson-anjos/comfy-kitchen/releases/tag/h3-native-temporal-kernel-v1) is available, including SHA256SUMS, so sampling need not compile anything. RTX 5090 shares SM120 with the tested RTX PRO 6000, but full video behavior/performance on the 5090 still requires validation. The installer adds a separate temporal module/library while preserving ordinary Kitchen's `_C` and operators. Source builds use `nvcc` explicitly; no per-shape torch.compile is used.
+
+Keep the existing MODEL wiring and native temporal guide mode. Model Attention Backend's Kitchen choice selects native dense when available. Model Sparse Attention's sol-attn choice selects native Sol during its eligible sparse window; its dense fallback retains the temporal policy too. No new UI switch is required. Console confirmation:
+
+```text
+Kitchen ONE-PASS dense kernel ACTIVE
+Kitchen ONE-PASS sol kernel ACTIVE
+```
+
+Both kernels evaluate the same query-dependent bounded temporal penalty inside their native score/softmax work. Dense INT8 quantizes once and runs one attention launch, using exact constant-tile shortcuts plus per-score handling at mixed boundaries. Sol preprocesses/routes/consumes once with the penalty fused into its exact consumer. All conditioning keys remain exact for Sol, and its remaining video keys retain the usual sparse/pooled approximation. Sol still has its normal multi-kernel stages: "one pass" means one attention pipeline, not literally one CUDA launch total. The streaming QKV producer remains bypassed by the current BFS integration.
+
+Synthetic isolated BF16 attention `[1,56,42836,128]`, 22 latent frames, 7,062 guide rows; RTX PRO 6000 Blackwell, PyTorch 2.12.0+cu130, Kitchen 0.2.35, concurrent training, one warmup plus one timed evaluation:
+
+| Backend | Seconds |
+| --- | ---: |
+| Flash Partitions | 0.4232 |
+| Kitchen dense, earlier frame-wise path | 0.5413 |
+| **Kitchen dense, one-pass kernel** | **0.2463** |
+| sol-attn, earlier frame-wise path | 2.6752 |
+| **sol-attn, one-pass kernel** | **0.2163** |
+
+These are not full-model/video or RTX 5090 timings. Full video speed can still be limited by offloading and other work. INT8 and Sol are approximate, so these measurements do not establish visual quality or dense-equivalent output.
+
+GPU checks covered FP16/BF16, partial frames/tiles, nonuniform timestamps, zero strength/cap, the real BFS dense/Sol entry points and different policies on concurrent streams. Dense relative output norm error versus FP32 was approximately 1.2–1.6% in small cases; Sol with every key exact approximately 1.1–1.4%. Native one-pass Sol versus the same native pipeline repeated per frame differed by at most about 0.0022% in those initial cases. Each BFS bridge made one native API call. [Recorded diagnostics](docs/benchmarks/h3_onepass_temporal_kernels.json) and the Kitchen fork's source document the scope. Full ComfyUI generated-video validation remains pending.
+
+The sections below retain the earlier compatibility implementations and measurements for comparison. The active training process/backend is unchanged.
+
 ## Comfy Kitchen and Model Attention Backend (1.115.13)
 
 The official **Model Attention Backend** node is now recognized automatically. Select **comfy kitchen attention** there and route its MODEL through native temporal conditioning to the guider. Its official PyTorch selection is also accepted. Unrelated attention overrides remain incompatible. Model Sparse Attention with sol-attn is supported separately from 1.115.14, as documented below. The runtime MODEL wrapper recognizes a supported dense selection applied before or after the temporal patch; keep only one temporal patch on the path.

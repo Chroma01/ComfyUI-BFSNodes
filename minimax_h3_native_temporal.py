@@ -114,13 +114,16 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
         if timing:
             if reason is not None:
                 print(f'[BFS H3 native temporal] sol-attn dense fallback: {reason}',flush=True)
-            print(f'[BFS H3 native temporal] first attention starting: backend={chosen}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
+            display_backend=chosen
+            if chosen in (SOL_BACKEND,BACKENDS[2]) and sol.native_kernel.api_for(q) is not None:
+                display_backend='sol-attn one-pass (native Kitchen)' if chosen==SOL_BACKEND else 'comfy kitchen one-pass (native)'
+            print(f'[BFS H3 native temporal] first attention starting: backend={display_backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
             if q.is_cuda: torch.cuda.synchronize(q.device)
             started=time.perf_counter()
         if chosen == SOL_BACKEND:
             if not getattr(plan, '_sol_active_logged', False):
-                passes = plan.frames+1 if ctx.strength and ctx.cap else 1
-                print(f'[BFS H3 native temporal] sol-attn ACTIVE: tau={sparse_patch.tau}, exact conditioning keys, {passes} full-sequence passes per attention call.',flush=True)
+                passes = 1 if sol.native_kernel.api_for(q) is not None else (plan.frames+1 if ctx.strength and ctx.cap else 1)
+                print(f'[BFS H3 native temporal] sol-attn ACTIVE: tau={sparse_patch.tau}, exact conditioning keys, {passes} attention pipeline pass(es).',flush=True)
                 plan._sol_active_logged = True
             _, sink_q = sparse_patch.sinks(options, n)
             out = sol.attention(q,k,v,plan,ctx,tau=sparse_patch.tau,
@@ -197,7 +200,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         if not logged[0]:
             print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)
             if sparse_patch is not None:
-                print('[BFS H3 native temporal] sol-attn compatibility: exact conditioning keys; one full-sequence pass per target latent frame plus an unbiased pass; repeated work may be much slower than Flash Partitions.', flush=True)
+                print('[BFS H3 native temporal] sol-attn uses the native one-pass extension when installed; otherwise frame-wise compatibility repeats work. Watch for Kitchen ONE-PASS sol kernel ACTIVE.', flush=True)
             logged[0] = True
         calls[0]+=1
         started=time.perf_counter()
@@ -222,7 +225,7 @@ class BFSMiniMaxH3NativeTemporal:
             'window_seconds': ('FLOAT', {'default':0.2,'min':0.0,'max':10.0,'step':0.01}),
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
             'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
-            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions is the default. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen frame-wise bias is experimental; Flex is the original implementation.'})}}
+            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions is the default. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation.'})}}
     RETURN_TYPES = ('MODEL',)
     FUNCTION = 'apply'
     CATEGORY = 'BFS/MiniMax H3'

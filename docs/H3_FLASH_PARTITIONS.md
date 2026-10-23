@@ -137,6 +137,10 @@ Flash Partitions preserves the dense score policy and its quadratic work. More s
 
 Alignment does not guarantee identity binding. The user has reported useful results from the existing 10500 LoRA plus this patch, and weaker identity retention from an early fresh-native checkpoint. Those are qualitative observations, not a matched-training comparison or evidence that the patch alone teaches swapping. No LoRA strength ramp, image-reference boost or identity loss is implemented by this backend.
 
+## Native one-pass Kitchen extension
+
+From 1.115.16, the optional [native Kitchen temporal extension](../H3_NATIVE_TEMPORAL.md#one-pass-native-kitchen-kernels-111516) fuses the temporal rule into dense INT8 and sol-attn kernels. It removes the per-frame attention loop. Initial full-head diagnostics were faster than Flash Partitions, while visual/end-to-end validation remains pending. Installation is opt-in and separate from updating BFS.
+
 ## Experimental sol-attn compatibility
 
 Version 1.115.14 can recognize Model Sparse Attention with sol-attn and preserve the temporal score rule via repeated frame-wise calls. This initial compatibility path was slower than Flash Partitions; it is not the proposed fast one-pass sparse kernel. See [implementation limits and measurements](../H3_NATIVE_TEMPORAL.md#model-sparse-attention-sol-attn-compatibility-111514). SLA and VSA remain unsupported.
