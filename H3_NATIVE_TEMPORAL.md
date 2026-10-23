@@ -94,9 +94,9 @@ The console logs the first attention's input shape and completion time and the f
 
 ## One-pass native Kitchen kernels (1.115.16)
 
-**From 1.115.17, BFS prepares the one-pass extension automatically on first use of Kitchen/sol-attn on supported Linux x86_64 SM120 systems with a driver supporting CUDA 13.** It downloads a fixed release into ComfyUI’s user cache, verifies embedded SHA256 hashes and ABI/architecture, and activates it in that execution. No pip install, package replacement or sampling-time compilation is required. Other systems retain the compatibility backends or can use an explicitly built manual overlay.
+**From 1.115.22, BFS selects a pinned one-pass extension automatically for Linux x86_64 SM80/86/89/90/100/120 and Windows x86_64 SM86/89/120, with a driver supporting CUDA 13.** It downloads a fixed release into ComfyUI’s user cache, verifies embedded SHA256 hashes and ABI/architecture, and activates it in that execution. No pip install, package replacement or sampling-time compilation is required. Other systems retain the compatibility backends or can use an explicitly built manual overlay.
 
-For an explicit installation or source build, use the [Kitchen fork's setup guide](https://github.com/alisson-anjos/comfy-kitchen/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL_KERNELS.md). An [experimental Linux x86_64 SM120 prebuilt](https://github.com/alisson-anjos/comfy-kitchen/releases/tag/h3-native-temporal-kernel-v1) is available, including SHA256SUMS, so sampling need not compile anything. RTX 5090 shares SM120 with the tested RTX PRO 6000, but full video behavior/performance on the 5090 still requires validation. The installer adds a separate temporal module/library while preserving ordinary Kitchen's `_C` and operators. Source builds use `nvcc` explicitly; no per-shape torch.compile is used.
+For an explicit installation or source build, use the [Kitchen fork's setup guide](https://github.com/alisson-anjos/comfy-kitchen/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL_KERNELS.md). The [experimental nine-binary release](https://github.com/alisson-anjos/comfy-kitchen/releases/tag/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad) is available, including SHA256SUMS, so sampling need not compile anything. RTX 5090 shares SM120 with the tested RTX PRO 6000, but full video behavior/performance on the 5090 still requires validation. The installer adds a separate temporal module/library while preserving ordinary Kitchen's `_C` and operators. Source builds use `nvcc` explicitly; no per-shape torch.compile is used.
 
 Keep the existing MODEL wiring and native temporal guide mode. Model Attention Backend's Kitchen choice selects native dense when available. Model Sparse Attention's sol-attn choice selects native Sol during its eligible sparse window; its dense fallback retains the temporal policy too. No new UI switch is required. Console confirmation:
 
@@ -125,24 +125,39 @@ The sections below retain the earlier compatibility implementations and measurem
 
 ## Automatic first-use setup (1.115.17)
 
-Choose Kitchen or sol-attn normally and run the native temporal node. On supported Linux x86_64 / NVIDIA SM120 / CUDA-13-driver systems, it prepares the extension during node execution when the model's load device is known, before sampling. A lazy fallback can prepare it on the first attention call too. The ordinary Flash/Flex path does not request an installation.
+Choose Kitchen or sol-attn normally and run the native temporal node. On supported Linux/Windows x86_64 / NVIDIA architectures in the matrix below / CUDA-13-driver systems, it prepares the extension during node execution when the model's load device is known, before sampling. A lazy fallback can prepare it on the first attention call too. The ordinary Flash/Flex path does not request an installation.
 
-The default cache is `ComfyUI user directory/bfs/h3_temporal_kernels/`; standalone use falls back to `~/.cache/bfsnodes/h3_temporal_kernels/`. Only the pinned Python API (~10 KB), SM120 library (~3.3 MB), LICENSE and NOTICE are downloaded. The implementation writes to its own cache, not `site-packages`, and leaves ordinary Kitchen's `_C` untouched. Existing compatible manual overlays are preferred.
+The default cache is `ComfyUI user directory/bfs/h3_temporal_kernels/`; standalone use falls back to `~/.cache/bfsnodes/h3_temporal_kernels/`. Only the pinned Python API (~10 KB), the matching platform/GPU library (~2.1–3.4 MB), LICENSE and NOTICE are downloaded. The OS, architecture, release hash and ABI select the cache; Linux libraries and Windows DLLs are never substituted for one another. The implementation writes to its own cache, not `site-packages`, and leaves ordinary Kitchen's `_C` untouched. Existing compatible manual overlays are preferred.
 
 Security/correctness properties: immutable source commit and embedded hashes; bounded download sizes; temporary downloads replaced atomically only after SHA256 validation; native ABI and GPU architecture checks before Python entry-point execution; thread/process installation locks; one setup attempt per device/cache location per process. An incomplete, incompatible or offline first installation logs its reason and retains the previous backend. A verified cache works in a new process without network access. No model, prompt or reference data is uploaded.
 
 Expected console messages:
 
 ```text
-First-use setup: downloading the verified one-pass extension (~3.3 MB). No compilation or pip install.
-Verified one-pass extension ready: ...
+First-use setup: downloading verified Linux SM89 one-pass extension (3.2 MB). No compilation or pip install.
+Verified Linux SM89 one-pass extension ready: ...
 Kitchen ONE-PASS dense kernel ACTIVE
 # or: Kitchen ONE-PASS sol kernel ACTIVE
 ```
 
 The addon activates without a second restart during that first workflow. Restarting ComfyUI is still required after updating BFS's own Python code. `BFS_H3_TEMPORAL_AUTO_INSTALL=0` disables automatic setup; `BFS_H3_TEMPORAL_CACHE_DIR=/path/to/cache` chooses another cache location. For a failed setup, restart to retry or use the manual installer linked above. Unsupported systems do not trigger an automatic source build.
 
-A real first-use download, ABI check, and dense/Sol GPU calls passed. A separate fresh process with network requests deliberately disabled reused the verified cache successfully. [Recorded first-use/offline checks](docs/benchmarks/h3_temporal_auto_setup.json).
+The original SM120-only release passed a real first-use download, ABI check, and dense/Sol GPU calls. This does not GPU-validate the newer multi-architecture binaries. A separate fresh process with network requests deliberately disabled reused the verified cache successfully. [Recorded first-use/offline checks](docs/benchmarks/h3_temporal_auto_setup.json).
+
+### Published architecture matrix (1.115.22)
+
+| OS, 64-bit x86 | Published GPU architectures | CI checks | GPU execution of this release |
+| --- | --- | --- | --- |
+| Linux | SM80, SM86, SM89, SM90, SM100, SM120 | CUDA13 compilation, SHA256, native ABI/arch exports | Not established across the matrix |
+| Windows | SM86, SM89, SM120 | CUDA13 compilation, SHA256, native ABI/arch exports on Windows runners | Not established |
+
+[Download binaries](https://github.com/alisson-anjos/comfy-kitchen/releases/tag/temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad). The release contains BUILD_MANIFEST.json and SHA256SUMS. BFS uses the reviewed local [pinned manifest](h3_temporal_binaries.json), not an unverified remote latest-release lookup. The [CI workflow](https://github.com/alisson-anjos/comfy-kitchen/blob/0413d43878606425a84aa400f1e5da50ed9dcdad/.github/workflows/temporal-windows.yml) rebuilds/publishes per-commit experimental assets on relevant source changes; adopting a new release requires updating BFS's pin.
+
+All nine asset sizes/hashes were independently checked; all six Linux ABI/arch exports were loaded without kernel execution. A real SM89 Linux download, checksum, ABI check and Python-API import also passed with CUDA disabled: [record](docs/benchmarks/h3_temporal_matrix_setup.json). CPU fixtures cover Windows DLL selection, driver lookup and locking; these do not replace a real Windows/GPU workflow test. Old SM120 numerical/timing results are not validation of every new binary.
+
+The NVIDIA driver must support CUDA13 even if PyTorch uses CUDA12.x. Linux needs a compatible glibc/libstdc++ runtime; Windows may need the Microsoft Visual C++ runtime. A missing driver/runtime, incompatible ABI, unsupported GPU/OS or download failure logs the reason and keeps the compatibility backend; no pip install, system-library replacement or compiler launch is attempted. Frame-wise Kitchen fallback can be slower; Flash Partitions remains a separate explicit selection. ARM, macOS and AMD are not covered by these CUDA prebuilts.
+
+Examples: SM89 covers RTX40 and RTX6000Ada; SM120 covers RTX50 and RTXPRO6000Blackwell; A6000 is SM86. A card name containing “6000” does not identify one architecture.
 
 ## Comfy Kitchen and Model Attention Backend (1.115.13)
 

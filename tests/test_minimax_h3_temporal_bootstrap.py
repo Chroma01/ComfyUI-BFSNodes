@@ -16,8 +16,9 @@ def setup(monkeypatch,tmp_path):
  boot._READY.clear();boot._FAILED.clear()
  source=b"VERSION='h3_native_temporal_kernel_v1'\ndef is_available(device):return True\n"
  binary=b'fake verified native fixture'
- assets=[('temporal_attention.py','https://test.invalid/api',hashlib.sha256(source).hexdigest(),1024),('backends/cuda/native_temporal/libck_temporal_sm120.so','https://test.invalid/bin',hashlib.sha256(binary).hexdigest(),1024)]
- monkeypatch.setattr(boot,'ASSETS',tuple(assets))
+ target=dict(platform='Linux',arch=120,file='libck_temporal_sm120.so',native_abi=1,sha256=hashlib.sha256(binary).hexdigest(),bytes=len(binary))
+ monkeypatch.setattr(boot,'COMMON_ASSETS',(('temporal_attention.py','https://test.invalid/api',hashlib.sha256(source).hexdigest(),1024),))
+ monkeypatch.setattr(boot,'binary_for_device',lambda d:target)
  requests=[]
  def urlopen(request,timeout):
   requests.append(request.full_url)
@@ -26,10 +27,10 @@ def setup(monkeypatch,tmp_path):
  loads=[]
  def cdll(path):
   loads.append(path)
-  return SimpleNamespace(ck_temporal_abi_version=NativeFunction(1),ck_temporal_arch=NativeFunction(120))
+  return SimpleNamespace(ck_temporal_abi_version=NativeFunction(1),ck_temporal_arch=NativeFunction(target['arch']))
  monkeypatch.setattr(boot.ctypes,'CDLL',cdll)
  monkeypatch.setattr(boot,'compatible',lambda d:(True,None))
- yield SimpleNamespace(root=boot.cache_root(),requests=requests,loads=loads,source=source,binary=binary)
+ yield SimpleNamespace(root=boot.cache_root(target),target=target,requests=requests,loads=loads,source=source,binary=binary)
  boot._READY.clear();boot._FAILED.clear()
 
 
@@ -103,3 +104,53 @@ def test_bad_binary_arch_is_rejected_before_python_api_execution(setup,monkeypat
  monkeypatch.setattr(boot.ctypes,'CDLL',lambda p:SimpleNamespace(ck_temporal_abi_version=NativeFunction(1),ck_temporal_arch=NativeFunction(89)))
  assert boot.ensure('cuda:0') is None
  assert not [n for n in set(sys.modules)-before if n.startswith('_bfs_ck_temporal')]
+
+
+@pytest.mark.parametrize('system,arch',[(b['platform'],b['arch']) for b in boot.MANIFEST['binaries']])
+def test_release_matrix_selects_exact_os_and_arch(system,arch):
+ target=boot.select_binary(system,'AMD64' if system=='Windows' else 'x86_64',(arch//10,arch%10))
+ assert target['arch']==arch and target['platform']==system
+ assert target['file'].endswith('.dll' if system=='Windows' else '.so')
+ assert len(target['sha256'])==64 and target['bytes']>0 and target['native_abi']==1
+ assert target['gpu_runtime_validation'] is False
+
+
+@pytest.mark.parametrize('system,machine,cap',[('Darwin','x86_64',(12,0)),('Linux','aarch64',(12,0)),('Windows','AMD64',(9,0)),('Linux','x86_64',(7,5))])
+def test_unpublished_combinations_never_substitute_another_binary(system,machine,cap):
+ assert boot.select_binary(system,machine,cap) is None
+
+
+def test_windows_ada_downloads_only_its_own_dll(setup,monkeypatch):
+ from contextlib import nullcontext
+ setup.target.update(platform='Windows',arch=89,file='libck_temporal_sm89.dll')
+ monkeypatch.setattr(boot.platform,'system',lambda:'Windows')
+ monkeypatch.setattr(boot,'file_lock',lambda *a,**k:nullcontext())
+ module=boot.ensure('cuda:0')
+ assert module is not None
+ assert len(setup.requests)==2
+ assert any(url.endswith('libck_temporal_sm89.dll') for url in setup.requests)
+ assert not any('sm120' in url or url.endswith('.so') for url in setup.requests)
+ assert (boot.cache_root(setup.target)/'backends/cuda/native_temporal/libck_temporal_sm89.dll').is_file()
+
+
+def test_platform_and_arch_produce_separate_cache_names(setup):
+ linux=boot.cache_root(setup.target)
+ windows=boot.cache_root(dict(setup.target,platform='Windows'))
+ ada=boot.cache_root(dict(setup.target,arch=89))
+ assert len({linux,windows,ada})==3
+
+
+def test_automatic_setup_never_launches_a_compiler_or_pip(setup,monkeypatch):
+ import subprocess
+ def forbidden(*a,**kw):raise AssertionError('automatic download must not launch a build or pip')
+ monkeypatch.setattr(subprocess,'Popen',forbidden)
+ assert boot.ensure('cuda:0') is not None
+
+
+def test_windows_driver_query_uses_nvcuda_not_linux_lib(monkeypatch):
+ seen=[]
+ class Driver:
+  def cuDriverGetVersion(self,p):p._obj.value=13000;return 0
+ monkeypatch.setattr(boot.platform,'system',lambda:'Windows')
+ monkeypatch.setattr(boot.ctypes,'WinDLL',lambda name:(seen.append(name) or Driver()),raising=False)
+ assert boot.driver_version()==13000 and seen==['nvcuda.dll']

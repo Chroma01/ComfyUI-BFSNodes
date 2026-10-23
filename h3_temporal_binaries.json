@@ -1,0 +1,106 @@
+{
+  "release_tag": "temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad",
+  "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+  "minimum_cuda_driver_version": 13000,
+  "binaries": [
+    {
+      "native_abi": 1,
+      "arch": 80,
+      "sha256": "87f3c33fec7480b480335ed09257488b3eb3052eca6dd3ab9a11477ce7213784",
+      "bytes": 3307288,
+      "gpu_runtime_validation": false,
+      "platform": "Linux",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm80.so"
+    },
+    {
+      "native_abi": 1,
+      "arch": 86,
+      "sha256": "b42c1363ad1c360416b57ffe6e215df2202c1510792bea9f6bef34b463aec955",
+      "bytes": 3303192,
+      "gpu_runtime_validation": false,
+      "platform": "Linux",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm86.so"
+    },
+    {
+      "native_abi": 1,
+      "arch": 89,
+      "sha256": "0cafbbb543f35cf7cba1be1810f01203cd93adbeac3f64297540d9a822bfbb75",
+      "bytes": 3155736,
+      "gpu_runtime_validation": false,
+      "platform": "Linux",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm89.so"
+    },
+    {
+      "native_abi": 1,
+      "arch": 90,
+      "sha256": "825f6aedab25933a9f8e904ae40db5fd8d11d924c08edfa8fa7c070059b928de",
+      "bytes": 3204888,
+      "gpu_runtime_validation": false,
+      "platform": "Linux",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm90.so"
+    },
+    {
+      "native_abi": 1,
+      "arch": 100,
+      "sha256": "a1871c990141b5456e302f44eb5ea42947da3d0e45311718927856de2996d421",
+      "bytes": 3352344,
+      "gpu_runtime_validation": false,
+      "platform": "Linux",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm100.so"
+    },
+    {
+      "native_abi": 1,
+      "arch": 120,
+      "sha256": "66220a378c062f1efe465f8ea1bc171806c397701b2c50c9a4a13cd1c86ed8ad",
+      "bytes": 3405592,
+      "gpu_runtime_validation": false,
+      "platform": "Linux",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm120.so"
+    },
+    {
+      "native_abi": 1,
+      "arch": 86,
+      "sha256": "50b4446bfeaff14d320afec83e1b16b2ad299f237d9bb26d0d56807f28926b22",
+      "bytes": 2281472,
+      "gpu_runtime_validation": false,
+      "platform": "Windows",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm86.dll"
+    },
+    {
+      "native_abi": 1,
+      "arch": 89,
+      "sha256": "dd20b03c7dbe339e235d650b44578446e8607939469328b5b6c161ba33ea9668",
+      "bytes": 2134016,
+      "gpu_runtime_validation": false,
+      "platform": "Windows",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm89.dll"
+    },
+    {
+      "native_abi": 1,
+      "arch": 120,
+      "sha256": "1a67a3f853506dec4b5418fc2dbc00abcf4ba1ee8023e487bb2ecd48422bee3a",
+      "bytes": 2384384,
+      "gpu_runtime_validation": false,
+      "platform": "Windows",
+      "cuda": "13.0",
+      "source_commit": "0413d43878606425a84aa400f1e5da50ed9dcdad",
+      "file": "libck_temporal_sm120.dll"
+    }
+  ]
+}

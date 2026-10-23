@@ -1,0 +1,15 @@
+{
+  "platform": "Linux",
+  "arch": 89,
+  "checks": [
+    "release download",
+    "SHA256",
+    "native ABI1",
+    "native arch89",
+    "Python API import"
+  ],
+  "gpu_execution": false,
+  "api_version": "h3_native_temporal_kernel_v1",
+  "release": "temporal-native-0413d43878606425a84aa400f1e5da50ed9dcdad",
+  "cuda_initialized": false
+}
