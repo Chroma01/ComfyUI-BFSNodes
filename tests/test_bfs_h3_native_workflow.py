@@ -130,3 +130,14 @@ def test_reference_validation_handles_native_and_editor_tags_without_renumbering
     w.validate_reference_indices('Use <Picture 1>, <Picture 2> and @Picture2',2,'Request')
     with pytest.raises(ValueError,match=r'\[3\]'):
         w.validate_reference_indices('Use <picture3>',2,'Request')
+
+
+def test_head_swap_preserves_source_body_even_with_old_template():
+    node=w.BFSH3BuildNativePrompt()
+    assert node.INPUT_TYPES()['required']['mode'][0] == ['motion_transfer','body_swap','head_swap']
+    result=node.build('Use <Picture 1> for the head','Attached references: 1','Source body wears a hoodie','{}',template='OLD body swap template {request}',mode='head_swap')[0]
+    assert 'Begin exactly with head_swap:' in result
+    assert 'overrides any full-body replacement' in result
+    assert 'Preserve each guide performer' in result and 'wardrobe' in result
+    assert 'visible mouth articulation' in result
+    w.validate_prompt(full_prompt().replace('motion_transfer:', 'head_swap:'))

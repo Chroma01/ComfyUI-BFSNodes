@@ -131,8 +131,8 @@ def build_prompt(template, request, inventory, guide_analysis, metadata):
 
 
 def validate_prompt(prompt):
-    if not prompt.startswith(('motion_transfer:', 'body_swap:')):
-        raise ValueError('Generated prompt needs motion_transfer: or body_swap: trigger')
+    if not prompt.startswith(('motion_transfer:', 'body_swap:', 'head_swap:')):
+        raise ValueError('Generated prompt needs motion_transfer:, body_swap: or head_swap: trigger')
     headers = list(re.finditer(r'\b('+'|'.join(SECTIONS)+r'):', prompt))
     if [m[1] for m in headers] != list(SECTIONS):
         raise ValueError('Generated prompt needs all six H3 sections in order. Inspect Generate Text output/token budget.')
@@ -203,12 +203,12 @@ class BFSH3BuildNativePrompt:
     def INPUT_TYPES(cls):
         return {'required': {k: ('STRING', {'multiline': True, **({'default': FINAL_TEMPLATE} if k == 'template' else {'forceInput': True})})
                              for k in ['request', 'inventory', 'guide_analysis', 'metadata', 'template']} |
-                {'mode': (['motion_transfer', 'body_swap'], {'default': 'motion_transfer'})}}
+                {'mode': (['motion_transfer', 'body_swap', 'head_swap'], {'default': 'motion_transfer'})}}
     RETURN_TYPES = ('STRING',); RETURN_NAMES = ('final_prompt_instruction',)
     FUNCTION = 'build'; CATEGORY = CATEGORY
 
     def build(self, request, inventory, guide_analysis, metadata, template=FINAL_TEMPLATE, mode="motion_transfer"):
-        if mode not in ("motion_transfer", "body_swap"):
+        if mode not in ("motion_transfer", "body_swap", "head_swap"):
             raise ValueError("Unknown prompt mode")
         match = re.match(r'Attached references: (\d+)\b', inventory)
         if not match or not 1 <= int(match[1]) <= 9:
@@ -230,6 +230,22 @@ class BFSH3BuildNativePrompt:
                  "Make summary and detailed_description agree on all requested changes. Transfer guide poses/actions and timing, not replaced appearances. "
                  "Avoid a repetitive timestamp list of sampled frames; describe the supported performance in order. "
                  "Check every Picture label against the exact attached set above. Output the completed six-section prompt only.")
+        if mode == 'head_swap':
+            # Applied at runtime, including workflows with older serialized templates.
+            audit = ("\nHEAD SWAP SCOPE (overrides any full-body replacement wording in the template): "
+                     "Begin exactly with head_swap: and use the same six H3 sections. "
+                     "Use assigned Pictures only for the replacement head identity: face, skull/head shape, "
+                     "hair or fur, ears and visible facial hair. Do not transfer reference body shape, "
+                     "height, clothing, accessories outside the head or the reference background. "
+                     "Preserve each guide performer's body, wardrobe, hands, held objects, source setting, "
+                     "camera and framing unless the user explicitly requests additional edits. "
+                     "Keep each head-to-performer assignment fixed through crossings, occlusion and cuts. "
+                     "Transfer the guide head pose, gaze, facial expressions, visible mouth articulation "
+                     "and performance timing; do not freeze the reference pose. Integrate the replacement "
+                     "naturally at the neck with coherent scale, lighting and skin/fur transitions. "
+                     "Describe the target head with the preserved source body and clothing throughout, "
+                     "not a full-body identity replacement. Respect the exact attached Picture indices. "
+                     "Output the completed six-section prompt only.")
         return (instruction + build_prompt(template, request, inventory, guide_analysis, metadata) + audit,)
 
 

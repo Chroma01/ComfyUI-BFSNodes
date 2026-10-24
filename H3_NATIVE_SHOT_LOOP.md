@@ -72,3 +72,13 @@ Validation: four CPU checks cover exact frame ranges/cuts, anchor ordering and
 cut resets, short-tail trimming, actual ComfyUI GraphBuilder expansion and
 bidirectional links in the example. No end-to-end GPU render, browser execution,
 identity quality or seamlessness claim has been validated for this feature yet.
+
+## Prompt task modes
+
+Since **1.115.33**, **BFS H3 Build Native Prompt (H3 Template)** offers
+`motion_transfer`, `body_swap` and `head_swap`. Head swap uses the same six H3
+sections with a `head_swap:` prefix. It assigns reference head identity while
+preserving the source body, wardrobe, environment and performance unless the
+request explicitly includes other edits. The head-only scope is also applied to
+older saved templates. This controls prompt writing; it does not create a head
+mask, load a head-swap LoRA or guarantee localized pixel preservation.
