@@ -38,8 +38,9 @@ Overlapping masks combine their log gains. It does not infer subject roles from
 the prompt; the prompt's explicit identity assignments remain necessary.
 
 A whole long-video mask cannot be connected directly to a loop's short-shot
-binding without slicing/padding it to that prepared shot. This version does not
-provide automatic loop-mask slicing. Start with a single shot or global gain.
+binding without slicing/padding it to that prepared shot. The newer **Apply Cast Reference Bindings** node (1.115.29) supplies automatic
+loop-mask slicing in its [SAM 3.1 workflow](H3_CAST_AND_TOKEN_CONTROLS.md). The raw
+Reference Attention Binding node still expects a mask already matched to its shot.
 
 ## Exact rule and scope
 

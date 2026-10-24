@@ -90,3 +90,19 @@ def test_wrapper_reads_controls_and_refreshes_when_same_layout_is_reused(monkeyp
         assert fn(model,args)=='ok'
     assert seen[0][0][2][0]==pytest.approx(math.log(1.25))
     assert seen[1][0][2][0]==pytest.approx(math.log(2.))
+
+
+def test_text_and_picture_logit_gains_compose_exactly():
+    layout,refs,plan=fixture(2.)
+    picture=binding.build_biases(layout,refs,plan,[dict(picture=1,strength=1.25,other_strength=1.,mask=None)],'cpu')
+    text=[(0,2,torch.full((plan.target_stop-plan.target_start,),math.log(.75)))]
+    all_biases=picture+text
+    torch.manual_seed(33);q,k,v=[torch.randn(1,2,layout.seq_len,8) for _ in range(3)]
+    out=fast.attention(q,k,v,plan,flash=flash_oracle,reference_biases=all_biases,frame_chunk=1)
+    logits=(q.double()@k.double().transpose(-1,-2))/math.sqrt(8)
+    ta,tb,sa,sb=plan.target_start,plan.target_stop,plan.source_start,plan.source_stop
+    times=layout.position_ids[:,0]/40
+    penalty=(2.*(torch.relu((times[ta:tb,None]-times[None,sa:sb]).abs()-.2)/.25).square()).clamp(max=6.)
+    logits[:,:,ta:tb,sa:sb]-=penalty
+    for a,b,g in all_biases:logits[:,:,ta:tb,a:b]+=g[None,None,:,None]
+    torch.testing.assert_close(out,(logits.softmax(-1)@v.double()).float(),atol=2e-6,rtol=2e-5)

@@ -233,3 +233,10 @@ A separate model node adds per-Picture attention gains with optional tracked tar
 masks, composed with TARA. See [controls and limitations](H3_REFERENCE_BINDING.md)
 and [example workflow](examples/h3_tara_reference_binding.comfy.json). The initial
 prototype uses Flash Partitions; it does not yet use fused Kitchen reference gains.
+
+### Click-to-Picture SAM 3.1 bindings and token weights (1.115.29, experimental)
+
+Pause the guide and select a performer for Picture X, track it with native SAM 3.1,
+and apply regional reference attention. A separate token/word editor offers
+clickable forces with embedding-magnitude and text-attention modes. See
+[workflows, setup and validation limits](H3_CAST_AND_TOKEN_CONTROLS.md).

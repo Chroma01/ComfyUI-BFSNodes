@@ -171,15 +171,16 @@ class BFSH3DescribeReferences:
         return {'required': {'clip': ('CLIP',), 'request': ('STRING', {'multiline': True}),
             'tokens_per_image': ('INT', {'default': 384, 'min': 64, 'max': 2048}),
             'max_image_side': ('INT', {'default': 1024, 'min': 256, 'max': 2048})},
-            'optional': {f'ref_image_{i}': ('IMAGE',) for i in range(1, 10)}}
+            'optional': {f'ref_image_{i}': ('IMAGE',) for i in range(1, 10)} | {'reference_set': ('BFS_H3_REFERENCE_SET',)}}
     RETURN_TYPES = ('BFS_H3_REFERENCE_SET', 'STRING', 'IMAGE')
     RETURN_NAMES = ('references', 'reference_inventory', 'reference_images')
     OUTPUT_IS_LIST = (False, False, True)
     FUNCTION = 'describe'; CATEGORY = CATEGORY
-    DESCRIPTION = 'Runs native Generate Text independently for each connected Picture (1..9, consecutive). Never describes a joint reference collage. reference_images returns all original images as an ordered IMAGE list, preserving different sizes; connect to Preview Image.'
+    DESCRIPTION = 'Runs native Generate Text independently for each connected Picture (1..9, consecutive). Never describes a joint reference collage. Optional reference_set overrides individual image slots. reference_images returns all original images as an ordered IMAGE list, preserving different sizes; connect to Preview Image.'
 
     def describe(self, clip, request, tokens_per_image=384, max_image_side=1024, **kwargs):
-        refs = collect_references(kwargs)
+        supplied = kwargs.get('reference_set')
+        refs = collect_references({f'ref_image_{i}': image for i, image in enumerate(supplied,1)}) if supplied is not None else collect_references(kwargs)
         validate_reference_indices(request, len(refs), 'User request')
         inventory = []
         for i, image in enumerate(refs, 1):
@@ -261,7 +262,16 @@ class BFSH3NativeReferenceSetToVideo:
             length=length, ref_image_size=ref_image_size,
             ref_images={f'ref_image_{i}': image for i, image in enumerate(references, 1)},
             ref_videos={'ref_video_1': reference_video})
-        return result[0], result[1], prompt
+        positive=result[0]
+        try:
+            from .minimax_h3_token_weights import attach_trace
+        except ImportError:
+            from minimax_h3_token_weights import attach_trace
+        try:
+            positive=attach_trace(positive,clip,prompt)
+        except (ValueError,AttributeError,KeyError,TypeError) as exc:
+            print(f'[BFS H3 token trace] unavailable for this encoder: {exc}',flush=True)
+        return positive, result[1], prompt
 
 
 CLASSES = (BFSH3PrepareNativeVideo, BFSH3DescribeReferences, BFSH3BuildNativePrompt, BFSH3NativeReferenceSetToVideo)

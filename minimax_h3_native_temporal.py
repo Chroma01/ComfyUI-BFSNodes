@@ -9,6 +9,7 @@ import time
 import torch
 try:
     from . import minimax_h3_reference_binding as binding
+    from . import minimax_h3_token_weights as token_weights
     from . import minimax_h3_native_temporal_core as core
     from . import minimax_h3_temporal_fast as fast
     from . import minimax_h3_temporal_kitchen as kitchen
@@ -16,6 +17,7 @@ try:
     from . import minimax_h3_sparse_compat as sparse_compat
 except ImportError:
     import minimax_h3_reference_binding as binding
+    import minimax_h3_token_weights as token_weights
     import minimax_h3_native_temporal_core as core
     import minimax_h3_temporal_fast as fast
     import minimax_h3_temporal_kitchen as kitchen
@@ -175,6 +177,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     plan_cache = [None, None]
     calls = [0]
     reference_cache = [None, None, None, None]
+    token_cache = [None, None, None, None]
 
     def wrapper(model_function, args):
         conds = args.get('c', {})
@@ -214,6 +217,15 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
                 active_backend=BACKENDS[0]
                 if not logged[0]:
                     print('[BFS H3 reference binding] ACTIVE: exact Picture logit gains, optional target masks; using Flash Partitions (Kitchen/Sol one-pass bypassed).',flush=True)
+        token_control=to.get(token_weights.OPTION)
+        if token_control:
+            if sparse_patch is not None:
+                raise ValueError('Token attention weighting does not support Model Sparse Attention yet')
+            if token_cache[0] is not layout or token_cache[1] is not token_control or token_cache[2] != device:
+                token_cache[:] = [layout,token_control,device,token_weights.attention_biases(layout,plan_cache[1],token_control,device)]
+            reference_biases=list(reference_biases or [])+token_cache[3]
+            active_backend=BACKENDS[0]
+            if not logged[0]:print('[BFS H3 token weights] ACTIVE: prompt text-key logit gains, Flash Partitions; visual rows unchanged.',flush=True)
         to['optimized_attention_override'] = attention_override(ctx,reference_biases=reference_biases, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0], sparse_patch=sparse_patch, dense_backend=dense_backend)
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
