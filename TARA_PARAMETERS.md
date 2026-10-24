@@ -53,3 +53,29 @@ Kernel downloads are optional for the optimized Kitchen/Sol path; they are not t
 - **Limite 6:** impede que a penalização cresça indefinidamente. Momentos distantes continuam disponíveis.
 
 Comece nos padrões e ajuste um de cada vez. A imagem mostra uma preferência temporal, não uma garantia de sincronização. Zerar força ou limite desliga só o viés; para desligar TARA inteiro é necessário remover/bypassar o patch do MODEL.
+
+## In-node temporal field monitor (1.115.23)
+
+The standalone **BFS MiniMax H3 TARA - Native Temporal Alignment (Experimental)**
+node includes an animated policy map. Change its parameters to see the free
+window, falloff and capped penalty ranges update immediately. The two axes are
+output time and guide time; a turquoise diagonal means low temporal penalty.
+The local view auto-zooms to keep the falloff visible. The horizontal scanning
+line is an illustration, **not an indication that diffusion renders frames
+sequentially**.
+
+The free range is `±window_seconds`. With nonzero strength and cap, the penalty
+reaches its cap at `±(window_seconds + falloff_seconds * sqrt(max_penalty / strength))`.
+A capped penalty is **not** a hard attention cutoff. Setting strength or cap to
+zero disables the bias, while temporal RoPE alignment remains enabled.
+
+During inference, real model-wrapper events report the evaluation number,
+backend and token counts. An evaluation is not necessarily a sampler step
+(e.g. CFG or a different sampler can evaluate more than once per step).
+Reported time is host wall time; the monitor adds no CUDA synchronization.
+The map is the applied bias policy, **not measured attention**, a decoded video
+preview, or a prediction of output quality. Changes to widgets during a running
+job affect the next queued execution; the current model keeps its queued settings.
+
+Update BFSNodes, restart ComfyUI and hard-refresh the browser. This panel is
+currently attached to the standalone TARA node, not the Planner conditioning node.

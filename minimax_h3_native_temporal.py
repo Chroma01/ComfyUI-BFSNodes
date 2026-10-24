@@ -142,7 +142,7 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
     return override
 
 
-def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0]):
+def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0], telemetry=None):
     if backend not in BACKENDS: raise ValueError("Unknown native temporal attention backend")
     if backend==BACKENDS[0] and not hasattr(torch.ops.aten, '_scaled_dot_product_flash_attention'):
         raise RuntimeError("This PyTorch build lacks native FlashAttention with LSE. Update PyTorch or select flex (original).")
@@ -205,11 +205,18 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
                 print('[BFS H3 native temporal] sol-attn uses the native one-pass extension when installed; otherwise frame-wise compatibility repeats work. Watch for Kitchen ONE-PASS sol kernel ACTIVE.', flush=True)
             logged[0] = True
         calls[0]+=1
+        if telemetry:
+            telemetry(dict(phase='evaluating', evaluation=calls[0], backend=active_backend,
+                           motion_rows=int(source.sum()), packed_rows=layout.seq_len,
+                           duration_seconds=float((layout.position_ids[target, 0].max()-layout.position_ids[target, 0].min())/40.0)))
         started=time.perf_counter()
         result=previous(model_function, copied) if previous else model_function(copied['input'], copied['timestep'], **copied['c'])
         if calls[0]<=2:
             if device.type=='cuda':torch.cuda.synchronize(device)
             print(f'[BFS H3 native temporal] model evaluation {calls[0]} finished in {time.perf_counter()-started:.2f}s (includes weights/offload and all blocks)',flush=True)
+        if telemetry:
+            telemetry(dict(phase='evaluation_complete', evaluation=calls[0],
+                           elapsed_seconds=time.perf_counter()-started))
         return result
 
     patched.set_model_unet_function_wrapper(wrapper)
@@ -227,6 +234,7 @@ class BFSMiniMaxH3NativeTemporal:
             'window_seconds': ('FLOAT', {'default':0.2,'min':0.0,'max':10.0,'step':0.01}),
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
             'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
+            'hidden': {'unique_id': 'UNIQUE_ID'},
             'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions is the default. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation.'})}}
     RETURN_TYPES = ('MODEL',)
     FUNCTION = 'apply'
@@ -236,8 +244,16 @@ class BFSMiniMaxH3NativeTemporal:
         'to the guider. No Add Guide or VSA. Guide/output must share a 24fps temporal grid. '
         'Does not encode video or load the LoRA. Defaults match training.')
 
-    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=BACKENDS[0]):
-        return (patch_temporal_model(model,motion_video_index,strength,window_seconds,falloff_seconds,max_penalty,attention_backend),)
+    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=BACKENDS[0], unique_id=None):
+        def report(data):
+            # Optional UI telemetry must never prevent inference (including API-only use).
+            try:
+                from server import PromptServer
+                PromptServer.instance.send_sync('bfs-tara-monitor', dict(data, node=str(unique_id)))
+            except Exception:
+                pass
+        return (patch_temporal_model(model,motion_video_index,strength,window_seconds,falloff_seconds,max_penalty,attention_backend,
+                                     telemetry=report if unique_id is not None else None),)
 
 NODE_CLASS_MAPPINGS = {'BFSMiniMaxH3NativeTemporal': BFSMiniMaxH3NativeTemporal}
 NODE_DISPLAY_NAME_MAPPINGS = {'BFSMiniMaxH3NativeTemporal': 'BFS MiniMax H3 TARA - Native Temporal Alignment (Experimental)'}
