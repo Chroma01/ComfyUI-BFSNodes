@@ -222,3 +222,7 @@ attached reference in Picture 1..N order. Original sizes and pixels are preserve
 images of different sizes are not resized into a batch. The existing reference
 bundle and text outputs retain their indices. This preview connection does not
 change which images are sent to the encoder.
+
+### Native shot loop without Planner (1.115.27, experimental)
+
+Separate Start, Continuity and End/Join nodes now have a [native auto-prompt loop example](examples/h3_tara_native_auto_prompt_loop.comfy.json). See [wiring, manual cuts, continuity and validation limits](H3_NATIVE_SHOT_LOOP.md).
