@@ -240,3 +240,9 @@ Pause the guide and select a performer for Picture X, track it with native SAM 3
 and apply regional reference attention. A separate token/word editor offers
 clickable forces with embedding-magnitude and text-attention modes. See
 [workflows, setup and validation limits](H3_CAST_AND_TOKEN_CONTROLS.md).
+
+### Phrase weights in prompts (1.115.30)
+
+The Token / Word Weight Editor accepts `(phrase:1.3)` directives in
+`weighted_phrases`, or annotations parsed before native encoding. See
+[syntax, exact matching and override rules](H3_CAST_AND_TOKEN_CONTROLS.md#phrase-weights-in-the-prompt-111530).

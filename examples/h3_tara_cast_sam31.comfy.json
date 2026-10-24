@@ -1,6 +1,6 @@
 {
-  "last_node_id": 64,
-  "last_link_id": 61,
+  "last_node_id": 65,
+  "last_link_id": 62,
   "nodes": [
     {
       "id": 1,
@@ -492,6 +492,7 @@
         288,
         107,
         "match",
+        true,
         true
       ],
       "widgets_values_named": {
@@ -1770,7 +1771,9 @@
         {
           "name": "report",
           "type": "STRING",
-          "links": []
+          "links": [
+            62
+          ]
         }
       ],
       "properties": {
@@ -1778,9 +1781,38 @@
       },
       "widgets_values": [
         "attention logits (experimental)",
-        true,
-        "{}"
+        false,
+        "{}",
+        ""
       ]
+    },
+    {
+      "id": 65,
+      "type": "PreviewAny",
+      "title": "TOKEN EDITOR STATUS · inspect_only stops sampling",
+      "pos": [
+        1570,
+        1900
+      ],
+      "size": [
+        440,
+        220
+      ],
+      "flags": {},
+      "order": 33,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 62
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
     }
   ],
   "links": [
@@ -2223,6 +2255,14 @@
       15,
       2,
       "CONDITIONING"
+    ],
+    [
+      62,
+      64,
+      2,
+      65,
+      0,
+      "*"
     ]
   ],
   "groups": [],

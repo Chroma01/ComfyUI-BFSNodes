@@ -62,11 +62,11 @@ There is no automatic closed-loop mask repair in this version.
 Also connect its MODEL output to the scheduler. The example uses CFG 1 and
 connects the same positive to its guider's negative socket, as before.
 
-1. Leave `inspect_only` on and queue. This encodes conditioning and displays
+1. Enable `inspect_only` if you want to inspect tokens without generating, then queue. This encodes conditioning and displays
    tokens but blocks sampling. In the combined workflow, finish cast setup first.
 2. Click token chips; Ctrl/Cmd-click selects several. Double-click selects matching
    tokenizer word/fragments, including repeated occurrences. Use **+0.1**, **−0.1**,
-   **Reset selected** or **Reset all**. The JSON widget stores the forces and prompt
+   **Reset selected** or **Reset overrides**. The JSON widget stores the forces and prompt
    fingerprint in the workflow. The supported force range is **0.05..3**; start
    with modest changes such as **0.8 / 1 / 1.2**, using the same seed.
 3. Turn `inspect_only` off and queue to render. Editing chips does not change an
@@ -109,9 +109,9 @@ preserved when no attention gain is active; embedding-only mode adds no attentio
 policy of its own. Additional partition calls can reduce speed.
 
 The loop example defaults token weights to neutral and `inspect_only=false`.
-Token indices are tied to each generated shot prompt. Nonneutral per-prompt
-weights are not automatically remapped across different loop prompts: use the
-single-shot example for token experiments. Regional Picture/mask bindings do
+Manual token indices are tied to each generated shot prompt. Nonneutral index
+overrides are not automatically remapped across different loop prompts. From
+1.115.30, exact `weighted_phrases` directives can be rematched per shot (see below). Regional Picture/mask bindings do
 support the loop's full-video-mask slicing described above.
 
 ## Validation boundaries
@@ -123,3 +123,74 @@ and links, and exact composition of text/Picture/temporal logits against a dense
 softmax oracle. Native SAM GPU execution, browser interactions and rendered
 quality/speed still require local validation. No claim of cross-platform GPU
 validation follows from these checks.
+
+## Phrase weights in the prompt (1.115.30)
+
+The same editor now supports phrases without selecting individual token chips.
+
+**Option A — inline in the final execution prompt:**
+
+```text
+motion_transfer: Replace the performer with (the goblin from <Picture 1>:1.3). Preserve (the original background and its details:1.2).
+```
+
+Keep `parse_prompt_weights=true` on **BFS H3 Native Reference Set to Video**.
+It removes explicit `(phrase:number)` syntax **before encoding**, then attaches
+clean-text character spans to the token trace. The encoder itself does not apply
+these forces: use its positive output through **Token / Word Weight Editor**.
+Its `effective_prompt` output is the cleaned text that was actually encoded.
+Write annotations in the final execution prompt, not only in an earlier user
+request that Generate Text may rewrite/remove.
+
+**Option B — directly in the editor's `weighted_phrases` field:**
+
+```text
+(golden fur:1.3)
+(original background:1.2)
+```
+
+These are exact, case-sensitive phrases from the **already encoded** prompt.
+The editor maps them using actual tokenizer offsets; it needs no new CLIP pass.
+Standalone word edges do not match substrings inside larger words (`man` does
+not select `woman`). Every exact occurrence is weighted. A missing phrase fails
+explicitly instead of guessing. You may also paste a full annotated prompt into
+this field if its cleaned text exactly matches the encoded prompt.
+
+Both forms weight every overlapping subword token of the phrase. A token that
+crosses a phrase boundary is affected as a whole. Ordinary `(parentheses)` remain
+literal; only an explicit numeric suffix on a phrase is a weight. Timestamp
+parentheses such as `(00:03.333)` and numeric-only ratios stay literal. Escape `\(` and `\)` for a
+literal parenthesized expression that looks like a weight. Explicit nested or
+overlapping groups multiply their forces, which must stay within **0.05..3**.
+Inline and editor-field phrase weights also multiply if both select a token.
+
+The panel shows these phrase defaults. Manual per-token adjustments override the
+phrase-derived value; a manual value of 1 can neutralize an inline boost.
+**Reset selected / Reset overrides** restores phrase defaults, rather than
+removing the annotations. Clear the annotations/`weighted_phrases` to remove
+those defaults. Exact tokenizer character offsets are required for phrase
+mapping; unsupported tokenizers fail rather than apply weights to guessed rows.
+
+These forces use the editor's selected **attention logits** or **embedding
+magnitude** mode. They are not an extra simultaneous weighting stage. In a shot
+loop, phrase directives are matched afresh against each shot's encoded prompt;
+a missing phrase stops that experiment. Old manual token-index overrides still
+require resetting when a shot prompt changes.
+
+Validation added CPU checks for nested/literal/escaped syntax, Unicode offsets,
+repeated phrases and word boundaries, visual-row preservation, manual neutral
+overrides, and cleaning before the mocked native encode call. GPU quality and
+browser interaction remain pending local validation.
+
+From 1.115.30, new token nodes/workflows default `inspect_only=false` so sampling
+continues normally. Old saved workflows retain their explicit value; switch it
+off manually or load the updated file. Inspect mode now prints an explicit
+message and the examples include a native PreviewAny status output, even if the
+custom panel did not load. Repeated ~0.1s runs with no sampler can be cached
+inspection blockers, not a failed GPU compile.
+
+For older slow Qwen2 tokenizers, the mapper can construct an offset-capable local
+companion from the loaded tokenizer's vocabulary/merges and added tokens. It
+never downloads a replacement tokenizer and only accepts offsets when token IDs
+match the actual H3 tokenizer exactly. A CPU check also verified matching against
+the real local ComfyUI Qwen vocabulary; full GPU/video quality remains untested.

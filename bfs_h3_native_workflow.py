@@ -241,12 +241,22 @@ class BFSH3NativeReferenceSetToVideo:
             'width': ('INT', {'default': 512, 'step': 32}), 'height': ('INT', {'default': 288, 'step': 32}),
             'length': ('INT', {'default': 107, 'min': 5, 'step': 17}),
             'ref_image_size': (['match', 'max'], {'default': 'match'}),
-            'validate_h3_sections': ('BOOLEAN', {'default': True})}}
+            'validate_h3_sections': ('BOOLEAN', {'default': True})},
+            'optional': {'parse_prompt_weights': ('BOOLEAN', {'default': True, 'tooltip':'Clean explicit (phrase:1.3) syntax before encoding and pass weights to Token / Word Weight Editor. Ordinary parentheses are unchanged.'})}}
     RETURN_TYPES = ('CONDITIONING', 'LATENT', 'STRING'); RETURN_NAMES = ('positive', 'latent', 'effective_prompt')
     FUNCTION = 'encode'; CATEGORY = CATEGORY
     DESCRIPTION = 'Calls native MiniMax H3 Reference to Video with the same N-image set used by the prompt writer. Video 1 is native, no Add Guide. Apply TARA to MODEL separately.'
 
-    def encode(self, clip, vae, reference_video, references, prompt, width, height, length, ref_image_size='match', validate_h3_sections=True):
+    def encode(self, clip, vae, reference_video, references, prompt, width, height, length, ref_image_size='match', validate_h3_sections=True, parse_prompt_weights=True):
+        try:
+            from . import minimax_h3_token_weights as token_weights
+        except ImportError:
+            import minimax_h3_token_weights as token_weights
+        inline_spans=[]
+        if parse_prompt_weights:
+            prompt,inline_spans=token_weights.parse_prompt_weights(prompt)
+        if inline_spans:
+            print(f'[BFS H3 prompt weights] parsed {len(inline_spans)} group(s); clean text encoded; forces are applied by Token / Word Weight Editor.',flush=True)
         if validate_h3_sections:
             validate_prompt(prompt)
         if not references or len(references) > 9:
@@ -264,12 +274,10 @@ class BFSH3NativeReferenceSetToVideo:
             ref_videos={'ref_video_1': reference_video})
         positive=result[0]
         try:
-            from .minimax_h3_token_weights import attach_trace
-        except ImportError:
-            from minimax_h3_token_weights import attach_trace
-        try:
-            positive=attach_trace(positive,clip,prompt)
+            positive=token_weights.attach_trace(positive,clip,prompt,inline_spans=inline_spans)
         except (ValueError,AttributeError,KeyError,TypeError) as exc:
+            if inline_spans:
+                raise ValueError(f'Cannot safely map inline prompt weights: {exc}') from exc
             print(f'[BFS H3 token trace] unavailable for this encoder: {exc}',flush=True)
         return positive, result[1], prompt
 

@@ -69,7 +69,7 @@
           ]
         }
       ],
-      "title": "10500 + V2 merged \u2014 strength 1; do not add V2 again",
+      "title": "10500 + V2 merged — strength 1; do not add V2 again",
       "properties": {
         "Node name for S&R": "LoraLoaderModelOnly"
       },
@@ -156,7 +156,7 @@
           ]
         }
       ],
-      "title": "TARA \u2014 experimental; MODEL must reach guider",
+      "title": "TARA — experimental; MODEL must reach guider",
       "properties": {
         "Node name for S&R": "BFSMiniMaxH3NativeTemporal"
       },
@@ -293,7 +293,7 @@
           "links": []
         }
       ],
-      "title": "GUIDE \u2014 source dimensions; force 24 fps; automatic frame count",
+      "title": "GUIDE — source dimensions; force 24 fps; automatic frame count",
       "properties": {
         "Node name for S&R": "VHS_LoadVideo"
       },
@@ -345,7 +345,7 @@
           "links": []
         }
       ],
-      "title": "Picture 1 \u2014 identity",
+      "title": "Picture 1 — identity",
       "properties": {
         "Node name for S&R": "LoadImage"
       },
@@ -383,7 +383,7 @@
           "links": []
         }
       ],
-      "title": "OPTIONAL Picture 2 \u2014 connect to Describe References ref_image_2 if needed",
+      "title": "OPTIONAL Picture 2 — connect to Describe References ref_image_2 if needed",
       "properties": {
         "Node name for S&R": "LoadImage"
       },
@@ -484,7 +484,7 @@
           "links": []
         }
       ],
-      "title": "Native H3 \u2014 same N references as writer; Video1; NO Add Guide",
+      "title": "Native H3 — same N references as writer; Video1; NO Add Guide",
       "properties": {
         "Node name for S&R": "BFSH3NativeReferenceSetToVideo"
       },
@@ -493,6 +493,7 @@
         288,
         107,
         "match",
+        true,
         true
       ],
       "widgets_values_named": {
@@ -1057,7 +1058,7 @@
           ]
         }
       ],
-      "title": "PROMPT VLM \u2014 generation capable; independent of H3 encoder",
+      "title": "PROMPT VLM — generation capable; independent of H3 encoder",
       "properties": {
         "Node name for S&R": "CLIPLoader"
       },
@@ -1224,7 +1225,7 @@
           "links": []
         }
       ],
-      "title": "Generate Text 1 \u2014 analyze numbered guide frames only",
+      "title": "Generate Text 1 — analyze numbered guide frames only",
       "properties": {
         "Node name for S&R": "TextGenerate"
       },
@@ -1358,7 +1359,7 @@
           "links": []
         }
       ],
-      "title": "Generate Text 2 \u2014 final six-section H3 prompt",
+      "title": "Generate Text 2 — final six-section H3 prompt",
       "properties": {
         "Node name for S&R": "TextGenerate"
       },
@@ -1416,7 +1417,7 @@
           ]
         }
       ],
-      "title": "Trim grid padding \u2014 keep actual source duration",
+      "title": "Trim grid padding — keep actual source duration",
       "properties": {
         "Node name for S&R": "ImageFromBatch"
       },
@@ -1560,7 +1561,7 @@
         107,
         ""
       ],
-      "title": "LOOP START \u00b7 107-frame segments at 24fps"
+      "title": "LOOP START · 107-frame segments at 24fps"
     },
     {
       "id": 41,
@@ -1620,7 +1621,7 @@
       "widgets_values": [
         true
       ],
-      "title": "CONTINUITY \u00b7 previous last frame (experimental)"
+      "title": "CONTINUITY · previous last frame (experimental)"
     },
     {
       "id": 42,
@@ -1673,7 +1674,7 @@
         "Node name for S&R": "BFSH3NativeShotLoopEnd"
       },
       "widgets_values": [],
-      "title": "LOOP END \u00b7 cache segments and join"
+      "title": "LOOP END · cache segments and join"
     }
   ],
   "links": [

@@ -117,7 +117,8 @@
         4
       ],
       "ref_image_size": "match",
-      "validate_h3_sections": true
+      "validate_h3_sections": true,
+      "parse_prompt_weights": true
     }
   },
   "15": {
