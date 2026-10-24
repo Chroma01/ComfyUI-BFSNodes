@@ -62,16 +62,24 @@ def merge(a,la,b,lb):
     return result.to(a.dtype),total
 
 
-def attention(q,k,v,plan,flash=flash_with_lse,frame_chunk=8):
+def attention(q,k,v,plan,flash=flash_with_lse,frame_chunk=8,reference_biases=None):
     if q.shape[0]!=1 or q.shape[2]!=k.shape[2] or q.shape!=v.shape:
         raise ValueError('Fast native temporal attention currently requires one packed self-attention sequence')
-    if plan.cap==0:
+    if plan.cap==0 and not reference_biases:
         return flash(q,k,v)[0]
     out=torch.empty_like(q)
     sa,sb,ta,tb=plan.source_start,plan.source_stop,plan.target_start,plan.target_stop
     # Queries outside the target retain ordinary attention, including token refs/audio.
     for lo,hi in ((0,ta),(tb,q.shape[2])):
         if hi>lo:out[:,:,lo:hi]=flash(q[:,:,lo:hi],k,v)[0]
+    # Split non-motion keys at native image boundaries. Log gains can vary by
+    # target query (tracked mask), while each partition retains an exact LSE.
+    cuts=sorted({0,sa,sb,k.shape[2],*[x for a,b,_ in (reference_biases or []) for x in (a,b)]})
+    key_parts=[]
+    for lo,hi in zip(cuts,cuts[1:]):
+        if hi<=lo or (lo>=sa and hi<=sb):continue
+        gain=next((g for a,b,g in (reference_biases or []) if a<=lo and hi<=b),None)
+        key_parts.append((lo,hi,gain))
     heads,dim=q.shape[1],q.shape[-1]
     qframes=q[:,:,ta:tb].reshape(1,heads,plan.frames,plan.target_frame_rows,dim)[0].permute(1,0,2,3)
     kframes=k[:,:,sa:sb].reshape(1,heads,plan.frames,plan.source_frame_rows,dim)[0].permute(1,0,2,3)
@@ -86,9 +94,11 @@ def attention(q,k,v,plan,flash=flash_with_lse,frame_chunk=8):
         query=q[:,:,start:stop]
         # Positive baseline: all motion keys downweighted by exp(-cap).
         acc,lse=flash(query,k[:,:,sa:sb],v[:,:,sa:sb]);lse=lse-plan.cap
-        for lo,hi in ((0,sa),(sb,k.shape[2])):
-            if hi>lo:
-                part,pl=flash(query,k[:,:,lo:hi],v[:,:,lo:hi]);acc,lse=merge(acc,lse,part,pl)
+        for lo,hi,gain in key_parts:
+            part,pl=flash(query,k[:,:,lo:hi],v[:,:,lo:hi])
+            if gain is not None:
+                pl=pl+gain[start-ta:stop-ta][None,None,:]
+            acc,lse=merge(acc,lse,part,pl)
         acc=acc.reshape(1,heads,last-first,plan.target_frame_rows,dim)[0].permute(1,0,2,3)
         lse=lse.reshape(1,heads,last-first,plan.target_frame_rows)[0].permute(1,0,2)
         for off,lo,hi,logs in corrections:

@@ -8,12 +8,14 @@ import math
 import time
 import torch
 try:
+    from . import minimax_h3_reference_binding as binding
     from . import minimax_h3_native_temporal_core as core
     from . import minimax_h3_temporal_fast as fast
     from . import minimax_h3_temporal_kitchen as kitchen
     from . import minimax_h3_temporal_sol as sol
     from . import minimax_h3_sparse_compat as sparse_compat
 except ImportError:
+    import minimax_h3_reference_binding as binding
     import minimax_h3_native_temporal_core as core
     import minimax_h3_temporal_fast as fast
     import minimax_h3_temporal_kitchen as kitchen
@@ -83,7 +85,7 @@ def temporal_layout(native, refs, keyframes, video_index=1):
     return result, source, target
 
 
-def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False, sparse_patch=None, dense_backend=None):
+def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False, sparse_patch=None, dense_backend=None, reference_biases=None):
     first=[log_first]
     def override(original, q, k, v, heads, mask=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
         # Token refiner and other attention paths retain their original backend.
@@ -120,7 +122,9 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
             print(f'[BFS H3 native temporal] first attention starting: backend={display_backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
             if q.is_cuda: torch.cuda.synchronize(q.device)
             started=time.perf_counter()
-        if chosen == SOL_BACKEND:
+        if reference_biases:
+            out = fast.attention(q,k,v,plan,reference_biases=reference_biases)
+        elif chosen == SOL_BACKEND:
             if not getattr(plan, '_sol_active_logged', False):
                 passes = 1 if sol.native_kernel.api_for(q) is not None else (plan.frames+1 if ctx.strength and ctx.cap else 1)
                 print(f'[BFS H3 native temporal] sol-attn ACTIVE: tau={sparse_patch.tau}, exact conditioning keys, {passes} attention pipeline pass(es).',flush=True)
@@ -170,6 +174,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     logged = [False]
     plan_cache = [None, None]
     calls = [0]
+    reference_cache = [None, None, None, None]
 
     def wrapper(model_function, args):
         conds = args.get('c', {})
@@ -197,7 +202,19 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
                                   torch.tensor([strength,window,falloff,cap],device=device,dtype=torch.float32))
         if plan_cache[0] is not layout:
             plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,strength,window,falloff,cap)]
-        to['optimized_attention_override'] = attention_override(ctx, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0], sparse_patch=sparse_patch, dense_backend=dense_backend)
+        reference_biases=None
+        controls=to.get(binding.OPTION)
+        if controls:
+            if sparse_patch is not None:
+                raise ValueError('Reference Attention Binding does not support sparse attention yet. Remove Model Sparse Attention for this experiment.')
+            if reference_cache[0] is not layout or reference_cache[1] is not controls or reference_cache[2] != device:
+                reference_cache[:] = [layout,controls,device,binding.build_biases(layout,payload.get('refs',[]),plan_cache[1],controls,device)]
+            reference_biases=reference_cache[3]
+            if reference_biases:
+                active_backend=BACKENDS[0]
+                if not logged[0]:
+                    print('[BFS H3 reference binding] ACTIVE: exact Picture logit gains, optional target masks; using Flash Partitions (Kitchen/Sol one-pass bypassed).',flush=True)
+        to['optimized_attention_override'] = attention_override(ctx,reference_biases=reference_biases, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0], sparse_patch=sparse_patch, dense_backend=dense_backend)
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
             print(f'[BFS H3 native temporal] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)

@@ -226,3 +226,10 @@ change which images are sent to the encoder.
 ### Native shot loop without Planner (1.115.27, experimental)
 
 Separate Start, Continuity and End/Join nodes now have a [native auto-prompt loop example](examples/h3_tara_native_auto_prompt_loop.comfy.json). See [wiring, manual cuts, continuity and validation limits](H3_NATIVE_SHOT_LOOP.md).
+
+### Reference Attention Binding (1.115.28, experimental)
+
+A separate model node adds per-Picture attention gains with optional tracked target
+masks, composed with TARA. See [controls and limitations](H3_REFERENCE_BINDING.md)
+and [example workflow](examples/h3_tara_reference_binding.comfy.json). The initial
+prototype uses Flash Partitions; it does not yet use fused Kitchen reference gains.
