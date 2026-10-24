@@ -224,6 +224,8 @@ class BFSH3BuildNativePrompt:
                  "do not copy source hoodie/pants or other replaced wardrobe from guide observations. "
                  "A character reference's pose or neutral backdrop must not freeze the performance or create an environment change. "
                  "Preserve the source setting unless the user explicitly requests a setting change using an attached reference or a textual description. "
+                 "If no environment change is requested, describe and retain the observed source background details and spatial layout; "
+                 "an unassigned scene image is not permission to replace it. A requested global style may restyle that setting without changing its content. "
                  "Make summary and detailed_description agree on all requested changes. Transfer guide poses/actions and timing, not replaced appearances. "
                  "Avoid a repetitive timestamp list of sampled frames; describe the supported performance in order. "
                  "Check every Picture label against the exact attached set above. Output the completed six-section prompt only.")
