@@ -27,7 +27,12 @@ flowchart LR
   Load --> Audio["Original audio"] --> Save
 ```
 
-- **Loop Start:** default chunks of 107 source frames. `camera_cuts` accepts
+- **Loop Start:** default chunks of 107 source frames. Since **1.115.32**, choose
+  `segment_unit=seconds` and set `chunk_seconds` (for example, 5 seconds = 120
+  source frames), or keep `segment_unit=frames` and use `chunk_frames`. Only the
+  selected field is used. Seconds round to the nearest 24 fps source frame;
+  H3 padding is handled downstream and trimmed before joining. Old workflows
+  retain their frame-based sizes. `camera_cuts` accepts
   comma-separated 24fps frame indices relative to the loaded clip. A cut always
   starts a new segment. Empty means one continuous take divided into chunks;
   **there is no automatic scene detection in these nodes**. Set VHS `force_rate`

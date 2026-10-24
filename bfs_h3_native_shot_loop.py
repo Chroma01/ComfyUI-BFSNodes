@@ -37,14 +37,22 @@ class BFSH3NativeShotLoopStart:
             'source_fps': ('FLOAT', {'default':24., 'min':.01}),
             'chunk_frames': ('INT', {'default':107, 'min':5, 'max':3600}),
             'camera_cuts': ('STRING', {'default':'', 'tooltip':'Comma-separated SOURCE frame indices, relative to the loaded clip. Empty = one continuous take split by chunk_frames. No automatic cut detection.'})},
-            'optional': {'loop_state': ('BFS_H3_NATIVE_LOOP',), 'enabled': ('BOOLEAN', {'default':True, 'tooltip':'Off = one segment containing the entire loaded clip. No repeated sampling or continuity handoff.'})}}
+            'optional': {'loop_state': ('BFS_H3_NATIVE_LOOP',), 'enabled': ('BOOLEAN', {'default':True, 'tooltip':'Off = one segment containing the entire loaded clip. No repeated sampling or continuity handoff.'}),
+                'segment_unit': (['frames', 'seconds'], {'default':'frames', 'tooltip':'Choose which segment size field to use. Existing workflows keep frames.'}),
+                'chunk_seconds': ('FLOAT', {'default':107/24, 'min':5/24, 'max':150., 'step':.01, 'round':False, 'tooltip':'Used only in seconds mode. Rounded to the nearest source frame at 24 fps; H3 padding is handled downstream.'})}}
     RETURN_TYPES = ('IMAGE', 'BFS_H3_NATIVE_LOOP', 'FLOAT', 'INT', 'INT')
     RETURN_NAMES = ('shot_images', 'loop_state', 'source_fps', 'shot_index', 'shot_count')
     FUNCTION = 'start'; CATEGORY = CATEGORY
 
-    def start(self, images, source_fps=24., chunk_frames=107, camera_cuts='', loop_state=None, enabled=True):
+    def start(self, images, source_fps=24., chunk_frames=107, camera_cuts='', loop_state=None, enabled=True, segment_unit='frames', chunk_seconds=107/24):
         if not math.isfinite(source_fps) or abs(source_fps-24.)>1e-6:
             raise ValueError('Native H3 shot loop requires a 24 fps loaded video. Set VHS Load Video force_rate=24 before this node to keep boundaries and audio aligned.')
+        if segment_unit not in ('frames', 'seconds'):
+            raise ValueError('Segment unit must be frames or seconds')
+        if enabled and segment_unit == 'seconds':
+            if not math.isfinite(chunk_seconds) or not 5/24 <= chunk_seconds <= 150.:
+                raise ValueError('Segment seconds must be between 5/24 and 150 seconds')
+            chunk_frames = max(5, int(math.floor(chunk_seconds * source_fps + .5)))
         if loop_state is None:
             import folder_paths
             folder = Path(folder_paths.get_temp_directory()) / 'bfs_h3_native_loop' / uuid.uuid4().hex
@@ -56,7 +64,7 @@ class BFSH3NativeShotLoopStart:
         if len(images) != state['source_frames'] or source_fps != state['source_fps']:
             raise ValueError('Source video changed during the native shot loop')
         shot = state['ranges'][state['index']]
-        print(f"[BFS H3 native loop] segment {state['index']+1}/{len(state['ranges'])}: source frames {shot['start']}..{shot['end']-1}",flush=True)
+        print(f"[BFS H3 native loop] segment {state['index']+1}/{len(state['ranges'])}: source frames {shot['start']}..{shot['end']-1} ({(shot['end']-shot['start'])/source_fps:.3f}s)",flush=True)
         frames=images[shot['start']:shot['end']]
         if len(frames)<5:
             frames=torch.cat((frames,frames[-1:].expand(5-len(frames),-1,-1,-1)))

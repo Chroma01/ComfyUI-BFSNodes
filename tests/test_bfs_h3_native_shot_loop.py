@@ -70,3 +70,19 @@ def test_example_ui_links_are_bidirectional_and_match_api_loop():
     api=json.loads((ROOT/'examples/h3_tara_native_auto_prompt_loop.api.json').read_text())
     assert api['22']['inputs']['images']==['42',0]
     assert api['22']['inputs']['audio']==['10',2]
+
+
+def test_seconds_selection_rounding_and_legacy_frames(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'folder_paths', SimpleNamespace(get_temp_directory=lambda: str(tmp_path)))
+    video = torch.zeros(250, 2, 2, 3)
+    start = m.BFSH3NativeShotLoopStart()
+    _, legacy, *_ = start.start(video)
+    assert legacy['ranges'][0]['end'] == 107
+    _, seconds, *_ = start.start(video, chunk_frames=107, segment_unit='seconds', chunk_seconds=5.)
+    assert [(x['start'], x['end']) for x in seconds['ranges']] == [(0, 120), (120, 240), (240, 250)]
+    _, rounded, *_ = start.start(video, segment_unit='seconds', chunk_seconds=1.03, camera_cuts='30')
+    assert [(x['start'], x['end']) for x in rounded['ranges'][:3]] == [(0, 25), (25, 30), (30, 55)]
+    _, disabled, *_ = start.start(video, enabled=False, segment_unit='seconds', chunk_seconds=5.)
+    assert len(disabled['ranges']) == 1 and disabled['ranges'][0]['end'] == 250
+    with pytest.raises(ValueError, match='seconds'):
+        start.start(video, segment_unit='seconds', chunk_seconds=float('nan'))
