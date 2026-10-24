@@ -172,10 +172,11 @@ class BFSH3DescribeReferences:
             'tokens_per_image': ('INT', {'default': 384, 'min': 64, 'max': 2048}),
             'max_image_side': ('INT', {'default': 1024, 'min': 256, 'max': 2048})},
             'optional': {f'ref_image_{i}': ('IMAGE',) for i in range(1, 10)}}
-    RETURN_TYPES = ('BFS_H3_REFERENCE_SET', 'STRING')
-    RETURN_NAMES = ('references', 'reference_inventory')
+    RETURN_TYPES = ('BFS_H3_REFERENCE_SET', 'STRING', 'IMAGE')
+    RETURN_NAMES = ('references', 'reference_inventory', 'reference_images')
+    OUTPUT_IS_LIST = (False, False, True)
     FUNCTION = 'describe'; CATEGORY = CATEGORY
-    DESCRIPTION = 'Runs native Generate Text independently for each connected Picture (1..9, consecutive). Never describes a joint reference collage.'
+    DESCRIPTION = 'Runs native Generate Text independently for each connected Picture (1..9, consecutive). Never describes a joint reference collage. reference_images returns all original images as an ordered IMAGE list, preserving different sizes; connect to Preview Image.'
 
     def describe(self, clip, request, tokens_per_image=384, max_image_side=1024, **kwargs):
         refs = collect_references(kwargs)
@@ -193,7 +194,7 @@ class BFSH3DescribeReferences:
             scale = min(1., max_image_side/max(h, width))
             analysis_image = image if scale == 1 else F.interpolate(image.movedim(-1, 1), size=(max(1, round(h*scale)), max(1, round(width*scale))), mode='bilinear', align_corners=False).movedim(1, -1)
             inventory.append(f'<Picture {i}>: '+generate_reference(clip, analysis_image, prompt, tokens_per_image))
-        return refs, f'Attached references: {len(refs)} (Picture 1 through Picture {len(refs)}).\n\n' + '\n\n'.join(inventory)
+        return refs, f'Attached references: {len(refs)} (Picture 1 through Picture {len(refs)}).\n\n' + '\n\n'.join(inventory), list(refs)
 
 
 class BFSH3BuildNativePrompt:

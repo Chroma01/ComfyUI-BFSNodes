@@ -49,10 +49,12 @@ def test_each_reference_is_inspected_separately_and_returned_for_same_encoder(mo
     def gen(clip,image,prompt,tokens):
         calls.append((image,prompt));return 'red coat' if image is a else 'beach'
     monkeypatch.setattr(w,'generate_reference',gen)
-    refs,inventory=w.BFSH3DescribeReferences().describe(object(),'identity 1; setting 2',ref_image_2=b,ref_image_1=a)
+    refs,inventory,images=w.BFSH3DescribeReferences().describe(object(),'identity 1; setting 2',ref_image_2=b,ref_image_1=a)
     assert len(calls)==2 and calls[0][0] is a and calls[1][0] is b
     assert '<Picture 1>: red coat' in inventory and '<Picture 2>: beach' in inventory
     assert refs[0] is a and refs[1] is b
+    assert images[0] is a and images[1] is b
+    assert w.BFSH3DescribeReferences.OUTPUT_IS_LIST == (False, False, True)
 
 def test_template_does_not_recursively_expand_user_braces():
     result=w.build_prompt('{request}|{inventory}|{guide_analysis}|{metadata}','keep {inventory}','one','motion','{}')

@@ -213,3 +213,12 @@ Experimental temporal mode automatically recognizes **Model Attention Backend** 
 TARA kernel downloads, including **RTX4090 (SM89), H100 (SM90) and RTX5090 (SM120)**: [direct download table and setup checks](H3_NATIVE_TEMPORAL.md#kernel-downloads).
 
 [Animated TARA parameter guide](TARA_PARAMETERS.md): free window, falloff, strength and cap, with an offline interactive version.
+
+### Native reference image preview (1.115.25)
+
+**BFS H3 Describe References (Generate Text per Picture)** adds a third output,
+`reference_images` (`IMAGE` list). Connect it to **Preview Image** to view every
+attached reference in Picture 1..N order. Original sizes and pixels are preserved;
+images of different sizes are not resized into a batch. The existing reference
+bundle and text outputs retain their indices. This preview connection does not
+change which images are sent to the encoder.
