@@ -22,10 +22,10 @@ app.registerExtension({
       host.style.cssText = "background:#0b1020;color:#dce6ff;border:1px solid #293854;border-radius:12px;padding:12px;box-sizing:border-box;font:12px system-ui;width:100%;height:100%;overflow:hidden";
       host.innerHTML = `<div style="display:flex;justify-content:space-between"><b>TARA · Temporal field</b><span style="color:#65dfd5">POLICY VIEW</span></div><canvas style="width:100%;height:180px;display:block;margin-top:8px"></canvas><div class="ranges" style="line-height:1.6"></div><div class="status" style="margin-top:8px;color:#8de7e0">Ready · adjust parameters above</div><div style="font-size:10px;color:#97a5c1;margin-top:7px">Animated scan is illustrative. Colors show applied logit penalties, not measured attention or predicted video quality. Widget changes apply to the next queued run.</div>`;
       const canvas = host.querySelector("canvas"), ctx = canvas.getContext("2d");
-      let state = {}, raf = 0, removed = false, last = 0;
+      let state = {}, raf = 0, removed = false, last = 0, visible = true;
       const value = (name, fallback) => Number(node.widgets?.find(w => w.name === name)?.value ?? fallback);
       function draw(now) {
-        if (removed) return;
+        if (removed || !visible) return;
         raf = requestAnimationFrame(draw);
         if (now - last < 65 || !host.isConnected || document.hidden) return;
         last = now;
@@ -70,13 +70,42 @@ app.registerExtension({
       // IDs can change when restoring/copying a workflow.
       const added=node.onAdded;
       node.onAdded=function(){ const r=added?.apply(this,arguments); for(const [id,p] of panels) if(p===panel) panels.delete(id); panels.set(String(node.id),panel); return r; };
+      node.properties ??= {};
+      const toggle=node.addWidget("toggle", "Show TARA preview", true, value => setVisible(value),
+                                  {serialize:false});
+      const monitor=node.addDOMWidget("tara_policy_monitor","div",host,
+          {serialize:false,hideOnZoom:false,getMinHeight:()=>visible ? 300 : 0,
+           getMaxHeight:()=>visible ? 300 : 0});
+      const originalComputeSize=monitor.computeSize;
+      monitor.computeSize=function(...args){
+        return visible ? (originalComputeSize?.apply(this,args) ?? [390,300]) : [0,-4];
+      };
+      function setVisible(value, resize=true){
+        visible=Boolean(value);
+        node.properties.bfs_tara_preview=visible;
+        toggle.value=visible;
+        host.style.display=visible ? "" : "none";
+        monitor.hidden=!visible;
+        cancelAnimationFrame(raf);
+        if(visible && !removed) raf=requestAnimationFrame(draw);
+        if(resize){
+          const size=node.computeSize();
+          node.setSize([Math.max(node.size[0],390),size[1]]);
+          node.setDirtyCanvas(true,true);
+        }
+      }
       const configured=node.onConfigure;
-      node.onConfigure=function(){ const r=configured?.apply(this,arguments); for(const [id,p] of panels) if(p===panel) panels.delete(id); panels.set(String(node.id),panel); return r; };
-      node.addDOMWidget("tara_policy_monitor","div",host,{serialize:false,hideOnZoom:false,getMinHeight:()=>300});
-      node.setSize([Math.max(node.size[0],390),Math.max(node.size[1],580)]);
+      node.onConfigure=function(){
+        const r=configured?.apply(this,arguments);
+        for(const [id,p] of panels) if(p===panel) panels.delete(id);
+        panels.set(String(node.id),panel);
+        setVisible(node.properties.bfs_tara_preview !== false);
+        return r;
+      };
+      node.setSize([Math.max(node.size[0],390),Math.max(node.size[1],610)]);
       const remove=node.onRemoved;
       node.onRemoved=function(){ removed=true;cancelAnimationFrame(raf);for(const [id,p] of panels) if(p===panel) panels.delete(id);return remove?.apply(this,arguments); };
-      raf=requestAnimationFrame(draw);
+      setVisible(node.properties.bfs_tara_preview !== false, false);
       return result;
     };
   }

@@ -79,3 +79,7 @@ job affect the next queued execution; the current model keeps its queued setting
 
 Update BFSNodes, restart ComfyUI and hard-refresh the browser. This panel is
 currently attached to the standalone TARA node, not the Planner conditioning node.
+
+From **1.115.24**, the standalone node has a **Show TARA preview** switch.
+Turning it off hides the panel, collapses its space and stops its animation.
+The choice is saved as a workflow node property; it does not change TARA or sampling.
