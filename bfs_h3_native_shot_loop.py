@@ -37,19 +37,19 @@ class BFSH3NativeShotLoopStart:
             'source_fps': ('FLOAT', {'default':24., 'min':.01}),
             'chunk_frames': ('INT', {'default':107, 'min':5, 'max':3600}),
             'camera_cuts': ('STRING', {'default':'', 'tooltip':'Comma-separated SOURCE frame indices, relative to the loaded clip. Empty = one continuous take split by chunk_frames. No automatic cut detection.'})},
-            'optional': {'loop_state': ('BFS_H3_NATIVE_LOOP',)}}
+            'optional': {'loop_state': ('BFS_H3_NATIVE_LOOP',), 'enabled': ('BOOLEAN', {'default':True, 'tooltip':'Off = one segment containing the entire loaded clip. No repeated sampling or continuity handoff.'})}}
     RETURN_TYPES = ('IMAGE', 'BFS_H3_NATIVE_LOOP', 'FLOAT', 'INT', 'INT')
     RETURN_NAMES = ('shot_images', 'loop_state', 'source_fps', 'shot_index', 'shot_count')
     FUNCTION = 'start'; CATEGORY = CATEGORY
 
-    def start(self, images, source_fps=24., chunk_frames=107, camera_cuts='', loop_state=None):
+    def start(self, images, source_fps=24., chunk_frames=107, camera_cuts='', loop_state=None, enabled=True):
         if not math.isfinite(source_fps) or abs(source_fps-24.)>1e-6:
             raise ValueError('Native H3 shot loop requires a 24 fps loaded video. Set VHS Load Video force_rate=24 before this node to keep boundaries and audio aligned.')
         if loop_state is None:
             import folder_paths
             folder = Path(folder_paths.get_temp_directory()) / 'bfs_h3_native_loop' / uuid.uuid4().hex
             folder.mkdir(parents=True)
-            loop_state = dict(index=0, ranges=ranges(len(images),chunk_frames,camera_cuts),
+            loop_state = dict(index=0, ranges=ranges(len(images),chunk_frames if enabled else max(5,len(images)),camera_cuts if enabled else ''),
                               folder=str(folder), segments=[], fps=24.,
                               source_frames=len(images), source_fps=source_fps)
         state = dict(loop_state)

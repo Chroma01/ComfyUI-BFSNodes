@@ -1,6 +1,6 @@
 {
-  "last_node_id": 65,
-  "last_link_id": 76,
+  "last_node_id": 66,
+  "last_link_id": 77,
   "nodes": [
     {
       "id": 1,
@@ -487,7 +487,15 @@
       ],
       "title": "Native H3 — same N references as writer; Video1; NO Add Guide",
       "properties": {
-        "Node name for S&R": "BFSH3NativeReferenceSetToVideo"
+        "Node name for S&R": "BFSH3NativeReferenceSetToVideo",
+        "bfs_h3_native_inputs": {
+          "width": 512,
+          "height": 288,
+          "length": 107,
+          "ref_image_size": "match",
+          "validate_h3_sections": true,
+          "parse_prompt_weights": true
+        }
       },
       "widgets_values": [
         512,
@@ -1748,6 +1756,13 @@
           "links": [
             58
           ]
+        },
+        {
+          "name": "selection_status",
+          "type": "STRING",
+          "links": [
+            77
+          ]
         }
       ],
       "properties": {
@@ -2013,6 +2028,34 @@
           "name": "source",
           "type": "*",
           "link": 76
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 66,
+      "type": "PreviewAny",
+      "title": "CAST SELECTION STATUS · setup_only pauses generation",
+      "pos": [
+        -850,
+        2700
+      ],
+      "size": [
+        460,
+        160
+      ],
+      "flags": {},
+      "order": 37,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 77
         }
       ],
       "outputs": [],
@@ -2548,6 +2591,14 @@
       64,
       2,
       65,
+      0,
+      "*"
+    ],
+    [
+      77,
+      60,
+      4,
+      66,
       0,
       "*"
     ]

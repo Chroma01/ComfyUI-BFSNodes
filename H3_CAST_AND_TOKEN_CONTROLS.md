@@ -194,3 +194,30 @@ companion from the loaded tokenizer's vocabulary/merges and added tokens. It
 never downloads a replacement tokenizer and only accepts offsets when token IDs
 match the actual H3 tokenizer exactly. A CPU check also verified matching against
 the real local ComfyUI Qwen vocabulary; full GPU/video quality remains untested.
+
+## One workflow with optional SAM and loop (1.115.31)
+
+[Load the optional workflow](examples/h3_tara_optional_sam_loop.comfy.json)
+([API](examples/h3_tara_optional_sam_loop.api.json)). The **START HERE** options
+node has `use_sam31` and `use_shot_loop`, both OFF by default:
+
+- Both OFF: the whole loaded clip is generated in one pass; no marks or SAM checkpoint required.
+- SAM ON: enable selection/tracking and regional Picture bindings. Queue to view
+  the guide, choose a Picture and mark its performer; turn `setup_only` off and
+  queue again. Selection status now appears in a native PreviewAny and the log.
+- Loop ON: split into configured chunks/manual camera cuts, apply continuity
+  between same-take segments, and join the results. With loop OFF, chunk/cut
+  settings are ignored and there is only one segment. Very long single-pass
+  videos still need suitable VRAM; native H3's frame-count limit still applies.
+- Both ON: track the full loaded video once and slice the masks for each segment.
+
+The optional SAM loader checks its checkpoint only when enabled; disabled SAM
+branches are lazy and do not load model weights. No VAE is requested for SAM.
+The H3 video VAE remains a separate loader. Original Picture order and VLM prompt
+stages remain in the graph; the token editor is neutral and not inspect-only by default.
+
+Native H3 input settings are now stored/restored by name in the frontend helper,
+including recovery of old widget arrays that assigned a boolean to the
+`ref_image_size` combo. Its only valid values remain `match` and `max`.
+CPU checks cover disabled/lazy branches, single-pass bypass, links, and named
+widget restoration; browser/GPU validation is pending.

@@ -246,3 +246,9 @@ clickable forces with embedding-magnitude and text-attention modes. See
 The Token / Word Weight Editor accepts `(phrase:1.3)` directives in
 `weighted_phrases`, or annotations parsed before native encoding. See
 [syntax, exact matching and override rules](H3_CAST_AND_TOKEN_CONTROLS.md#phrase-weights-in-the-prompt-111530).
+
+### Optional SAM / loop workflow (1.115.31)
+
+[One workflow](examples/h3_tara_optional_sam_loop.comfy.json) now has independent
+SAM 3.1 and shot-loop switches. Both default OFF. See
+[setup, disabled branches and status](H3_CAST_AND_TOKEN_CONTROLS.md#one-workflow-with-optional-sam-and-loop-111531).

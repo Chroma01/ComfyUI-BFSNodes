@@ -72,13 +72,18 @@ class BFSH3SelectCastBindings:
         return {'required':{'images':('IMAGE',),'request':('STRING',{'multiline':True}),
             'selection_json':('STRING',{'default':'{}','multiline':True}),
             'setup_only':('BOOLEAN',{'default':True,'tooltip':'Queue to load video, pause and click subjects. Turn off and queue again to track and generate.'})},
-            'optional':{f'ref_image_{i}':('IMAGE',) for i in range(1,10)}}
-    RETURN_TYPES=('IMAGE','BFS_H3_CAST_SELECTION','STRING','BFS_H3_REFERENCE_SET');RETURN_NAMES=('images','cast_selection','request','references')
+            'optional':{f'ref_image_{i}':('IMAGE',) for i in range(1,10)} | {'enabled':('BOOLEAN',{'default':True})}}
+    RETURN_TYPES=('IMAGE','BFS_H3_CAST_SELECTION','STRING','BFS_H3_REFERENCE_SET','STRING');RETURN_NAMES=('images','cast_selection','request','references','selection_status')
     FUNCTION='select';CATEGORY=CATEGORY
     DESCRIPTION='At 24 fps, choose Picture X in the player and click its source performer. Ctrl/Cmd-click adds points; Shift-click excludes. One key frame per Picture. No marks are burned into the guide.'
 
-    def select(self,images,request,selection_json='{}',setup_only=True,**kwargs):
-        refs=collect_references(kwargs);video=preview_video(images,'bfs_cast_source')
+    def select(self,images,request,selection_json='{}',setup_only=True,enabled=True,**kwargs):
+        refs=collect_references(kwargs)
+        if not enabled:
+            status='SAM disabled: video and references pass through; no selection or tracking is required.'
+            print('[BFS H3 Cast Selector] '+status,flush=True)
+            return {'ui':{'bfs_cast_disabled':[status]},'result':(images,dict(bindings=[]),request,refs,status)}
+        video=preview_video(images,'bfs_cast_source')
         import folder_paths
         from PIL import Image
         thumbs=[]
@@ -97,12 +102,14 @@ class BFSH3SelectCastBindings:
         ui={'bfs_cast_selector':[dict(video=video,pictures=thumbs,message=problem or 'Bindings ready. Turn setup_only off and queue to generate.') ]}
         if setup_only or problem:
             from comfy_execution.graph_utils import ExecutionBlocker
-            stop=ExecutionBlocker(None);return {'ui':ui,'result':(stop,stop,stop,refs)}
+            message=problem or 'SETUP ONLY: selections are ready. Set setup_only=false and queue again for SAM tracking and generation.'
+            print('[BFS H3 Cast Selector] '+message,flush=True)
+            stop=ExecutionBlocker(None);return {'ui':ui,'result':(stop,stop,stop,refs,message)}
         notes=[]
         for e in selection['bindings']:
             p=e['positive'][0]
             notes.append(f"<Picture {e['picture']}> supplies the appearance of the source subject selected at global loaded-video frame {e['frame']} ({e['frame']/24:.3f}s), normalized position x={p['x']:.3f}, y={p['y']:.3f}. This selection identifies the performer, not a color or a rendered annotation.")
-        return {'ui':ui,'result':(images,selection,request+'\nExplicit user source bindings: '+' '.join(notes),refs)}
+        return {'ui':ui,'result':(images,selection,request+'\nExplicit user source bindings: '+' '.join(notes),refs,'Selection ready: SAM tracking and generation enabled.')}
 
 
 def track_sequence(images,model,mask,threshold):
@@ -122,14 +129,18 @@ def track_sequence(images,model,mask,threshold):
 class BFSH3SAM31CastMasks:
     @classmethod
     def INPUT_TYPES(cls):
-        return {'required':{'images':('IMAGE',),'model':('MODEL',),'cast_selection':('BFS_H3_CAST_SELECTION',),
+        return {'required':{'images':('IMAGE',{'lazy':True}),'model':('MODEL',{'lazy':True}),'cast_selection':('BFS_H3_CAST_SELECTION',{'lazy':True}),
             'threshold':('FLOAT',{'default':.5,'min':.05,'max':1.,'step':.05}),
-            'max_tracking_side':('INT',{'default':640,'min':128,'max':1536,'step':32})}}
+            'max_tracking_side':('INT',{'default':640,'min':128,'max':1536,'step':32})},'optional':{'enabled':('BOOLEAN',{'default':True})}}
     RETURN_TYPES=('BFS_H3_CAST_MASKS','STRING');RETURN_NAMES=('cast_masks','report')
     FUNCTION='track';CATEGORY=CATEGORY
     DESCRIPTION='Native ComfyUI SAM 3.1: segment each Picture selection on its own key frame, track forward and backward, and retain a separate mask per Picture. Load sam3.1_multiplex_fp16.safetensors with CheckpointLoaderSimple. No text-only identity guessing.'
 
-    def track(self,images,model,cast_selection,threshold=.5,max_tracking_side=640):
+    def check_lazy_status(self,images=None,model=None,cast_selection=None,enabled=True,**kwargs):
+        return [key for key,value in [('images',images),('model',model),('cast_selection',cast_selection)] if value is None] if enabled else []
+
+    def track(self,images=None,model=None,cast_selection=None,threshold=.5,max_tracking_side=640,enabled=True):
+        if not enabled:return {'result':(dict(bindings=[],source_frames=0),'SAM tracking disabled')}
         from comfy_extras.nodes_sam3 import SAM3_Detect
         h,w=images.shape[1:3];scale=min(1.,max_tracking_side/max(h,w));size=(max(2,int(h*scale)//2*2),max(2,int(w*scale)//2*2))
         work=F.interpolate(images[...,:3].detach().float().cpu().movedim(-1,1),size=size,mode='bilinear',align_corners=False).movedim(1,-1)
@@ -154,7 +165,7 @@ class BFSH3SAM31CastMasks:
 class BFSH3ApplyCastBindings:
     @classmethod
     def INPUT_TYPES(cls):
-        return {'required':{'model':('MODEL',),'cast_masks':('BFS_H3_CAST_MASKS',),
+        return {'required':{'model':('MODEL',),'cast_masks':('BFS_H3_CAST_MASKS',{'lazy':True}),
             'prepared_length':('INT',{'default':107,'min':5,'step':17}),
             'reference_strength':('FLOAT',{'default':1.25,'min':.05,'max':4.,'step':.05}),
             'other_reference_strength':('FLOAT',{'default':1.,'min':.05,'max':4.,'step':.05}),
@@ -162,7 +173,10 @@ class BFSH3ApplyCastBindings:
     RETURN_TYPES=('MODEL',);FUNCTION='apply';CATEGORY=CATEGORY
     DESCRIPTION='Applies every selected Picture/mask binding after TARA. Optionally slices full-video tracks to the current loop segment and repeats/trims its tail to the prepared H3 length.'
 
-    def apply(self,model,cast_masks,prepared_length=107,reference_strength=1.25,other_reference_strength=1.,enabled=True,loop_state=None):
+    def check_lazy_status(self,cast_masks=None,enabled=True,**kwargs):
+        return ['cast_masks'] if enabled and cast_masks is None else []
+
+    def apply(self,model,cast_masks=None,prepared_length=107,reference_strength=1.25,other_reference_strength=1.,enabled=True,loop_state=None):
         if not enabled:return (model,)
         if loop_state is not None and cast_masks['source_frames']!=loop_state['source_frames']:
             raise ValueError('Full-video masks must use the same loaded 24fps video as Loop Start')
@@ -177,6 +191,33 @@ class BFSH3ApplyCastBindings:
         return (model,)
 
 
-CLASSES=(BFSH3SelectCastBindings,BFSH3SAM31CastMasks,BFSH3ApplyCastBindings)
+class BFSH3WorkflowOptions:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {'required':{'use_sam31':('BOOLEAN',{'default':False}),'use_shot_loop':('BOOLEAN',{'default':False})}}
+    RETURN_TYPES=('BOOLEAN','BOOLEAN');RETURN_NAMES=('use_sam31','use_shot_loop')
+    FUNCTION='options';CATEGORY=CATEGORY
+    def options(self,use_sam31=False,use_shot_loop=False):return bool(use_sam31),bool(use_shot_loop)
+
+
+class BFSH3SAM31Model:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {'required':{'enabled':('BOOLEAN',{'default':False}),
+            'checkpoint':('STRING',{'default':'sam3.1_multiplex_fp16.safetensors'})}}
+    RETURN_TYPES=('MODEL',);FUNCTION='load';CATEGORY=CATEGORY
+    DESCRIPTION='Optional SAM loader: checkpoint existence is checked only when SAM is enabled. No automatic model download; no VAE output is requested.'
+    def load(self,enabled=False,checkpoint='sam3.1_multiplex_fp16.safetensors'):
+        if not enabled:return (None,)
+        import folder_paths
+        import comfy.sd
+        path=folder_paths.get_full_path('checkpoints',checkpoint)
+        if path is None:raise ValueError('SAM is enabled but its checkpoint is missing from models/checkpoints: '+checkpoint)
+        loaded=comfy.sd.load_checkpoint_guess_config(path,output_vae=False,output_clip=False,
+            embedding_directory=folder_paths.get_folder_paths('embeddings'))
+        return (loaded[0],)
+
+
+CLASSES=(BFSH3SelectCastBindings,BFSH3SAM31CastMasks,BFSH3ApplyCastBindings,BFSH3WorkflowOptions,BFSH3SAM31Model)
 NODE_CLASS_MAPPINGS={c.__name__:c for c in CLASSES}
-NODE_DISPLAY_NAME_MAPPINGS=dict(zip(NODE_CLASS_MAPPINGS,('BFS H3 Select Cast → Picture (Click Video)','BFS H3 SAM 3.1 Cast Tracking','BFS H3 Apply Cast Reference Bindings')))
+NODE_DISPLAY_NAME_MAPPINGS=dict(zip(NODE_CLASS_MAPPINGS,('BFS H3 Select Cast → Picture (Click Video)','BFS H3 SAM 3.1 Cast Tracking','BFS H3 Apply Cast Reference Bindings','BFS H3 Workflow Options (SAM / Loop)','BFS H3 Optional SAM 3.1 Model')))

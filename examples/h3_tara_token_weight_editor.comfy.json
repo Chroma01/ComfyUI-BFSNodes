@@ -485,7 +485,15 @@
       ],
       "title": "Native H3 — same N references as writer; Video1; NO Add Guide",
       "properties": {
-        "Node name for S&R": "BFSH3NativeReferenceSetToVideo"
+        "Node name for S&R": "BFSH3NativeReferenceSetToVideo",
+        "bfs_h3_native_inputs": {
+          "width": 512,
+          "height": 288,
+          "length": 107,
+          "ref_image_size": "match",
+          "validate_h3_sections": true,
+          "parse_prompt_weights": true
+        }
       },
       "widgets_values": [
         512,

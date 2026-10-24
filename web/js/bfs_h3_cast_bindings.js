@@ -47,7 +47,8 @@ function player(host,selectable,node){
   if(!selectable){host.querySelector(".tools").style.display="none";canvas.style.display="none";}
   raf=requestAnimationFrame(draw);
   return {
-    update(next){data=next;const current=url(next.video);if(video.dataset.file!==next.video.filename){video.src=current;video.dataset.file=next.video.filename;}
+    disabled(message){data=null;video.pause();stage.style.opacity=".35";status.textContent=message;},
+    update(next){data=next;stage.style.opacity="1";const current=url(next.video);if(video.dataset.file!==next.video.filename){video.src=current;video.dataset.file=next.video.filename;}
       if(selectable){const refs=host.querySelector(".pictures");refs.replaceChildren();for(const f of next.pictures){const button=document.createElement("button");button.style.cssText="background:#17273b;color:#dce8ff;border:1px solid #436184;border-radius:5px;padding:4px;cursor:pointer";const img=document.createElement("img");img.src=url(f);img.style.cssText="width:70px;height:65px;object-fit:contain;display:block";const text=document.createElement("div");text.textContent=`Picture ${f.picture}`;button.append(img,text);button.onclick=()=>{picture=f.picture;for(const b of refs.children)b.style.outline="none";button.style.outline="2px solid #42e4c1";status.textContent=`Picture ${picture} selected. Pause the video and click its source performer.`;};refs.append(button);}}
       status.textContent=next.message||next.stats?.map(s=>`Picture ${s.picture}: ${s.empty_frames} empty frames`).join(" · ")||"Tracked masks. Colors are preview only.";
     },destroy(){removed=true;cancelAnimationFrame(raf);video.pause();video.removeAttribute("src");video.load();}
@@ -58,6 +59,6 @@ app.registerExtension({name:"BFS.H3.CastBindingSelector",async beforeRegisterNod
   if(!selectable&&data.name!=="BFSH3SAM31CastMasks")return;
   const created=type.prototype.onNodeCreated;
   type.prototype.onNodeCreated=function(){const r=created?.apply(this,arguments);const host=document.createElement("div");this._bfsCast=player(host,selectable,this);this.addDOMWidget("bfs_cast_player","div",host,{serialize:false,hideOnZoom:false,getMinHeight:()=>440});this.setSize([Math.max(this.size[0],520),Math.max(this.size[1],710)]);return r;};
-  const executed=type.prototype.onExecuted;type.prototype.onExecuted=function(message){executed?.apply(this,arguments);const d=message?.[selectable?"bfs_cast_selector":"bfs_cast_preview"]?.[0];if(d)this._bfsCast?.update(d);};
+  const executed=type.prototype.onExecuted;type.prototype.onExecuted=function(message){executed?.apply(this,arguments);const d=message?.[selectable?"bfs_cast_selector":"bfs_cast_preview"]?.[0];if(d)this._bfsCast?.update(d);const disabled=message?.bfs_cast_disabled?.[0];if(disabled)this._bfsCast?.disabled(disabled);};
   const removed=type.prototype.onRemoved;type.prototype.onRemoved=function(){this._bfsCast?.destroy();return removed?.apply(this,arguments);};
 }});
