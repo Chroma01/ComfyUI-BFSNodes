@@ -148,8 +148,33 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
     return override
 
 
-def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0], telemetry=None):
+def structure_free_payload(payload, native, video_index):
+    """The payload with motion <Video N> (and its audio rows) taken out; text, pictures and keyframes kept."""
+    refs, videos = [], 0
+    for ref in payload.get('refs', []):
+        if ref['kind'] in ('video', 'video_audio'):
+            videos += 1
+            if videos == video_index:
+                continue
+        refs.append(ref)
+    keyframes = payload.get('keyframes') or []
+    return dict(payload, refs=refs,
+        cond_video_latents=[k['latent'] for k in keyframes if k.get('latent') is not None]+[r['latent'] for r in refs if 'latent' in r],
+        cond_audio_latents=[k['audio_latent'] for k in keyframes if k.get('audio_latent') is not None]+[r['audio_latent'] for r in refs if r.get('audio_latent') is not None],
+        layout=type(native)(*native.signature, keyframes=payload.get('keyframes'), refs=refs))
+
+
+def structure_guided(real, free, guidance):
+    """real + (w-1)(real-free): SolarRenderer's structure-guided answer (arXiv 2610.28630, Sec. 3.3), here at inference."""
+    if isinstance(real, (list, tuple)):
+        return type(real)(structure_guided(r, f, guidance) for r, f in zip(real, free))
+    return real + (guidance - 1.0) * (real - free)
+
+
+def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0], telemetry=None,
+                         structure_guidance=1.0, structure_sigma_min=0.0):
     if backend not in BACKENDS: raise ValueError("Unknown native temporal attention backend")
+    if not math.isfinite(structure_guidance) or structure_guidance < 1.0: raise ValueError('structure_guidance must be >= 1 (1 = off)')
     if backend==BACKENDS[0] and not hasattr(torch.ops.aten, '_scaled_dot_product_flash_attention'):
         raise RuntimeError("This PyTorch build lacks native FlashAttention with LSE. Update PyTorch or select flex (original).")
     cfg = core.options(dict(native_temporal_alignment=True, native_temporal_strength=strength,
@@ -178,6 +203,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     calls = [0]
     reference_cache = [None, None, None, None]
     token_cache = [None, None, None, None]
+    free_cache = [None, None]
 
     def wrapper(model_function, args):
         conds = args.get('c', {})
@@ -240,6 +266,15 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
                            duration_seconds=float((layout.position_ids[target, 0].max()-layout.position_ids[target, 0].min())/40.0)))
         started=time.perf_counter()
         result=previous(model_function, copied) if previous else model_function(copied['input'], copied['timestep'], **copied['c'])
+        sigma=float(args['timestep'].flatten()[0])
+        if structure_guidance > 1.0 and sigma >= structure_sigma_min:
+            # Second pass without the motion video and without the temporal patch (no source rows to bias).
+            if free_cache[0] is not native:
+                free_cache[:] = [native, structure_free_payload(payload, native, video_index)]
+                print(f'[BFS H3 native temporal] structure guidance w={structure_guidance:g} at sigma >= {structure_sigma_min:g}: one extra pass without <Video {video_index}> per step', flush=True)
+            free_args = dict(args, c=dict(conds, minimax_payload=free_cache[1]))
+            free = previous(model_function, free_args) if previous else model_function(free_args['input'], free_args['timestep'], **free_args['c'])
+            result = structure_guided(result, free, structure_guidance)
         if calls[0]<=2:
             if device.type=='cuda':torch.cuda.synchronize(device)
             print(f'[BFS H3 native temporal] model evaluation {calls[0]} finished in {time.perf_counter()-started:.2f}s (includes weights/offload and all blocks)',flush=True)
@@ -264,7 +299,11 @@ class BFSMiniMaxH3NativeTemporal:
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
             'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
             'hidden': {'unique_id': 'UNIQUE_ID'},
-            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions is the default. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation.'})}}
+            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[0], 'tooltip':'Flash partitions is the default. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation.'}),
+                'structure_guidance': ('FLOAT', {'default':1.0,'min':1.0,'max':5.0,'step':0.05,
+                    'tooltip':'Experimental structure CFG (SolarRenderer): output + (w-1)*(output - output without <Video N>). 1 = off; ~1.5 follows the motion video more. Costs one extra model pass per step where active.'}),
+                'structure_sigma_min': ('FLOAT', {'default':0.0,'min':0.0,'max':1.0,'step':0.01,
+                    'tooltip':'Structure guidance only at noise levels >= this (structure is laid down at high noise); lower-noise steps skip the extra pass.'})}}
     RETURN_TYPES = ('MODEL',)
     FUNCTION = 'apply'
     CATEGORY = 'BFS/MiniMax H3'
@@ -273,7 +312,8 @@ class BFSMiniMaxH3NativeTemporal:
         'to the guider. No Add Guide or VSA. Guide/output must share a 24fps temporal grid. '
         'Does not encode video or load the LoRA. Defaults match training.')
 
-    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=BACKENDS[0], unique_id=None):
+    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=BACKENDS[0], unique_id=None,
+              structure_guidance=1.0, structure_sigma_min=0.0):
         def report(data):
             # Optional UI telemetry must never prevent inference (including API-only use).
             try:
@@ -282,7 +322,8 @@ class BFSMiniMaxH3NativeTemporal:
             except Exception:
                 pass
         return (patch_temporal_model(model,motion_video_index,strength,window_seconds,falloff_seconds,max_penalty,attention_backend,
-                                     telemetry=report if unique_id is not None else None),)
+                                     telemetry=report if unique_id is not None else None,
+                                     structure_guidance=structure_guidance, structure_sigma_min=structure_sigma_min),)
 
 NODE_CLASS_MAPPINGS = {'BFSMiniMaxH3NativeTemporal': BFSMiniMaxH3NativeTemporal}
 NODE_DISPLAY_NAME_MAPPINGS = {'BFSMiniMaxH3NativeTemporal': 'BFS MiniMax H3 TARA - Native Temporal Alignment (Experimental)'}

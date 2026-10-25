@@ -192,3 +192,29 @@ def test_node_prepares_selected_kitchen_before_sampling_but_not_flash(monkeypatc
  assert calls==[]
  node.patch_temporal_model(m,backend=node.BACKENDS[2])
  assert calls==[m]
+
+
+def test_structure_free_payload_drops_only_the_motion_video():
+ l,r=example()
+ refs=[dict(r[0],latent=torch.ones(1)),dict(r[1],latent=torch.full((1,),2.),audio_latent=torch.full((1,),3.))]
+ free=node.structure_free_payload(dict(layout=l,refs=refs,seed=7),l,1)
+ assert [x['kind'] for x in free['refs']]==['image'] and free['seed']==7
+ assert [float(x) for x in free['cond_video_latents']]==[1.] and free['cond_audio_latents']==[]
+ assert free['layout'].signature==l.signature and free['layout'].seq_len==l.seq_len-2*3-7*4*2
+ assert [k for _,_,k in free['layout'].segments]==['text','ref_img','audio','video']
+
+
+def test_structure_guidance_extra_pass_without_video_and_sigma_cutoff():
+ m=Model();patched=node.patch_temporal_model(m,structure_guidance=1.5,structure_sigma_min=.5)
+ l,r=example();calls=[]
+ def fn(x,t,**c):
+  video='optimized_attention_override' in c.get('transformer_options',{})
+  assert video==any(ref['kind']=='video_audio' for ref in c['minimax_payload']['refs'])
+  calls.append(video);return torch.full((1,),3. if video else 1.)
+ wrapper=patched.model_options['model_function_wrapper']
+ out=wrapper(fn,dict(input=torch.zeros(1),timestep=torch.full((1,),.8),c=dict(minimax_payload=dict(layout=l,refs=r))))
+ assert calls==[True,False] and float(out)==4.  # 3 + 0.5 * (3 - 1)
+ calls.clear()
+ out=wrapper(fn,dict(input=torch.zeros(1),timestep=torch.full((1,),.2),c=dict(minimax_payload=dict(layout=l,refs=r))))
+ assert calls==[True] and float(out)==3.
+ with pytest.raises(ValueError,match='structure_guidance'):node.patch_temporal_model(Model(),structure_guidance=.5)
