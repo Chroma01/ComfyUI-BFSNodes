@@ -4692,7 +4692,9 @@ class BFSShotJoin:
                              "writes the video (and the comparison) straight to MP4 files in the output folder, one shot "
                              "at a time, so memory stays at about one shot: use it for long videos. The images and comparison "
                              "outputs still carry the video, read back from the files at a size that fits the free RAM "
-                             "(the files keep the full size), the node shows the files, and video_path gives the path."}),
+                             "(the files keep the full size), the node shows the files, and video_path gives the path. "
+                             "In mp4 file mode, bypass downstream VHS Video Combine / Create Video / Save Video nodes: "
+                             "they only encode the completed video again and can exhaust RAM."}),
                          "filename_prefix": ("STRING", {"default": "bfs_shot_loop", "tooltip":
                              "mp4 file: the file name in the output folder (a counter is added)."}),
                          "mp4_crf": ("INT", {"default": 17, "min": 0, "max": 51, "tooltip":
@@ -4713,7 +4715,8 @@ class BFSShotJoin:
         "(needs 'comparison'): connect it with 'images' to BFS Video Compare.")
     FUNCTION = "join"
     CATEGORY = "BFS/shot loop"
-    DESCRIPTION = "Concatenate the generated shots in order, trim each to its length and cross-fade soft joins."
+    DESCRIPTION = ("Concatenate the generated shots in order, trim each to its length and cross-fade soft joins. "
+                   "When save_to is 'mp4 file', this node is the final encoder; downstream video save nodes are redundant.")
 
     def check_lazy_status(self, images=None, shots=None, **kwargs):
         """Shot by shot / queue loop with every shot stored and up to date: the join assembles them from disk, so the
@@ -4738,6 +4741,8 @@ class BFSShotJoin:
         if save_to and save_to[0] == SAVE_TO[1]:
             self._to_file = {"path": _next_output_path((filename_prefix[0] if filename_prefix else "") or "bfs_shot_loop"),
                              "crf": int(mp4_crf[0]) if mp4_crf else 17}
+        if self._to_file and prompt and prompt[0]:
+            _warn_redundant_encoders(prompt[0], unique_id[0] if unique_id else None)
         self._label = None
         self._dynprompt = dynprompt[0] if dynprompt else None
         self._unique_id = unique_id[0] if unique_id else None
@@ -5252,6 +5257,29 @@ def combine_stored(plan: dict, crossfade: int = 4, crf: int = 17, prefix: str = 
 
 
 SAVE_TO = ["images (output)", "mp4 file (long videos, low memory)"]
+# Nodes that encode a whole video again. After a join in mp4 file mode they only repeat its work and hold the full
+# video in RAM (a 1920 run crashed on this), so the join names them in the log.
+REENCODERS = ("VHS_VideoCombine", "CreateVideo", "SaveVideo", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG")
+
+
+def _warn_redundant_encoders(prompt: dict, join_id) -> None:
+    """Join in mp4 file mode: warn about active video encoders fed by its images or comparison output (directly, or
+    through Create Video). Bypassed nodes are not in the prompt, so only the ones that will run are named."""
+    if join_id is None or not isinstance(prompt, dict):
+        return
+    fed, found = {(str(join_id), 0), (str(join_id), 3)}, []
+    for _ in range(2):   # Join -> Create Video -> Save Video
+        for nid, node in prompt.items():
+            if not isinstance(node, dict) or node.get("class_type") not in REENCODERS or nid in found:
+                continue
+            if any(isinstance(v, list) and len(v) == 2 and (str(v[0]), v[1]) in fed
+                   for v in (node.get("inputs") or {}).values()):
+                found.append(nid)
+                fed.add((str(nid), 0))
+    if found:
+        names = ", ".join(f"#{n} {prompt[n].get('class_type')}" for n in found)
+        print(f"[BFS Shot Join] save_to is 'mp4 file': the join already writes the final MP4 (with audio). {names} "
+              "encode(s) the finished video again from memory; bypass them to save time and RAM.", flush=True)
 
 
 def _output_root() -> str:
