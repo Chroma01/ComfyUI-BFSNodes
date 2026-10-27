@@ -710,6 +710,8 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
   const setMode = (i, mode) => { const m = MODES.find(x => x[0] === mode); Object.assign(meta(i), { crop: m[2], inpaint: m[3], paste: m[4] }); save(); };
   const drag = (k, ev) => {
     ev.preventDefault(); ev.stopPropagation();
+    const handle = ev.currentTarget, pointerId = ev.pointerId;
+    handle?.setPointerCapture?.(pointerId);
     const box = tlEl.value.getBoundingClientRect();
     const move = e => {
       const x = e.clientX - box.left + tlEl.value.scrollLeft;
@@ -718,8 +720,14 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
       plan.bounds[k] = Math.max(lo, Math.min(hi, f));
       hover.value = { frame: plan.bounds[k], x };
     };
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); save(); };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    const up = () => {
+      handle?.releasePointerCapture?.(pointerId);
+      window.removeEventListener("pointermove", move, true); window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true); window.removeEventListener("blur", up, true); save();
+    };
+    // Capture phase plus pointer capture keeps the drag alive beyond the node's small visible panel.
+    window.addEventListener("pointermove", move, true); window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true); window.addEventListener("blur", up, true);
   };
   const frameAt = e => { const box = tlEl.value.getBoundingClientRect(); const x = e.clientX - box.left + tlEl.value.scrollLeft; return { frame: Math.max(0, Math.min(n.value - 1, Math.round(x / pxPerFrame.value))), x }; };
   const thumbFor = f => { const t = an.value?.thumbs; if (!t?.length) return ""; let b = t[0]; for (const x of t) { if (x.f <= f) b = x; else break; } return b.src; };
@@ -759,7 +767,10 @@ const meta = i => { while (plan.segs.length <= i) plan.segs.push({}); return pla
     play.idx = segs.value.indexOf(first); v.currentTime = (first?.start || 0) / plan.fps + 1e-3; v.play();
   };
   const stop = () => { vid.value?.pause(); play.mode = ""; };
-  const seek = f => { const v = vid.value; if (v) { v.currentTime = f / plan.fps + 1e-3; play.frame = f; } };
+  const seek = f => {
+    play.frame = Math.max(0, Math.min(n.value - 1, Math.round(f)));
+    const v = vid.value; if (v) v.currentTime = play.frame / plan.fps + 1e-3;
+  };
 
   // ---- queue loop events
   const onProg = e => { prog.done = e.detail.done; prog.count = e.detail.count; refreshVram(); };

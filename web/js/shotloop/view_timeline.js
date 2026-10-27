@@ -22,7 +22,8 @@ export function timelineCard(c) {
     ]),
     h("div", { class: "tl", ref: tlEl,
       onPointermove: e => { if (!e.buttons) hover.value = c.frameAt(e); }, onPointerleave: () => { hover.value = null; },
-      onClick: e => { if (e.target.classList.contains("hdl")) return; c.seek(c.frameAt(e).frame); } }, [
+      onClick: e => { if (e.target.classList.contains("hdl")) return; c.seek(c.frameAt(e).frame); },
+      onDblclick: e => { if (e.target.classList.contains("hdl")) return; c.splitAt(c.frameAt(e).frame); } }, [
       h("div", { class: "tlin", style: `width:${tlWidth.value}px` }, [
         h("div", { class: "strip" }, thumbs.map(t => h("img", { src: t.src, style: `width:${thumbW}px` }))),
         // outside the start / end range: dimmed, not planned
@@ -31,7 +32,7 @@ export function timelineCard(c) {
         ...cuts.value.filter(x => x < N).map(x => h("div", { class: "cut", style: `left:${x * ppf}px`, title: `cut @ ${x}` })),
         h("svg", { class: "spark", viewBox: `0 0 ${tlWidth.value} 26`, preserveAspectRatio: "none" },
           [h("polyline", { points: sparkPts, fill: "none", stroke: "#ff7a90", "stroke-width": 1, "vector-effect": "non-scaling-stroke" })]),
-        h("div", { class: "segs", onDblclick: e => c.splitAt(c.frameAt(e).frame) }, [
+        h("div", { class: "segs" }, [
           ...S.map((s, i) => h("div", {
             class: ["seg", i === sel.value && "sel", !!c.skipWhy(s) && "off", s.len > maxLen.value && "long", play.mode && play.idx === i && "playing"],
             style: `left:${s.start * ppf}px;width:${Math.max(2, s.len * ppf - 1)}px;background:${hue(i)}`,
@@ -43,9 +44,13 @@ export function timelineCard(c) {
         hover.value ? h("div", { class: "ph", style: `left:${hover.value.x}px` }) : null,
         vid.value && plan.video ? h("div", { class: "playhead", style: `left:${Math.min(N, play.frame) * ppf}px` }) : null,
       ]),
-      hover.value ? h("div", { class: "tip", style: `left:${Math.min(tlWidth.value - 160, Math.max(0, hover.value.x - (tlEl.value?.scrollLeft || 0) - 70))}px;top:2px` },
-        [h("img", { src: c.thumbFor(hover.value.frame) }), h("div", `frame ${hover.value.frame} · ${fmtT(hover.value.frame, fps)}`)]) : null,
     ]),
+    // Keep the preview outside the timeline: it must never hide the thumbnails, cuts or handles.
+    hover.value ? h("div", { class: "tlpreview" }, [
+      h("img", { src: c.thumbFor(hover.value.frame) }),
+      h("span", `frame ${hover.value.frame} · ${fmtT(hover.value.frame, fps)}`),
+      h("span", { class: "hint" }, "click to select · double-click to cut"),
+    ]) : null,
     h("div", { class: "hint", style: "margin-top:4px" },
       "Click a shot to select it (← → move between shots) · drag the white handles to move a boundary · double-click the shot bar to split · Delete removes the selected shot's cut"),
   ]);

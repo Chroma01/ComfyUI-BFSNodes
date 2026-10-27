@@ -94,7 +94,7 @@ const CSS = `
 .bsl .seg.off{opacity:.35;background-image:repeating-linear-gradient(45deg,#0004 0 6px,#0000 6px 12px)}
 .bsl .seg.long{outline:2px solid #ff5d5d;outline-offset:-2px}
 .bsl .seg.playing{box-shadow:0 0 0 2px #ffd34d}
-.bsl .hdl{position:absolute;top:-70px;bottom:0;width:9px;margin-left:-4px;cursor:ew-resize;z-index:3}
+.bsl .hdl{position:absolute;top:-70px;bottom:0;width:9px;margin-left:-4px;cursor:ew-resize;z-index:3;touch-action:none}
 .bsl .hdl::after{content:"";position:absolute;left:3px;top:0;bottom:0;width:3px;background:#fff;opacity:.85;border-radius:2px;box-shadow:0 0 4px #000}
 .bsl .hdl:hover::after{background:#ffd34d}
 .bsl .rgrid{display:grid;grid-template-columns:auto 130px auto 130px auto;gap:6px 10px;align-items:start;justify-content:start}
@@ -104,8 +104,8 @@ const CSS = `
 .bsl .cut{position:absolute;top:0;height:64px;width:2px;background:#ff4d6d;opacity:.9;pointer-events:none}
 .bsl .ph{position:absolute;top:0;bottom:0;width:1px;background:#ffd34d;pointer-events:none;z-index:4}
 .bsl .playhead{position:absolute;top:0;bottom:0;width:2px;background:#ffd34d;box-shadow:0 0 6px #ffd34d;pointer-events:none;z-index:5}
-.bsl .tip{position:absolute;z-index:6;pointer-events:none;background:#0d0d10ee;border:1px solid #3a3a44;border-radius:6px;padding:3px;font-size:10px;color:#ddd}
-.bsl .tip img{display:block;height:84px;border-radius:4px}
+.bsl .tlpreview{height:52px;margin-top:4px;display:flex;align-items:center;gap:8px;color:#ddd;font-size:10px}
+.bsl .tlpreview img{width:76px;height:48px;object-fit:cover;border-radius:4px;border:1px solid #3a3a44;background:#0d0d10}
 
 /* shot cards */
 .bsl .shots{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 6px;scroll-snap-type:x proximity}
